@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# Hunt working dirs (contain real target data — never commit)
+.hunt/
+targets/
+evidence/
+findings/
+*.jsonl
+submitted.jsonl
+known.md
+
+# Secrets / credentials
+*.env
+.env*
+*.pem
+*.key
+*.p12
+*.pfx
+secrets.*
+credentials.*
+
+# Cache
+~/.cache/scope-radar/
+*.cache
+
+# Logs / runtime
+*.log
+session_plans/
+skill-usage.log
+__pycache__/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Temporary outputs
+/tmp/
+*.tmp
