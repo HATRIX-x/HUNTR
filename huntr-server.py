@@ -323,7 +323,6 @@ class H(BaseHTTPRequestHandler):
             args = ["--json"]
             hosts = b.get("hosts", [])
             domain = b.get("domain","")
-            import tempfile
             if hosts:
                 tf = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
                 tf.write("\n".join(hosts)); tf.close()
@@ -334,7 +333,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send({"error":"hosts or domain required"}, 400)
             r = run("takeover-check.py", args, timeout=300)
             if hosts:
-                import os; os.unlink(tf.name)
+                os.unlink(tf.name)
             try:
                 return self._send(json.loads(r["out"]))
             except Exception:
@@ -400,6 +399,239 @@ class H(BaseHTTPRequestHandler):
                 return self._send(json.loads(r["out"]))
             except Exception:
                 return self._send({"error": r.get("err","")[:500], "total": 0, "findings": []})
+        if u.path == "/api/idor":  # POST {base_url, token, token2, id_field, id_range, method?, data?}
+            args = ["--base-url", b.get("base_url", ""), "--json"]
+            if b.get("token"): args += ["--token", b["token"]]
+            if b.get("token2"): args += ["--token2", b["token2"]]
+            if b.get("id_field"): args += ["--id-field", b["id_field"]]
+            if b.get("id_range"): args += ["--id-range", str(b["id_range"])]
+            if b.get("method"): args += ["--method", b["method"]]
+            if b.get("data"): args += ["--data", b["data"]]
+            r = run("idor-chain.py", args, timeout=180)
+            try:
+                return self._send(json.loads(r["out"]))
+            except Exception:
+                return self._send({"error": r.get("err", "")[:500], "total": 0, "findings": []})
+        if u.path == "/api/auth-bypass":  # POST {url, token, method?, data?}
+            args = ["--url", b.get("url", ""), "--json"]
+            if b.get("token"): args += ["--token", b["token"]]
+            if b.get("method"): args += ["--method", b["method"]]
+            if b.get("data"): args += ["--data", b["data"]]
+            r = run("auth-bypass.py", args, timeout=60)
+            try:
+                return self._send(json.loads(r["out"]))
+            except Exception:
+                return self._send({"error": r.get("err", "")[:500], "total": 0, "findings": []})
+        if u.path == "/api/rate-limit":  # POST {url, method?, token?, data?, count?, threads?}
+            args = ["--url", b.get("url", ""), "--json"]
+            if b.get("method"): args += ["--method", b["method"]]
+            if b.get("token"): args += ["--token", b["token"]]
+            if b.get("data"): args += ["--data", b["data"]]
+            if b.get("count"): args += ["--count", str(b["count"])]
+            if b.get("threads"): args += ["--threads", str(b["threads"])]
+            r = run("rate-limit.py", args, timeout=120)
+            try:
+                return self._send(json.loads(r["out"]))
+            except Exception:
+                return self._send({"error": r.get("err", "")[:500], "limit_detected": False,
+                                   "bypass_found": False, "findings": []})
+        if u.path == "/api/oauth":  # POST {auth_url, token_url?, client_id?, redirect_uri?, scope?, code?}
+            args = ["--auth-url", b.get("auth_url", ""), "--json"]
+            if b.get("token_url"): args += ["--token-url", b["token_url"]]
+            if b.get("client_id"): args += ["--client-id", b["client_id"]]
+            if b.get("redirect_uri"): args += ["--redirect-uri", b["redirect_uri"]]
+            if b.get("scope"): args += ["--scope", b["scope"]]
+            if b.get("code"): args += ["--code", b["code"]]
+            r = run("oauth-probe.py", args, timeout=120)
+            try:
+                return self._send(json.loads(r["out"]))
+            except Exception:
+                return self._send({"error": r.get("err", "")[:500], "total": 0, "findings": []})
+        if u.path == "/api/logic":  # POST {url, method?, token?, data}
+            args = ["--url", b.get("url", ""), "--json"]
+            if b.get("method"): args += ["--method", b["method"]]
+            if b.get("token"): args += ["--token", b["token"]]
+            if b.get("data"): args += ["--data", b["data"]]
+            r = run("logic-fuzz.py", args, timeout=120)
+            try:
+                return self._send(json.loads(r["out"]))
+            except Exception:
+                return self._send({"error": r.get("err", "")[:500], "total": 0, "findings": []})
+        if u.path == "/api/hypo":  # POST {endpoints:[], findings:[], program?, model?, max?}
+            ef = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+            ff = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+            ef.write(json.dumps(b.get("endpoints", []))); ef.close()
+            ff.write(json.dumps(b.get("findings", []))); ff.close()
+            args = ["--endpoints-file", ef.name, "--findings-file", ff.name, "--json"]
+            if b.get("program"): args += ["--program", b["program"]]
+            if b.get("model"): args += ["--model", b["model"]]
+            if b.get("max"): args += ["--max", str(b["max"])]
+            r = run("hypo-gen.py", args, timeout=60)
+            os.unlink(ef.name); os.unlink(ff.name)
+            try:
+                return self._send(json.loads(r["out"]))
+            except Exception:
+                return self._send({"ok": False, "error": r.get("err", "")[:500], "hypotheses": []})
+        if u.path == "/api/chain":  # POST {findings:[], model?}
+            ff = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+            ff.write(json.dumps(b.get("findings", []))); ff.close()
+            args = ["--findings-file", ff.name, "--json"]
+            if b.get("model"): args += ["--model", b["model"]]
+            r = run("chain-builder.py", args, timeout=60)
+            os.unlink(ff.name)
+            try:
+                return self._send(json.loads(r["out"]))
+            except Exception:
+                return self._send({"ok": False, "error": r.get("err", "")[:500], "chains": []})
+        if u.path == "/api/report-draft":  # POST {finding:{}, template?, model?}
+            ff = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+            ff.write(json.dumps(b.get("finding", {}))); ff.close()
+            args = ["--finding-file", ff.name, "--json"]
+            if b.get("template"): args += ["--template", b["template"]]
+            if b.get("model"): args += ["--model", b["model"]]
+            r = run("report-draft.py", args, timeout=90)
+            os.unlink(ff.name)
+            try:
+                return self._send(json.loads(r["out"]))
+            except Exception:
+                return self._send({"ok": False, "error": r.get("err", "")[:500]})
+        if u.path == "/api/disclosed":  # POST {program, handle?, limit?, weakness?}
+            args = ["--program", b.get("program", ""), "--json"]
+            if b.get("handle"): args += ["--handle", b["handle"]]
+            if b.get("limit"): args += ["--limit", str(b["limit"])]
+            if b.get("weakness"): args += ["--weakness", b["weakness"]]
+            r = run("disclosed-index.py", args, b.get("target"), timeout=60)
+            try:
+                return self._send(json.loads(r["out"]))
+            except Exception:
+                return self._send({"ok": False, "error": r.get("err", "")[:500]})
+        if u.path == "/api/evidence":  # POST {id, finding?, capture?, screenshot?}
+            args = ["--id", b.get("id", ""), "--json"]
+            if b.get("capture"): args += ["--capture", b["capture"]]
+            if b.get("screenshot"): args += ["--screenshot", b["screenshot"]]
+            ftmp = None
+            if b.get("finding"):
+                ftmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+                ftmp.write(json.dumps(b["finding"])); ftmp.close()
+                args += ["--finding-file", ftmp.name]
+            r = run("evidence-bundle.py", args, b.get("target"), timeout=90)
+            if ftmp: os.unlink(ftmp.name)
+            try:
+                return self._send(json.loads(r["out"]))
+            except Exception:
+                return self._send({"ok": False, "error": r.get("err", "")[:500]})
+        if u.path == "/api/rate-gov":  # POST {action:acquire|status|set|reset, program?, acquire?, rps?, burst?}
+            action = b.get("action", "status")
+            args = ["--json"]
+            if b.get("program"): args += ["--program", b["program"]]
+            if action == "acquire":
+                args += ["--acquire", str(b.get("acquire", 1))]
+            elif action == "set":
+                args += ["--set"]
+                if b.get("rps"): args += ["--rps", str(b["rps"])]
+                if b.get("burst"): args += ["--burst", str(b["burst"])]
+            elif action == "reset":
+                args += ["--reset"]
+            else:
+                args += ["--status"]
+            r = run("rate-governor.py", args, timeout=15)
+            try:
+                return self._send(json.loads(r["out"]))
+            except Exception:
+                return self._send({"ok": False, "error": r.get("err", "")[:500]})
+        if u.path == "/api/proxy-ingest":  # POST {content, filename?, scope?, in_scope_only?}
+            ext = ".xml" if "<items" in (b.get("content", "")[:200]) else (".har" if b.get("content", "").lstrip()[:1] == "{" else ".txt")
+            tmp = tempfile.NamedTemporaryFile("w", suffix=ext, delete=False)
+            tmp.write(b.get("content", "")); tmp.close()
+            args = ["--file", tmp.name, "--json"]
+            if b.get("scope"): args += ["--scope", b["scope"]]
+            if b.get("in_scope_only"): args += ["--in-scope-only"]
+            r = run("proxy-ingest.py", args, b.get("target"), timeout=60)
+            os.unlink(tmp.name)
+            try:
+                return self._send(json.loads(r["out"]))
+            except Exception:
+                return self._send({"ok": False, "error": r.get("err", "")[:500], "endpoints": 0})
+        if u.path == "/api/notify":  # POST {title, text, severity?, link?, url?, format?} or {set_webhook}
+            if b.get("set_webhook"):
+                r = run("notify.py", ["--set-webhook", b["set_webhook"], "--json"], timeout=15)
+            else:
+                args = ["--title", b.get("title", "HUNTR"), "--text", b.get("text", ""), "--json"]
+                if b.get("severity"): args += ["--severity", b["severity"]]
+                if b.get("link"): args += ["--link", b["link"]]
+                if b.get("url"): args += ["--url", b["url"]]
+                if b.get("format"): args += ["--format", b["format"]]
+                r = run("notify.py", args, timeout=20)
+            try:
+                return self._send(json.loads(r["out"]))
+            except Exception:
+                return self._send({"ok": False, "error": r.get("err", "")[:500]})
+        if u.path == "/api/auth-session":  # POST {action:status|refresh|refresh-all|set|set-refresh, ...}
+            action = b.get("action", "status")
+            args = ["--json"]
+            if b.get("name"): args += ["--name", b["name"]]
+            if action == "status":
+                args += ["--status"]
+            elif action == "refresh":
+                args += ["--refresh"]
+            elif action == "refresh-all":
+                args += ["--refresh-all"]
+                if b.get("skew"): args += ["--skew", str(b["skew"])]
+            elif action == "set":
+                args += ["--set"]
+                if b.get("authorization"): args += ["--authorization", b["authorization"]]
+                if b.get("cookie"): args += ["--cookie", b["cookie"]]
+                for h in (b.get("headers") or []):
+                    args += ["--header", h]
+            elif action == "set-refresh":
+                args += ["--set-refresh", "--token-url", b.get("token_url", ""),
+                         "--refresh-token", b.get("refresh_token", "")]
+                if b.get("client_id"): args += ["--client-id", b["client_id"]]
+                if b.get("client_secret"): args += ["--client-secret", b["client_secret"]]
+            r = run("auth-session.py", args, b.get("target"), timeout=30)
+            try:
+                return self._send(json.loads(r["out"]))
+            except Exception:
+                return self._send({"ok": False, "error": r.get("err", "")[:500], "identities": []})
+        if u.path == "/api/ws":  # POST {url, token?, origin?, message?, graphql_sub?}
+            args = ["--url", b.get("url", ""), "--json"]
+            if b.get("token"): args += ["--token", b["token"]]
+            if b.get("origin"): args += ["--origin", b["origin"]]
+            if b.get("message"): args += ["--message", b["message"]]
+            if b.get("graphql_sub"): args += ["--graphql-sub", b["graphql_sub"]]
+            r = run("ws-probe.py", args, timeout=60)
+            try:
+                return self._send(json.loads(r["out"]))
+            except Exception:
+                return self._send({"error": r.get("err", "")[:500], "total": 0, "findings": []})
+        if u.path == "/api/nuclei-gen":  # POST {finding, author?, id?}
+            ftmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+            ftmp.write(json.dumps(b.get("finding", {}))); ftmp.close()
+            args = ["--finding-file", ftmp.name, "--json"]
+            if b.get("author"): args += ["--author", b["author"]]
+            if b.get("id"): args += ["--id", b["id"]]
+            r = run("nuclei-gen.py", args, timeout=20)
+            os.unlink(ftmp.name)
+            try:
+                return self._send(json.loads(r["out"]))
+            except Exception:
+                return self._send({"ok": False, "error": r.get("err", "")[:500]})
+        if u.path == "/api/retest":  # POST {id?, finding?, match?, token?}
+            args = ["--json"]
+            ftmp = None
+            if b.get("id"): args += ["--id", b["id"]]
+            if b.get("finding"):
+                ftmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+                ftmp.write(json.dumps(b["finding"])); ftmp.close()
+                args += ["--finding-file", ftmp.name]
+            if b.get("match"): args += ["--match", b["match"]]
+            if b.get("token"): args += ["--token", b["token"]]
+            r = run("retest.py", args, b.get("target"), timeout=60)
+            if ftmp: os.unlink(ftmp.name)
+            try:
+                return self._send(json.loads(r["out"]))
+            except Exception:
+                return self._send({"ok": False, "error": r.get("err", "")[:500]})
         if u.path == "/api/intake":
             tmp = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
             tmp.write(b.get("text", "")); tmp.close()
@@ -440,7 +672,7 @@ class H(BaseHTTPRequestHandler):
             data_b64 = b.get("data_b64","")
             if not data_b64:
                 return self._send({"error": "no data"}, 400)
-            import base64, tempfile
+            import base64
             ext = ".ipa" if fname.lower().endswith(".ipa") else ".apk"
             with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tf:
                 tf.write(base64.b64decode(data_b64)); tmp = tf.name
