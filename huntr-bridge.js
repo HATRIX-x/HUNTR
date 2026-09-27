@@ -595,6 +595,214 @@
       <div class="tool-out" id="redir-out" style="display:none"></div>
     </div>`);
 
+    // ── Tier 4 · Business Logic ─────────────────────────────────────────
+    el.insertAdjacentHTML('beforeend',`<div style="margin:26px 0 12px;font-family:var(--sans);font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--accent,#A78BFA)">Business Logic</div>`);
+
+    el.insertAdjacentHTML('beforeend',`<div class="tool-card" id="idor-card">
+      <div class="tool-card-h"><span class="tool-card-title">IDOR chain</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">cross-account replay · numeric enum · sequential GUID · hashed-id bypass</span></div>
+      <div class="tool-row">
+        <input class="tool-inp" id="idor-url" placeholder="https://api.acme.com/v1/orders/{id}"/>
+        <input class="tool-inp" id="idor-field" placeholder="id field" value="id" style="max-width:120px"/>
+        <input class="tool-inp" id="idor-range" placeholder="range: 1000-1100" style="max-width:150px"/>
+      </div>
+      <div class="tool-row">
+        <input class="tool-inp" id="idor-tok" placeholder="token A (owner)"/>
+        <input class="tool-inp" id="idor-tok2" placeholder="token B (2nd account)"/>
+        <button class="tool-btn pri" onclick="window._idor_chain()">Run IDOR</button>
+      </div>
+      <div class="tool-out" id="idor-out" style="display:none"></div>
+    </div>`);
+
+    el.insertAdjacentHTML('beforeend',`<div class="tool-card" id="bypass-card">
+      <div class="tool-card-h"><span class="tool-card-title">Auth-bypass matrix</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">header strip · X-Original-URL · verb swap · path/case/ext mutation</span></div>
+      <div class="tool-row">
+        <input class="tool-inp" id="bypass-url" placeholder="https://api.acme.com/admin/users"/>
+        <input class="tool-inp" id="bypass-tok" placeholder="valid token (baseline)"/>
+        <button class="tool-btn pri" onclick="window._auth_bypass()">Test bypass</button>
+      </div>
+      <div class="tool-out" id="bypass-out" style="display:none"></div>
+    </div>`);
+
+    el.insertAdjacentHTML('beforeend',`<div class="tool-card" id="ratelimit-card">
+      <div class="tool-card-h"><span class="tool-card-title">Rate-limit probe</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">detect throttle · X-Forwarded-For / null-Origin / UA / path-case bypass</span></div>
+      <div class="tool-row">
+        <input class="tool-inp" id="ratelimit-url" placeholder="https://api.acme.com/v1/login"/>
+        <input class="tool-inp" id="ratelimit-tok" placeholder="token (optional)"/>
+        <input class="tool-inp" id="ratelimit-count" placeholder="count" value="50" style="max-width:90px"/>
+        <button class="tool-btn pri" onclick="window._rate_limit()">Probe limit</button>
+      </div>
+      <div class="tool-out" id="ratelimit-out" style="display:none"></div>
+    </div>`);
+
+    el.insertAdjacentHTML('beforeend',`<div class="tool-card" id="oauth-card">
+      <div class="tool-card-h"><span class="tool-card-title">OAuth probe</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">redirect_uri · state/CSRF · implicit leak · PKCE downgrade · scope · code reuse</span></div>
+      <div class="tool-row">
+        <input class="tool-inp" id="oauth-auth" placeholder="authorize URL: https://id.acme.com/oauth/authorize"/>
+        <input class="tool-inp" id="oauth-redir" placeholder="registered redirect_uri"/>
+      </div>
+      <div class="tool-row">
+        <input class="tool-inp" id="oauth-token" placeholder="token URL (optional)"/>
+        <input class="tool-inp" id="oauth-cid" placeholder="client_id" style="max-width:160px"/>
+        <button class="tool-btn pri" onclick="window._oauth_probe()">Probe OAuth</button>
+      </div>
+      <div class="tool-out" id="oauth-out" style="display:none"></div>
+    </div>`);
+
+    el.insertAdjacentHTML('beforeend',`<div class="tool-card" id="logic-card">
+      <div class="tool-card-h"><span class="tool-card-title">Logic fuzzer</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">per-field: negatives · 2^31/2^63 · type confusion · bool flip · array-wrap · dup key</span></div>
+      <div class="tool-row">
+        <input class="tool-inp" id="logic-url" placeholder="https://api.acme.com/v1/checkout"/>
+        <input class="tool-inp" id="logic-tok" placeholder="token (optional)"/>
+      </div>
+      <div class="tool-row">
+        <input class="tool-inp" id="logic-data" placeholder='JSON body: {"item":"x","qty":1,"price":9.99}'/>
+        <button class="tool-btn pri" onclick="window._logic_fuzz()">Fuzz logic</button>
+      </div>
+      <div class="tool-out" id="logic-out" style="display:none"></div>
+    </div>`);
+
+    // ── Tier 5 · LLM Intelligence ───────────────────────────────────────
+    el.insertAdjacentHTML('beforeend',`<div style="margin:26px 0 12px;font-family:var(--sans);font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--gold,#E7C983)">LLM Intelligence</div>`);
+
+    el.insertAdjacentHTML('beforeend',`<div class="tool-card" id="hypo-card">
+      <div class="tool-card-h"><span class="tool-card-title">Hypothesis generator</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">top-ROI untested attack ideas + a ready HUNTR command each</span></div>
+      <div class="tool-row">
+        <input class="tool-inp" id="hypo-prog" placeholder="program slug: acme"/>
+        <input class="tool-inp" id="hypo-eps" placeholder="endpoints (comma or newline separated)"/>
+        <button class="tool-btn pri" onclick="window._hypo_gen()">Generate</button>
+      </div>
+      <div class="tool-out" id="hypo-out" style="display:none"></div>
+    </div>`);
+
+    el.insertAdjacentHTML('beforeend',`<div class="tool-card" id="chain-card">
+      <div class="tool-card-h"><span class="tool-card-title">Chain builder</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">combine confirmed findings into higher-severity exploit paths</span></div>
+      <div class="tool-row">
+        <textarea class="tool-inp" id="chain-finds" placeholder='findings JSON array: [{"id":"F1","attack":"open_redirect",...}]' style="min-height:64px;font-family:var(--mono);font-size:12px"></textarea>
+        <button class="tool-btn pri" onclick="window._chain_build()">Build chains</button>
+      </div>
+      <div class="tool-out" id="chain-out" style="display:none"></div>
+    </div>`);
+
+    el.insertAdjacentHTML('beforeend',`<div class="tool-card" id="draft-card">
+      <div class="tool-card-h"><span class="tool-card-title">Report drafter</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">draft-only · H1 / YesWeHack / Bugcrowd / Intigriti — never auto-submits</span></div>
+      <div class="tool-row">
+        <select class="tool-inp" id="draft-tpl" style="max-width:150px">
+          <option value="h1">HackerOne</option>
+          <option value="ywh">YesWeHack</option>
+          <option value="bc">Bugcrowd</option>
+          <option value="ing">Intigriti</option>
+        </select>
+        <button class="tool-btn pri" onclick="window._report_draft()">Draft report</button>
+      </div>
+      <div class="tool-row">
+        <textarea class="tool-inp" id="draft-finding" placeholder='finding JSON: {"title":"IDOR in orders","severity":"high","attack":"idor",...}' style="min-height:64px;font-family:var(--mono);font-size:12px"></textarea>
+      </div>
+      <div class="tool-out" id="draft-out" style="display:none"></div>
+    </div>`);
+
+    // ── Tier 6 · Evidence & Dedup ───────────────────────────────────────
+    el.insertAdjacentHTML('beforeend',`<div style="margin:26px 0 12px;font-family:var(--sans);font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--gold,#E7C983)">Evidence &amp; Dedup</div>`);
+
+    el.insertAdjacentHTML('beforeend',`<div class="tool-card" id="disclosed-card">
+      <div class="tool-card-h"><span class="tool-card-title">Disclosed index</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">pull public disclosed reports into the dedup corpus (feeds dup-score)</span></div>
+      <div class="tool-row">
+        <input class="tool-inp" id="disclosed-prog" placeholder="program slug: shopify"/>
+        <input class="tool-inp" id="disclosed-weak" placeholder="weakness filter (optional): idor" style="max-width:200px"/>
+        <button class="tool-btn pri" onclick="window._disclosed_index()">Index</button>
+      </div>
+      <div class="tool-out" id="disclosed-out" style="display:none"></div>
+    </div>`);
+
+    el.insertAdjacentHTML('beforeend',`<div class="tool-card" id="evidence-card">
+      <div class="tool-card-h"><span class="tool-card-title">Evidence bundle</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">assemble request/response + curl repro + screenshot into a submit-ready zip</span></div>
+      <div class="tool-row">
+        <input class="tool-inp" id="evidence-id" placeholder="finding id: F1" style="max-width:140px"/>
+        <input class="tool-inp" id="evidence-capture" placeholder="screenshot URL (optional): https://target/poc"/>
+        <button class="tool-btn pri" onclick="window._evidence_bundle()">Bundle</button>
+      </div>
+      <div class="tool-out" id="evidence-out" style="display:none"></div>
+    </div>`);
+
+    el.insertAdjacentHTML('beforeend',`<div class="tool-card" id="rategov-card">
+      <div class="tool-card-h"><span class="tool-card-title">Rate governor</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">global + per-program traffic budget so autohunts never hammer a target</span></div>
+      <div class="tool-row">
+        <input class="tool-inp" id="rategov-prog" placeholder="program (optional)"/>
+        <input class="tool-inp" id="rategov-rps" placeholder="rps" style="max-width:80px"/>
+        <input class="tool-inp" id="rategov-burst" placeholder="burst" style="max-width:80px"/>
+        <button class="tool-btn pri" onclick="window._rategov('set')">Set</button>
+        <button class="tool-btn ghost" onclick="window._rategov('status')">Status</button>
+      </div>
+      <div class="tool-out" id="rategov-out" style="display:none"></div>
+    </div>`);
+
+    // ── Tier 6 · Integrations ───────────────────────────────────────────
+    el.insertAdjacentHTML('beforeend',`<div style="margin:26px 0 12px;font-family:var(--sans);font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--accent,#A78BFA)">Integrations</div>`);
+
+    el.insertAdjacentHTML('beforeend',`<div class="tool-card" id="ingest-card">
+      <div class="tool-card-h"><span class="tool-card-title">Proxy ingest</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">import Burp XML / HAR / URL list → endpoint inventory</span></div>
+      <div class="tool-row">
+        <textarea class="tool-inp" id="ingest-content" placeholder="paste Burp XML export, HAR JSON, or a URL list" style="min-height:64px;font-family:var(--mono);font-size:12px"></textarea>
+        <button class="tool-btn pri" onclick="window._proxy_ingest()">Ingest</button>
+      </div>
+      <div class="tool-out" id="ingest-out" style="display:none"></div>
+    </div>`);
+
+    el.insertAdjacentHTML('beforeend',`<div class="tool-card" id="notify-card">
+      <div class="tool-card-h"><span class="tool-card-title">Notify</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">ping Slack / Discord / webhook on high-value events</span></div>
+      <div class="tool-row">
+        <input class="tool-inp" id="notify-hook" placeholder="webhook URL (saves once): https://hooks.slack.com/…"/>
+        <button class="tool-btn ghost" onclick="window._notify_save()">Save hook</button>
+      </div>
+      <div class="tool-row">
+        <input class="tool-inp" id="notify-title" placeholder="title" style="max-width:160px"/>
+        <input class="tool-inp" id="notify-text" placeholder="message"/>
+        <button class="tool-btn pri" onclick="window._notify_send()">Send</button>
+      </div>
+      <div class="tool-out" id="notify-out" style="display:none"></div>
+    </div>`);
+
+    el.insertAdjacentHTML('beforeend',`<div class="tool-card" id="authsess-card">
+      <div class="tool-card-h"><span class="tool-card-title">Auth sessions</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">JWT expiry status · OAuth refresh · identity store</span></div>
+      <div class="tool-row">
+        <button class="tool-btn pri" onclick="window._authsess('status')">Status</button>
+        <button class="tool-btn ghost" onclick="window._authsess('refresh-all')">Refresh expiring</button>
+      </div>
+      <div class="tool-out" id="authsess-out" style="display:none"></div>
+    </div>`);
+
+    // ── Tier 6 · Surface & Regression ───────────────────────────────────
+    el.insertAdjacentHTML('beforeend',`<div style="margin:26px 0 12px;font-family:var(--sans);font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--gold,#E7C983)">Surface &amp; Regression</div>`);
+
+    el.insertAdjacentHTML('beforeend',`<div class="tool-card" id="ws-card">
+      <div class="tool-card-h"><span class="tool-card-title">WebSocket probe</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">CSWSH · missing auth · origin reflection · graphql-ws subscription</span></div>
+      <div class="tool-row">
+        <input class="tool-inp" id="ws-url" placeholder="wss://api.acme.com/socket"/>
+        <input class="tool-inp" id="ws-tok" placeholder="token (optional)"/>
+        <button class="tool-btn pri" onclick="window._ws_probe()">Probe WS</button>
+      </div>
+      <div class="tool-out" id="ws-out" style="display:none"></div>
+    </div>`);
+
+    el.insertAdjacentHTML('beforeend',`<div class="tool-card" id="nucgen-card">
+      <div class="tool-card-h"><span class="tool-card-title">Nuclei template gen</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">turn a confirmed finding into a reusable YAML template</span></div>
+      <div class="tool-row">
+        <textarea class="tool-inp" id="nucgen-finding" placeholder='finding JSON: {"url":"…","status":200,"attack":"idor","response_snippet":"…"}' style="min-height:64px;font-family:var(--mono);font-size:12px"></textarea>
+        <button class="tool-btn pri" onclick="window._nuclei_gen()">Generate</button>
+      </div>
+      <div class="tool-out" id="nucgen-out" style="display:none"></div>
+    </div>`);
+
+    el.insertAdjacentHTML('beforeend',`<div class="tool-card" id="retest-card">
+      <div class="tool-card-h"><span class="tool-card-title">Retest</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">re-fire a stored finding · confirm still-vulnerable / fixed (retest bonus)</span></div>
+      <div class="tool-row">
+        <input class="tool-inp" id="retest-id" placeholder="finding id: F1" style="max-width:140px"/>
+        <input class="tool-inp" id="retest-match" placeholder="proof string (optional)"/>
+        <input class="tool-inp" id="retest-tok" placeholder="token (optional)"/>
+        <button class="tool-btn pri" onclick="window._retest()">Retest</button>
+      </div>
+      <div class="tool-out" id="retest-out" style="display:none"></div>
+    </div>`);
+
     // ── Tier 2 tool cards ───────────────────────────────────────────────
     el.insertAdjacentHTML('beforeend',`<div class="tool-card" id="sub-card">
       <div class="tool-card-h"><span class="tool-card-title">Subdomain enumeration</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">crt.sh · hackertarget · alienvault · brute</span></div>
@@ -841,6 +1049,280 @@
         const f=(d.findings||[]);
         o.innerHTML=`findings:${f.length}  high:${d.high||0}  med:${d.medium||0}`+
           (f.length?'\n\n'+f.map(x=>`  <span class="${x.severity==='high'?'high':'med'}">[${(x.severity||'?').toUpperCase()}]</span> ${x.label||'oauth_chain'}\n         payload: ${(x.payload||x.chain||'').slice(0,70)}\n         ${(x.note||'').slice(0,100)}`).join('\n'):'\n\n<span class="ok">✓ no open redirect found</span>');
+      }catch(e){o.textContent=`error: ${e.message||e}`;}
+    };
+
+    // ── Tier 4 · Business Logic handlers ────────────────────────────────
+    const sevClass=s=>({critical:'crit',high:'high',medium:'med',low:'ok'})[s]||'med';
+    const renderFindings=(o,f,emptyMsg)=>{
+      o.innerHTML=`findings:${f.length}`+
+        (f.length?'\n\n'+f.map(x=>{
+          const label=x.technique||x.attack||x.test||x.field||x.mutation||'finding';
+          const extra=x.vector||x.variant||x.mutation||'';
+          return `  <span class="${sevClass(x.severity)}">[${(x.severity||'?').toUpperCase()}]</span> ${label}${extra?' · '+extra:''}\n         ${(x.note||x.detail||'').slice(0,110)}`;
+        }).join('\n'):`\n\n<span class="ok">✓ ${emptyMsg}</span>`);
+    };
+
+    window._idor_chain=async function(){
+      const base_url=document.getElementById('idor-url')?.value.trim();
+      const id_field=document.getElementById('idor-field')?.value.trim()||'id';
+      const id_range=document.getElementById('idor-range')?.value.trim();
+      const token=document.getElementById('idor-tok')?.value.trim();
+      const token2=document.getElementById('idor-tok2')?.value.trim();
+      const o=document.getElementById('idor-out'); if(!o)return;
+      if(!base_url||!id_range){o.style.display='block';o.textContent='enter base URL (with {id} or a field) and an id range';return;}
+      o.style.display='block'; o.textContent=`replaying ids ${id_range} as A then B…`;
+      try{
+        const d=await jpost('/idor',{base_url,id_field,id_range,token:token||undefined,token2:token2||undefined});
+        if(d.error){o.textContent='error: '+d.error;return;}
+        renderFindings(o,d.findings||[],'no cross-account access — objects held');
+        o.innerHTML=`tested:${d.tested||0}  <span class="high">IDOR:${d.idor||0}</span>  `+o.innerHTML;
+      }catch(e){o.textContent=`error: ${e.message||e}`;}
+    };
+
+    window._auth_bypass=async function(){
+      const url=document.getElementById('bypass-url')?.value.trim();
+      const token=document.getElementById('bypass-tok')?.value.trim();
+      const o=document.getElementById('bypass-out'); if(!o)return;
+      if(!url){o.style.display='block';o.textContent='enter the protected endpoint URL';return;}
+      o.style.display='block'; o.textContent='sending authed baseline + bypass variants…';
+      try{
+        const d=await jpost('/auth-bypass',{url,token:token||undefined});
+        if(d.error){o.textContent='error: '+d.error;return;}
+        renderFindings(o,d.findings||[],'endpoint held under every variant');
+        o.innerHTML=`baseline:${d.baseline_status}/${d.baseline_size}b  variants:${d.variants_tested||0}\n`+o.innerHTML;
+      }catch(e){o.textContent=`error: ${e.message||e}`;}
+    };
+
+    window._rate_limit=async function(){
+      const url=document.getElementById('ratelimit-url')?.value.trim();
+      const token=document.getElementById('ratelimit-tok')?.value.trim();
+      const count=parseInt(document.getElementById('ratelimit-count')?.value.trim()||'50',10);
+      const o=document.getElementById('ratelimit-out'); if(!o)return;
+      if(!url){o.style.display='block';o.textContent='enter a URL';return;}
+      o.style.display='block'; o.textContent=`firing ${count} requests then testing bypass vectors…`;
+      try{
+        const d=await jpost('/rate-limit',{url,token:token||undefined,count});
+        if(d.error){o.textContent='error: '+d.error;return;}
+        renderFindings(o,d.findings||[],'solid limit, no bypass');
+        o.innerHTML=`limit:${d.limit_detected}  <span class="high">bypass:${d.bypass_found}</span>  codes:${JSON.stringify(d.detect_codes||{})}\n`+o.innerHTML;
+      }catch(e){o.textContent=`error: ${e.message||e}`;}
+    };
+
+    window._oauth_probe=async function(){
+      const auth_url=document.getElementById('oauth-auth')?.value.trim();
+      const redirect_uri=document.getElementById('oauth-redir')?.value.trim();
+      const token_url=document.getElementById('oauth-token')?.value.trim();
+      const client_id=document.getElementById('oauth-cid')?.value.trim();
+      const o=document.getElementById('oauth-out'); if(!o)return;
+      if(!auth_url){o.style.display='block';o.textContent='enter the authorize URL';return;}
+      o.style.display='block'; o.textContent='auditing redirect_uri · state · implicit · PKCE · scope…';
+      try{
+        const d=await jpost('/oauth',{auth_url,redirect_uri:redirect_uri||undefined,token_url:token_url||undefined,client_id:client_id||undefined});
+        if(d.error){o.textContent='error: '+d.error;return;}
+        renderFindings(o,d.findings||[],'no OAuth misconfig from static probes');
+      }catch(e){o.textContent=`error: ${e.message||e}`;}
+    };
+
+    window._logic_fuzz=async function(){
+      const url=document.getElementById('logic-url')?.value.trim();
+      const token=document.getElementById('logic-tok')?.value.trim();
+      const data=document.getElementById('logic-data')?.value.trim();
+      const o=document.getElementById('logic-out'); if(!o)return;
+      if(!url||!data){o.style.display='block';o.textContent='enter URL and a JSON body';return;}
+      o.style.display='block'; o.textContent='mutating each field and comparing to baseline…';
+      try{
+        const d=await jpost('/logic',{url,method:'POST',token:token||undefined,data});
+        if(d.error){o.textContent='error: '+d.error;return;}
+        renderFindings(o,d.findings||[],'server validated every mutation');
+        o.innerHTML=`baseline:${d.baseline_status}/${d.baseline_size}b  mutations:${d.variants_tested||0}\n`+o.innerHTML;
+      }catch(e){o.textContent=`error: ${e.message||e}`;}
+    };
+
+    // ── Tier 5 · LLM Intelligence handlers ──────────────────────────────
+    window._hypo_gen=async function(){
+      const program=document.getElementById('hypo-prog')?.value.trim()||'target';
+      const raw=document.getElementById('hypo-eps')?.value.trim()||'';
+      const endpoints=raw.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean);
+      const o=document.getElementById('hypo-out'); if(!o)return;
+      o.style.display='block'; o.textContent='asking the model for the highest-ROI untested hypotheses…';
+      try{
+        const d=await jpost('/hypo',{program,endpoints,findings:[]});
+        if(!d.ok){o.innerHTML=`<span class="med">${d.error||'no hypotheses'}</span>`;return;}
+        const h=(d.hypotheses||[]);
+        o.innerHTML=`${h.length} hypothesis${h.length===1?'':'es'}\n\n`+h.map((x,i)=>
+          `  ${i+1}. <span class="${sevClass(x.estimated_severity)}">[${(x.estimated_severity||'?').toUpperCase()}]</span> ${x.title||''}\n`+
+          `     <span style="color:var(--text3)">${x.attack_class||''} · ${x.target_endpoint||''}</span>\n`+
+          `     ${(x.why_likely||'').slice(0,120)}\n`+
+          `     <span class="hi">$ ${x.test_command||''}</span>`).join('\n\n');
+      }catch(e){o.textContent=`error: ${e.message||e}`;}
+    };
+
+    window._chain_build=async function(){
+      const raw=document.getElementById('chain-finds')?.value.trim();
+      const o=document.getElementById('chain-out'); if(!o)return;
+      let findings; try{findings=JSON.parse(raw||'[]');}catch(e){o.style.display='block';o.textContent='findings must be a JSON array';return;}
+      o.style.display='block'; o.textContent='looking for exploitable chains across findings…';
+      try{
+        const d=await jpost('/chain',{findings});
+        if(!d.ok){o.innerHTML=`<span class="med">${d.error||'no chains'}</span>`;return;}
+        const c=(d.chains||[]);
+        o.innerHTML=c.length?c.map((x,i)=>
+          `  ${i+1}. <span class="${sevClass(x.combined_severity)}">[${(x.combined_severity||'?').toUpperCase()} cvss ${x.cvss||'?'}]</span> ${x.title||''}\n`+
+          (x.steps||[]).map(s=>`       · ${s.finding_id||'?'}: ${s.role||''}`).join('\n')+`\n     ${(x.description||'').slice(0,160)}`).join('\n\n')
+          :'<span class="ok">✓ no chains across current findings</span>';
+      }catch(e){o.textContent=`error: ${e.message||e}`;}
+    };
+
+    window._report_draft=async function(){
+      const template=document.getElementById('draft-tpl')?.value||'h1';
+      const raw=document.getElementById('draft-finding')?.value.trim();
+      const o=document.getElementById('draft-out'); if(!o)return;
+      let finding; try{finding=JSON.parse(raw||'{}');}catch(e){o.style.display='block';o.textContent='finding must be valid JSON';return;}
+      o.style.display='block'; o.textContent='drafting report (not submitting)…';
+      try{
+        const d=await jpost('/report-draft',{finding,template});
+        if(!d.ok){o.innerHTML=`<span class="med">${d.error||'draft failed'}</span>`;return;}
+        o.innerHTML=`<span class="ok">draft · ${d.template} · score ${d.score}/100 · ${d.word_count} words</span>\n`+
+          `<span class="hi">${(d.title||'').replace(/</g,'&lt;')}</span>\n\n`+
+          (d.report_markdown||'').replace(/</g,'&lt;')+
+          `\n\n<span class="med">draft only — review and submit manually.</span>`;
+      }catch(e){o.textContent=`error: ${e.message||e}`;}
+    };
+
+    // ── Tier 6 · Evidence & Dedup handlers ──────────────────────────────
+    window._disclosed_index=async function(){
+      const program=document.getElementById('disclosed-prog')?.value.trim();
+      const weakness=document.getElementById('disclosed-weak')?.value.trim();
+      const o=document.getElementById('disclosed-out'); if(!o)return;
+      if(!program){o.style.display='block';o.textContent='enter a program slug';return;}
+      o.style.display='block'; o.textContent=`pulling disclosed reports for ${program}…`;
+      try{
+        const d=await jpost('/disclosed',{program,weakness:weakness||undefined});
+        if(!d.ok){o.innerHTML=`<span class="med">${d.error||'failed'}</span>`;return;}
+        o.innerHTML=`<span class="ok">fetched ${d.fetched} · added ${d.added} new · corpus ${d.index_total}</span>`+
+          ((d.errors&&d.errors.length)?'\n\n'+d.errors.map(e=>`<span class="med">! ${e}</span>`).join('\n'):'');
+      }catch(e){o.textContent=`error: ${e.message||e}`;}
+    };
+
+    window._evidence_bundle=async function(){
+      const id=document.getElementById('evidence-id')?.value.trim();
+      const capture=document.getElementById('evidence-capture')?.value.trim();
+      const o=document.getElementById('evidence-out'); if(!o)return;
+      if(!id){o.style.display='block';o.textContent='enter a finding id';return;}
+      o.style.display='block'; o.textContent='assembling evidence bundle…';
+      try{
+        const d=await jpost('/evidence',{id,capture:capture||undefined});
+        if(!d.ok){o.innerHTML=`<span class="med">${d.error||'failed'}</span>`;return;}
+        o.innerHTML=`<span class="ok">bundle: ${d.bundle}</span>\nfiles: ${(d.included||[]).join(', ')}`+
+          ((d.warnings&&d.warnings.length)?'\n\n'+d.warnings.map(w=>`<span class="med">! ${w}</span>`).join('\n'):'');
+      }catch(e){o.textContent=`error: ${e.message||e}`;}
+    };
+
+    window._rategov=async function(action){
+      const program=document.getElementById('rategov-prog')?.value.trim();
+      const rps=document.getElementById('rategov-rps')?.value.trim();
+      const burst=document.getElementById('rategov-burst')?.value.trim();
+      const o=document.getElementById('rategov-out'); if(!o)return;
+      o.style.display='block'; o.textContent='…';
+      try{
+        const body={action,program:program||undefined};
+        if(action==='set'){ if(rps)body.rps=parseFloat(rps); if(burst)body.burst=parseFloat(burst); }
+        const d=await jpost('/rate-gov',body);
+        if(d.buckets){o.innerHTML=d.buckets.map(x=>`  ${x.scope.padEnd(20)} tokens ${x.tokens}/${x.burst} @ ${x.rps}rps`).join('\n');}
+        else if(d.set){o.innerHTML=`<span class="ok">set ${d.set}: rps=${d.rps} burst=${d.burst}</span>`;}
+        else{o.textContent=JSON.stringify(d);}
+      }catch(e){o.textContent=`error: ${e.message||e}`;}
+    };
+
+    // ── Tier 6 · Integrations handlers ──────────────────────────────────
+    window._proxy_ingest=async function(){
+      const content=document.getElementById('ingest-content')?.value.trim();
+      const o=document.getElementById('ingest-out'); if(!o)return;
+      if(!content){o.style.display='block';o.textContent='paste a Burp XML / HAR / URL list';return;}
+      o.style.display='block'; o.textContent='parsing proxy history…';
+      try{
+        const d=await jpost('/proxy-ingest',{content});
+        if(!d.ok){o.innerHTML=`<span class="med">${d.error||'failed'}</span>`;return;}
+        o.innerHTML=`<span class="ok">${d.source_kind}: ${d.endpoints} endpoints (${d.with_params} with params)</span>\n\n`+
+          (d.top||[]).map(e=>`  ${(e.method||'').padEnd(6)} ${e.path_template}  [${(e.params||[]).slice(0,6).join(',')}]`).join('\n');
+      }catch(e){o.textContent=`error: ${e.message||e}`;}
+    };
+
+    window._notify_save=async function(){
+      const hook=document.getElementById('notify-hook')?.value.trim();
+      const o=document.getElementById('notify-out'); if(!o)return;
+      if(!hook){o.style.display='block';o.textContent='paste a webhook URL';return;}
+      o.style.display='block'; o.textContent='saving…';
+      const d=await jpost('/notify',{set_webhook:hook}).catch(e=>({ok:false,error:String(e)}));
+      o.innerHTML=d.ok?'<span class="ok">webhook saved</span>':`<span class="med">${d.error||'failed'}</span>`;
+    };
+    window._notify_send=async function(){
+      const title=document.getElementById('notify-title')?.value.trim()||'HUNTR';
+      const text=document.getElementById('notify-text')?.value.trim();
+      const o=document.getElementById('notify-out'); if(!o)return;
+      o.style.display='block'; o.textContent='sending…';
+      const d=await jpost('/notify',{title,text}).catch(e=>({ok:false,error:String(e)}));
+      o.innerHTML=d.ok?`<span class="ok">sent (${d.format}, HTTP ${d.status})</span>`:`<span class="med">${d.error||'failed'}</span>`;
+    };
+
+    window._authsess=async function(action){
+      const o=document.getElementById('authsess-out'); if(!o)return;
+      o.style.display='block'; o.textContent=action==='refresh-all'?'refreshing expiring tokens…':'reading identities…';
+      try{
+        const d=await jpost('/auth-session',{action});
+        if(d.identities){
+          o.innerHTML=d.identities.length?d.identities.map(i=>{
+            const cls=({valid:'ok',expiring:'med',expired:'crit'})[i.state]||'';
+            return `  ${(i.name||'').padEnd(14)} <span class="${cls}">[${i.state}]</span>`+(i.remaining_s!=null?` exp in ${i.remaining_s}s`:'')+(i.can_refresh?'  ↻':'');
+          }).join('\n'):'<span class="med">no identities yet</span>';
+        } else if(d.results){
+          o.innerHTML=d.results.map(r=>`  ${(r.name||'').padEnd(14)} ${r.ok?'<span class="ok">✓</span>':'<span class="crit">✗</span>'} ${r.msg}`).join('\n');
+        } else {o.textContent=JSON.stringify(d);}
+      }catch(e){o.textContent=`error: ${e.message||e}`;}
+    };
+
+    // ── Tier 6 · Surface & Regression handlers ──────────────────────────
+    window._ws_probe=async function(){
+      const url=document.getElementById('ws-url')?.value.trim();
+      const token=document.getElementById('ws-tok')?.value.trim();
+      const o=document.getElementById('ws-out'); if(!o)return;
+      if(!url){o.style.display='block';o.textContent='enter a ws:// or wss:// URL';return;}
+      o.style.display='block'; o.textContent='handshaking + testing CSWSH / auth / graphql-ws…';
+      try{
+        const d=await jpost('/ws',{url,token:token||undefined});
+        if(d.error){o.textContent='error: '+d.error;return;}
+        renderFindings(o,d.findings||[],'no WS issues with tested vectors');
+        o.innerHTML=`authed handshake: HTTP ${d.authed_handshake}\n`+o.innerHTML;
+      }catch(e){o.textContent=`error: ${e.message||e}`;}
+    };
+
+    window._nuclei_gen=async function(){
+      const raw=document.getElementById('nucgen-finding')?.value.trim();
+      const o=document.getElementById('nucgen-out'); if(!o)return;
+      let finding; try{finding=JSON.parse(raw||'{}');}catch(e){o.style.display='block';o.textContent='finding must be valid JSON';return;}
+      o.style.display='block'; o.textContent='building template…';
+      try{
+        const d=await jpost('/nuclei-gen',{finding});
+        if(!d.ok){o.innerHTML=`<span class="med">${d.error||'failed'}</span>`;return;}
+        o.innerHTML=`<span class="ok">id ${d.id} · sev ${d.severity} · matchers: ${d.has_status_matcher?'status ':''}${d.has_word_matcher?'word':''||'none'}</span>\n\n`+
+          (d.template||'').replace(/</g,'&lt;');
+      }catch(e){o.textContent=`error: ${e.message||e}`;}
+    };
+
+    window._retest=async function(){
+      const id=document.getElementById('retest-id')?.value.trim();
+      const match=document.getElementById('retest-match')?.value.trim();
+      const token=document.getElementById('retest-tok')?.value.trim();
+      const o=document.getElementById('retest-out'); if(!o)return;
+      if(!id){o.style.display='block';o.textContent='enter a finding id (captured via exec-http)';return;}
+      o.style.display='block'; o.textContent='re-firing the stored request…';
+      try{
+        const d=await jpost('/retest',{id,match:match||undefined,token:token||undefined});
+        if(!d.ok){o.innerHTML=`<span class="med">${d.error||'failed'}</span>`;return;}
+        const cls=d.verdict==='STILL_VULNERABLE'?'crit':(d.verdict==='FIXED'?'ok':'med');
+        o.innerHTML=`<span class="${cls}">${d.verdict}</span>  (${d.basis})\n`+
+          `  ${d.method} ${d.url}\n  original HTTP ${d.original_status} → current HTTP ${d.current_status}`;
       }catch(e){o.textContent=`error: ${e.message||e}`;}
     };
 
