@@ -5,21 +5,19 @@ import os, secrets, hashlib, time
 from datetime import datetime, timedelta, timezone
 
 import jwt
-from passlib.context import CryptContext
+import bcrypt as _bcrypt
 
 SECRET_KEY     = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 ALGORITHM      = "HS256"
 SESSION_EXPIRE = int(os.environ.get("SESSION_EXPIRE_HOURS", 72))
 
-pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__truncate_error=False)
-
 
 def hash_password(plain: str) -> str:
-    return pwd_ctx.hash(plain)
+    return _bcrypt.hashpw(plain[:72].encode(), _bcrypt.gensalt()).decode()
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_ctx.verify(plain, hashed)
+    return _bcrypt.checkpw(plain[:72].encode(), hashed.encode())
 
 
 def create_session_token(user_id: str) -> str:
