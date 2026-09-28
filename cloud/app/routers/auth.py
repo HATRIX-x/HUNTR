@@ -34,7 +34,7 @@ def signup(body: SignupIn, db: Session = Depends(get_db)):
     if db.query(User).filter(User.email == body.email).first():
         raise HTTPException(409, "Email already registered")
     user = User(
-        id            = str(ulid.new()),
+        id            = ulid.new().str,
         email         = body.email,
         password_hash = hash_password(body.password),
         plan          = "free",

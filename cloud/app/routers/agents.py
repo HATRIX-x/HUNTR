@@ -30,7 +30,7 @@ def register(body: RegisterIn, user: User = Depends(current_user), db: Session =
     raw_token  = generate_agent_token()
     token_hash = hash_agent_token(raw_token)
     agent = Agent(
-        id         = str(ulid.new()),
+        id         = ulid.new().str,
         user_id    = user.id,
         name       = body.name,
         token_hash = token_hash,
