@@ -11,7 +11,7 @@ SECRET_KEY     = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 ALGORITHM      = "HS256"
 SESSION_EXPIRE = int(os.environ.get("SESSION_EXPIRE_HOURS", 72))
 
-pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__truncate_error=False)
 
 
 def hash_password(plain: str) -> str:
