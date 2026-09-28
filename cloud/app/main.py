@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .db import init_db
-from .routers import auth, agents, sync, findings, corpus
+from .routers import auth, agents, sync, findings, corpus, billing
 
 app = FastAPI(
     title="HUNTR Cloud",
@@ -36,6 +36,7 @@ app.include_router(agents.router)
 app.include_router(sync.router)
 app.include_router(findings.router)
 app.include_router(corpus.router)
+app.include_router(billing.router)
 
 
 @app.on_event("startup")
