@@ -495,6 +495,57 @@ class H(BaseHTTPRequestHandler):
                 return self._send(json.loads(r["out"]))
             except Exception:
                 return self._send({"ok": False, "error": r.get("err", "")[:500]})
+        if u.path == "/api/funnel":  # POST {action:log|stats|list, id?, target?, tool?, class?, stage?, amount?, note?}
+            action = b.get("action", "stats")
+            args = ["--json"]
+            if action == "log":
+                args += ["--log", "--stage", b.get("stage", "flagged")]
+                for k, fl in [("id", "--id"), ("target", "--target"), ("tool", "--tool"),
+                              ("class", "--class"), ("amount", "--amount"), ("note", "--note")]:
+                    if b.get(k) is not None: args += [fl, str(b[k])]
+            elif action == "list":
+                args += ["--list"]
+                if b.get("target"): args += ["--target", b["target"]]
+            else:
+                if b.get("target"): args += ["--target", b["target"]]
+            r = run("funnel.py", args, timeout=20)
+            try:
+                return self._send(json.loads(r["out"]))
+            except Exception:
+                return self._send({"ok": False, "error": r.get("err", "")[:500]})
+        if u.path == "/api/mass-assign":  # POST {url, method?, id_field?, id, token?, data?, verify_get?, fields?}
+            args = ["--url", b.get("url", ""), "--json"]
+            if b.get("method"): args += ["--method", b["method"]]
+            if b.get("id_field"): args += ["--id-field", b["id_field"]]
+            if b.get("id"): args += ["--id", str(b["id"])]
+            if b.get("token"): args += ["--token", b["token"]]
+            if b.get("data"): args += ["--data", b["data"]]
+            if b.get("verify_get"): args += ["--verify-get", b["verify_get"]]
+            if b.get("fields"): args += ["--fields", b["fields"]]
+            r = run("mass-assign.py", args, timeout=120)
+            try:
+                return self._send(json.loads(r["out"]))
+            except Exception:
+                return self._send({"error": r.get("err", "")[:500], "total": 0, "findings": []})
+        if u.path == "/api/pipeline":  # POST {finding, program?, stack?, template?, model?, token?, class?, no_verify?, no_draft?, skip_evidence?}
+            ftmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+            ftmp.write(json.dumps(b.get("finding", {}))); ftmp.close()
+            args = ["--finding-file", ftmp.name, "--json"]
+            if b.get("program"): args += ["--program", b["program"]]
+            if b.get("stack"): args += ["--stack", b["stack"]]
+            if b.get("template"): args += ["--template", b["template"]]
+            if b.get("model"): args += ["--model", b["model"]]
+            if b.get("token"): args += ["--token", b["token"]]
+            if b.get("class"): args += ["--class", b["class"]]
+            if b.get("no_verify"): args += ["--no-verify"]
+            if b.get("no_draft"): args += ["--no-draft"]
+            if b.get("skip_evidence"): args += ["--skip-evidence"]
+            r = run("finding-pipeline.py", args, b.get("target"), timeout=240)
+            os.unlink(ftmp.name)
+            try:
+                return self._send(json.loads(r["out"]))
+            except Exception:
+                return self._send({"ok": False, "error": r.get("err", "")[:500], "verdict": "?"})
         if u.path == "/api/disclosed":  # POST {program, handle?, limit?, weakness?}
             args = ["--program", b.get("program", ""), "--json"]
             if b.get("handle"): args += ["--handle", b["handle"]]
