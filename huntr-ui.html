@@ -2094,15 +2094,44 @@ function renderEvidence(el){
         </div>`;}).join('')}
     </div>`;
 }
+async function fetchCloudFindings(){
+  const url=cloudCfg('url'); const tok=cloudCfg('token');
+  if(!tok) return null;
+  try{
+    const r=await fetch(url+'/v1/findings',{headers:{'Authorization':'Bearer '+tok},signal:AbortSignal.timeout(5000)});
+    if(!r.ok) return null;
+    return await r.json();
+  }catch(e){ return null; }
+}
+
+function _sevLabel(s){ return {c:'CRITICAL',h:'HIGH',m:'MEDIUM',l:'LOW',i:'INFO'}[s]||s.toUpperCase(); }
+
 function renderFindings(el){
   const all=allFindingsFlat();
   const order={c:0,h:1,m:2,l:3,i:4};
   all.sort((a,b)=>(order[a.sev]||9)-(order[b.sev]||9));
   const scoped=!(!V.target||V.target==='all');
+  const hasCloud=!!cloudCfg('token');
+
   el.innerHTML=`
-    <div class="view-title">Findings${scoped?` <span class="scope-tag">${V.target}</span>`:''}</div>
-    <div class="view-sub">${scoped?`Confirmed vulnerabilities for ${V.target} only`:'All confirmed vulnerabilities across every target'}, sorted by severity.</div>
-    <div class="table-glass">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:20px">
+      <div>
+        <div class="view-title" style="margin-bottom:4px">Findings${scoped?` <span class="scope-tag">${V.target}</span>`:''}</div>
+        <div class="view-sub" style="margin-bottom:0">${scoped?`Confirmed vulnerabilities for ${V.target} only`:'All confirmed vulnerabilities across every target'}, sorted by severity.</div>
+      </div>
+      ${hasCloud?`
+      <div style="display:flex;background:rgba(0,0,0,0.3);border:1px solid var(--border2);border-radius:9px;padding:3px;gap:3px">
+        <button id="src-local" onclick="setFindingsSource('local')"
+          style="padding:6px 14px;border:none;border-radius:7px;font-size:12px;font-family:var(--sans);font-weight:600;cursor:pointer;background:var(--accent);color:#fff">
+          Local
+        </button>
+        <button id="src-cloud" onclick="setFindingsSource('cloud')"
+          style="padding:6px 14px;border:none;border-radius:7px;font-size:12px;font-family:var(--sans);font-weight:600;cursor:pointer;background:transparent;color:var(--text3)">
+          Cloud
+        </button>
+      </div>`:''}
+    </div>
+    <div class="table-glass" id="findings-list">
       ${all.length?all.map((f,i)=>`
         <div class="finding-row" onclick="nav('finding-report',{fi:${f.globalIdx}})">
           <span class="sev-tag sev-${f.sev}">${f.label}</span>
@@ -2111,6 +2140,45 @@ function renderFindings(el){
           <span class="fr-arr">›</span>
         </div>`).join(''):`<div class="empty-state">No findings yet. Start a hunt to discover vulnerabilities.</div>`}
     </div>`;
+}
+
+async function setFindingsSource(src){
+  document.getElementById('src-local').style.background = src==='local'?'var(--accent)':'transparent';
+  document.getElementById('src-local').style.color = src==='local'?'#fff':'var(--text3)';
+  document.getElementById('src-cloud').style.background = src==='cloud'?'var(--accent)':'transparent';
+  document.getElementById('src-cloud').style.color = src==='cloud'?'#fff':'var(--text3)';
+  const list=document.getElementById('findings-list');
+  if(!list) return;
+  if(src==='local'){
+    const all=allFindingsFlat();
+    const order={c:0,h:1,m:2,l:3,i:4};
+    all.sort((a,b)=>(order[a.sev]||9)-(order[b.sev]||9));
+    list.innerHTML=all.length?all.map((f,i)=>`
+      <div class="finding-row" onclick="nav('finding-report',{fi:${f.globalIdx}})">
+        <span class="sev-tag sev-${f.sev}">${f.label}</span>
+        <div><div class="fr-title">${f.title}</div><div class="fr-detail">${f.scope} · ${f.detail}</div></div>
+        <span class="fr-cvss">${f.cvss}</span>
+        <span class="fr-arr">›</span>
+      </div>`).join(''):`<div class="empty-state">No local findings.</div>`;
+    return;
+  }
+  // cloud
+  list.innerHTML='<div class="empty-state" style="color:var(--text3)">Loading from cloud…</div>';
+  const data=await fetchCloudFindings();
+  if(!data){ list.innerHTML='<div class="empty-state" style="color:var(--sev-c)">Could not reach cloud. Check your token in Settings.</div>'; return; }
+  const findings=data.findings||[];
+  if(!findings.length){ list.innerHTML='<div class="empty-state">No cloud findings yet. Hunt and sync to see them here.</div>'; return; }
+  const sev=s=>({critical:'c',high:'h',medium:'m',low:'l',info:'i'})[s]||'i';
+  list.innerHTML=findings.map(f=>`
+    <div class="finding-row">
+      <span class="sev-tag sev-${sev(f.severity)}">${_sevLabel(f.severity)}</span>
+      <div>
+        <div class="fr-title">${f.title||f.cls}</div>
+        <div class="fr-detail">${f.program||''} · ${f.endpoint||''} · <span style="font-family:var(--mono);font-size:10px;color:${f.status==='accepted'?'var(--green)':f.status==='submitted'?'var(--gold)':'var(--text3)'}">${f.status||'flagged'}</span></div>
+      </div>
+      <span class="fr-cvss">${f.verdict||'REVIEW'}</span>
+      <span class="fr-arr">›</span>
+    </div>`).join('');
 }
 
 /* ══════════════════════════════════════════════
