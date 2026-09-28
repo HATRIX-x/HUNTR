@@ -10,6 +10,9 @@ from sqlalchemy import (
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./huntr_dev.db")
+# Fly.io sets postgres:// but SQLAlchemy 2 requires postgresql://
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 # SQLite needs check_same_thread=False for FastAPI's thread pool
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
