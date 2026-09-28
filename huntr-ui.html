@@ -2387,36 +2387,201 @@ function renderCoverage(el){
     </div>`;
 }
 
+/* ── Cloud config helpers ── */
+const CLOUD_DEFAULTS = { url: 'https://api.huntr.app', token: '', plan: 'free' };
+function cloudCfg(k){ try{ return JSON.parse(localStorage.getItem('huntr_cloud')||'{}')[k]||CLOUD_DEFAULTS[k]; }catch(e){ return CLOUD_DEFAULTS[k]; } }
+function cloudCfgSet(patch){ try{ const c={...JSON.parse(localStorage.getItem('huntr_cloud')||'{}'),...patch}; localStorage.setItem('huntr_cloud',JSON.stringify(c)); }catch(e){} }
+
+async function cloudTest(){
+  const url=document.getElementById('s-cloud-url').value.trim().replace(/\/$/,'');
+  const tok=document.getElementById('s-cloud-token').value.trim();
+  const st=document.getElementById('s-cloud-status');
+  st.textContent='testing…'; st.style.color='var(--text3)';
+  try{
+    const r=await fetch(url+'/health',{signal:AbortSignal.timeout(4000)});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    if(tok){
+      const r2=await fetch(url+'/v1/billing/status',{headers:{'Authorization':'Bearer '+tok},signal:AbortSignal.timeout(4000)});
+      if(r2.ok){
+        const d=await r2.json();
+        cloudCfgSet({url,token:tok,plan:d.plan||'free'});
+        st.textContent='● connected · plan: '+(d.plan||'free'); st.style.color='var(--green)';
+        renderSettings(document.getElementById('view-container'));
+        return;
+      }
+    }
+    cloudCfgSet({url,token:tok});
+    st.textContent='● reachable (no token verified)'; st.style.color='var(--gold)';
+  }catch(e){
+    st.textContent='✗ unreachable — '+e.message; st.style.color='var(--sev-c)';
+  }
+}
+
+async function cloudSave(){
+  const url=document.getElementById('s-cloud-url').value.trim().replace(/\/$/,'');
+  const tok=document.getElementById('s-cloud-token').value.trim();
+  cloudCfgSet({url,token:tok});
+  // also push to local agent if running
+  try{
+    await fetch('http://127.0.0.1:8899/api/cloud/config',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({cloud_url:url,agent_token:tok}),
+      signal:AbortSignal.timeout(2000)});
+  }catch(e){}
+  const btn=document.getElementById('s-save-btn');
+  btn.textContent='Saved ✓'; btn.style.color='var(--green)';
+  setTimeout(()=>{btn.textContent='Save changes';btn.style.color='';},2000);
+}
+
+async function cloudPortal(){
+  const url=cloudCfg('url'); const tok=cloudCfg('token');
+  if(!tok){ alert('Set your agent token first.'); return; }
+  try{
+    const r=await fetch(url+'/v1/billing/portal',{headers:{'Authorization':'Bearer '+tok},signal:AbortSignal.timeout(5000)});
+    if(r.ok){ const d=await r.json(); window.open(d.portal_url,'_blank'); }
+    else alert('Could not open portal — check your token.');
+  }catch(e){ alert('Agent unreachable: '+e.message); }
+}
+
+async function cloudUpgrade(plan){
+  const url=cloudCfg('url'); const tok=cloudCfg('token');
+  if(!tok){ alert('Set your agent token first to upgrade.'); return; }
+  try{
+    const r=await fetch(url+'/v1/billing/checkout',{method:'POST',
+      headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},
+      body:JSON.stringify({plan}),signal:AbortSignal.timeout(5000)});
+    if(r.ok){ const d=await r.json(); window.open(d.checkout_url,'_blank'); }
+    else alert('Checkout failed — check your token.');
+  }catch(e){ alert('Agent unreachable: '+e.message); }
+}
+
 function renderSettings(el){
+  const plan=cloudCfg('plan');
+  const planColor = plan==='team'?'var(--gold)':plan==='pro'?'var(--accent)':'var(--text3)';
+  const planLabel = plan==='team'?'Team':plan==='pro'?'Pro':'Free';
+  const tok=cloudCfg('token');
+  const maskedTok = tok ? tok.slice(0,8)+'••••••••'+tok.slice(-4) : '';
+
   el.innerHTML=`
     <div class="view-title">Settings</div>
-    <div class="view-sub">Account, pipeline configuration, and integrations.</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;max-width:900px">
-      <div>
-        ${[{label:'Account',rows:[{k:'Email',v:'hunter@example.com'},{k:'Plan',v:'Hunter — 50 hunts/mo'},{k:'API Key',v:'hk_••••••••••••••'}]},{label:'Pipeline',rows:[{k:'Timeout per stage',v:'60s'},{k:'Auto-submit',v:'Disabled'},{k:'CVSS threshold',v:'≥ 5.0'}]}].map(sec=>`
-        <div class="table-glass" style="margin-bottom:12px">
-          <div class="card-head"><span class="card-head-label">${sec.label}</span></div>
-          ${sec.rows.map(r=>`<div style="display:flex;justify-content:space-between;padding:12px 20px;border-bottom:1px solid var(--border)"><span style="font-size:12px;color:var(--text2)">${r.k}</span><span style="font-size:12px;font-family:var(--mono);color:var(--text)">${r.v}</span></div>`).join('')}
-        </div>`).join('')}
+    <div class="view-sub">Cloud sync, pipeline configuration, and integrations.</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;max-width:960px">
+
+      <!-- LEFT column -->
+      <div style="display:flex;flex-direction:column;gap:12px">
+
+        <!-- Cloud sync -->
+        <div class="table-glass">
+          <div class="card-head" style="justify-content:space-between">
+            <span class="card-head-label">Cloud sync</span>
+            <span id="s-cloud-status" style="font-size:11px;font-family:var(--mono);color:${tok?'var(--green)':'var(--text3)'}">
+              ${tok?'● token set':'○ not connected'}
+            </span>
+          </div>
+          <div style="padding:16px 20px;display:flex;flex-direction:column;gap:10px">
+            <div>
+              <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">Cloud URL</label>
+              <input id="s-cloud-url" type="text" value="${cloudCfg('url')}"
+                style="width:100%;background:var(--bg);border:1px solid var(--border2);border-radius:7px;padding:8px 12px;font-family:var(--mono);font-size:12px;color:var(--text);outline:none"
+                onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border2)'"
+                placeholder="https://api.huntr.app">
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">Agent token</label>
+              <div style="position:relative">
+                <input id="s-cloud-token" type="password" value="${tok}"
+                  style="width:100%;background:var(--bg);border:1px solid var(--border2);border-radius:7px;padding:8px 36px 8px 12px;font-family:var(--mono);font-size:12px;color:var(--text);outline:none"
+                  onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border2)'"
+                  placeholder="hag_…">
+                <button onclick="const i=document.getElementById('s-cloud-token');i.type=i.type==='password'?'text':'password'"
+                  style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text3);font-size:11px">show</button>
+              </div>
+              ${maskedTok?`<div style="font-size:10px;font-family:var(--mono);color:var(--text3);margin-top:3px">current: ${maskedTok}</div>`:''}
+            </div>
+            <div style="display:flex;gap:8px;margin-top:4px">
+              <button class="btn-primary" style="padding:7px 16px;font-size:12px" onclick="cloudTest()">Test connection</button>
+              <button id="s-save-btn" class="btn-ghost" style="padding:7px 16px;font-size:12px" onclick="cloudSave()">Save changes</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Plan & billing -->
+        <div class="table-glass">
+          <div class="card-head"><span class="card-head-label">Plan &amp; billing</span></div>
+          <div style="padding:16px 20px">
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
+              <span style="font-size:22px;font-family:var(--mono);font-weight:700;color:${planColor}">${planLabel}</span>
+              ${plan==='free'?`
+              <div style="display:flex;gap:6px">
+                <button class="btn-primary" style="padding:6px 14px;font-size:12px" onclick="cloudUpgrade('pro')">Upgrade to Pro — $29/mo</button>
+                <button class="btn-ghost" style="padding:6px 14px;font-size:12px" onclick="cloudUpgrade('team')">Team — $79/mo</button>
+              </div>`:`
+              <button class="btn-ghost" style="padding:6px 14px;font-size:12px" onclick="cloudPortal()">Manage billing ↗</button>`}
+            </div>
+            ${[
+              {k:'Corpus sync',    v: plan!=='free'?'✓ enabled':'✗ Pro+'},
+              {k:'Cloud dashboard',v: plan!=='free'?'✓ enabled':'✗ Pro+'},
+              {k:'Finding history',v: plan!=='free'?'✓ synced':'local only'},
+              {k:'Shared corpus',  v: plan==='team'?'✓ team':'read-only'},
+            ].map(r=>`
+            <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+              <span style="font-size:12px;color:var(--text2)">${r.k}</span>
+              <span style="font-size:12px;font-family:var(--mono);color:${r.v.startsWith('✓')?'var(--green)':'var(--text3)'}">${r.v}</span>
+            </div>`).join('')}
+          </div>
+        </div>
+
+        <!-- Pipeline -->
+        <div class="table-glass">
+          <div class="card-head"><span class="card-head-label">Pipeline</span></div>
+          ${[{k:'Timeout per stage',v:'60s'},{k:'Auto-submit',v:'Disabled'},{k:'CVSS threshold',v:'≥ 5.0'},{k:'Corpus dedup',v:plan!=='free'?'✓ active':'✗ Pro+'}].map(r=>`
+          <div style="display:flex;justify-content:space-between;padding:12px 20px;border-bottom:1px solid var(--border)">
+            <span style="font-size:12px;color:var(--text2)">${r.k}</span>
+            <span style="font-size:12px;font-family:var(--mono);color:${r.v.startsWith('✓')?'var(--green)':r.v.startsWith('✗')?'var(--text3)':'var(--text)'}">${r.v}</span>
+          </div>`).join('')}
+        </div>
       </div>
-      <div>
-        <div class="table-glass" style="margin-bottom:12px">
+
+      <!-- RIGHT column -->
+      <div style="display:flex;flex-direction:column;gap:12px">
+
+        <!-- Agent install -->
+        <div class="table-glass">
+          <div class="card-head"><span class="card-head-label">Background service</span></div>
+          <div style="padding:16px 20px;display:flex;flex-direction:column;gap:8px">
+            <div style="font-size:12px;color:var(--text3);margin-bottom:4px">Install the agent as a system service so it starts automatically on login.</div>
+            ${[
+              {cmd:'python tools/service.py install', label:'Install + enable'},
+              {cmd:'python tools/service.py status',  label:'Check status'},
+              {cmd:'python tools/service.py logs',    label:'View logs'},
+            ].map(c=>`
+            <div style="background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:9px 12px;display:flex;justify-content:space-between;align-items:center">
+              <code style="font-size:11px;color:var(--accent)">${c.cmd}</code>
+              <span style="font-size:10px;color:var(--text3)">${c.label}</span>
+            </div>`).join('')}
+          </div>
+        </div>
+
+        <!-- Integrations -->
+        <div class="table-glass">
           <div class="card-head"><span class="card-head-label">Integrations</span></div>
-          ${['HackerOne','Bugcrowd','Intigriti','Slack','Webhook'].map(n=>`
+          ${['HackerOne','Bugcrowd','Intigriti','YesWeHack','Slack'].map(n=>`
           <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 20px;border-bottom:1px solid var(--border)">
             <span style="font-size:12px;color:var(--text)">${n}</span>
             <button class="btn-ghost" style="padding:5px 12px;font-size:11px" onclick="alert('${n} — coming soon.')">Connect</button>
           </div>`).join('')}
         </div>
+
+        <!-- State & resume -->
         <div class="table-glass">
           <div class="card-head"><span class="card-head-label">State &amp; resume</span><span style="font-size:11px;font-family:var(--mono);color:var(--green)">● autosaved</span></div>
-          ${[{k:'Hunt state',v:'saved continuously'},{k:'On reconnect',v:'resumes at last cell'},{k:'Findings + evidence',v:'persisted per hunt'},{k:'Audit log',v:'every request recorded'}].map(r=>`<div style="display:flex;justify-content:space-between;padding:12px 20px;border-bottom:1px solid var(--border)"><span style="font-size:12px;color:var(--text2)">${r.k}</span><span style="font-size:12px;font-family:var(--mono);color:var(--text)">${r.v}</span></div>`).join('')}
+          ${[{k:'Hunt state',v:'saved continuously'},{k:'On reconnect',v:'resumes at last cell'},{k:'Findings + evidence',v:'persisted per hunt'},{k:'Audit log',v:'every request recorded'}].map(r=>`
+          <div style="display:flex;justify-content:space-between;padding:12px 20px;border-bottom:1px solid var(--border)">
+            <span style="font-size:12px;color:var(--text2)">${r.k}</span>
+            <span style="font-size:12px;font-family:var(--mono);color:var(--text)">${r.v}</span>
+          </div>`).join('')}
         </div>
       </div>
-    </div>
-    <div style="margin-top:16px;display:flex;gap:8px">
-      <button class="btn-primary" onclick="alert('Saved.')">Save changes</button>
-      <button class="btn-ghost" style="color:var(--red);border-color:rgba(239,68,68,0.2)" onclick="alert('Logged out.')">Log out</button>
     </div>`;
 }
 
