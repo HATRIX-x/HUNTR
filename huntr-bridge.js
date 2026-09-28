@@ -613,6 +613,24 @@
       <div class="tool-out" id="idor-out" style="display:none"></div>
     </div>`);
 
+    el.insertAdjacentHTML('beforeend',`<div class="tool-card" id="massassign-card">
+      <div class="tool-card-h"><span class="tool-card-title">Mass-assignment / escalation</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">promote a write into ATO · privesc · lockout · cross-tenant (the depth play)</span></div>
+      <div class="tool-row">
+        <input class="tool-inp" id="ma-url" placeholder="write endpoint: https://api.acme.com/system/v1/user/update"/>
+        <input class="tool-inp" id="ma-method" placeholder="method" value="PUT" style="max-width:90px"/>
+        <input class="tool-inp" id="ma-idfield" placeholder="id field" value="id" style="max-width:110px"/>
+      </div>
+      <div class="tool-row">
+        <input class="tool-inp" id="ma-id" placeholder="target object id (victim)"/>
+        <input class="tool-inp" id="ma-tok" placeholder="Bearer token"/>
+      </div>
+      <div class="tool-row">
+        <input class="tool-inp" id="ma-verify" placeholder="verify GET (confirms it stuck): https://api.acme.com/system/v1/user/{id}"/>
+        <button class="tool-btn pri" onclick="window._mass_assign()">Probe fields</button>
+      </div>
+      <div class="tool-out" id="massassign-out" style="display:none"></div>
+    </div>`);
+
     el.insertAdjacentHTML('beforeend',`<div class="tool-card" id="bypass-card">
       <div class="tool-card-h"><span class="tool-card-title">Auth-bypass matrix</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">header strip · X-Original-URL · verb swap · path/case/ext mutation</span></div>
       <div class="tool-row">
@@ -700,6 +718,22 @@
       <div class="tool-out" id="draft-out" style="display:none"></div>
     </div>`);
 
+    // ── Triage Pipeline (capstone) ──────────────────────────────────────
+    el.insertAdjacentHTML('beforeend',`<div style="margin:26px 0 12px;font-family:var(--sans);font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--accent,#A78BFA)">Triage Pipeline</div>`);
+
+    el.insertAdjacentHTML('beforeend',`<div class="tool-card" id="pipeline-card" style="border-color:var(--accent,#A78BFA)">
+      <div class="tool-card-h"><span class="tool-card-title">Finding pipeline</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">verify → dedup → evidence → draft → SUBMIT/REVIEW/HOLD (never auto-submits)</span></div>
+      <div class="tool-row">
+        <input class="tool-inp" id="pipeline-prog" placeholder="program: acme" style="max-width:180px"/>
+        <input class="tool-inp" id="pipeline-tok" placeholder="token (for re-fire, optional)"/>
+        <button class="tool-btn pri" onclick="window._finding_pipeline()">Run pipeline</button>
+      </div>
+      <div class="tool-row">
+        <textarea class="tool-inp" id="pipeline-finding" placeholder='finding JSON: {"id":"F1","url":"https://api.acme.com/v1/orders/55","attack":"idor","endpoint":"/v1/orders/{id}","title":"…","severity":"high","match":"proof string"}' style="min-height:72px;font-family:var(--mono);font-size:12px"></textarea>
+      </div>
+      <div class="tool-out" id="pipeline-out" style="display:none"></div>
+    </div>`);
+
     // ── Tier 6 · Evidence & Dedup ───────────────────────────────────────
     el.insertAdjacentHTML('beforeend',`<div style="margin:26px 0 12px;font-family:var(--sans);font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--gold,#E7C983)">Evidence &amp; Dedup</div>`);
 
@@ -733,6 +767,27 @@
         <button class="tool-btn ghost" onclick="window._rategov('status')">Status</button>
       </div>
       <div class="tool-out" id="rategov-out" style="display:none"></div>
+    </div>`);
+
+    el.insertAdjacentHTML('beforeend',`<div class="tool-card" id="funnel-card">
+      <div class="tool-card-h"><span class="tool-card-title">Detection funnel</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">flagged → confirmed → submitted → accepted · measures your real false-positive rate</span></div>
+      <div class="tool-row">
+        <input class="tool-inp" id="funnel-target" placeholder="target (blank = all)"/>
+        <button class="tool-btn pri" onclick="window._funnel_stats()">Stats</button>
+        <button class="tool-btn ghost" onclick="window._funnel_list()">List</button>
+      </div>
+      <div class="tool-row">
+        <input class="tool-inp" id="funnel-id" placeholder="finding id" style="max-width:120px"/>
+        <input class="tool-inp" id="funnel-class" placeholder="class" style="max-width:110px"/>
+        <select class="tool-inp" id="funnel-stage" style="max-width:130px">
+          <option value="flagged">flagged</option><option value="confirmed">confirmed</option>
+          <option value="submitted">submitted</option><option value="accepted">accepted</option>
+          <option value="dupe">dupe</option><option value="rejected">rejected</option><option value="paid">paid</option>
+        </select>
+        <input class="tool-inp" id="funnel-amount" placeholder="$ (if paid/accepted)" style="max-width:130px"/>
+        <button class="tool-btn ghost" onclick="window._funnel_log()">Log event</button>
+      </div>
+      <div class="tool-out" id="funnel-out" style="display:none"></div>
     </div>`);
 
     // ── Tier 6 · Integrations ───────────────────────────────────────────
@@ -1080,6 +1135,30 @@
       }catch(e){o.textContent=`error: ${e.message||e}`;}
     };
 
+    window._mass_assign=async function(){
+      const url=document.getElementById('ma-url')?.value.trim();
+      const method=document.getElementById('ma-method')?.value.trim()||'PUT';
+      const id_field=document.getElementById('ma-idfield')?.value.trim()||'id';
+      const id=document.getElementById('ma-id')?.value.trim();
+      const token=document.getElementById('ma-tok')?.value.trim();
+      const verify_get=document.getElementById('ma-verify')?.value.trim();
+      const o=document.getElementById('massassign-out'); if(!o)return;
+      if(!url||!id){o.style.display='block';o.textContent='enter the write endpoint and a target object id';return;}
+      o.style.display='block'; o.textContent='probing sensitive fields (password · role · active · tenantId …)';
+      try{
+        const d=await jpost('/mass-assign',{url,method,id_field,id,token:token||undefined,verify_get:verify_get||undefined});
+        if(d.error){o.textContent='error: '+d.error;return;}
+        const f=(d.findings||[]);
+        if(!f.length){o.innerHTML='<span class="ok">✓ no sensitive fields accepted — write DTO is validated</span>';return;}
+        o.innerHTML=`accepted:${d.total}  <span class="crit">confirmed:${d.confirmed}</span>  chains: ${(d.impacts||[]).join(', ')}\n\n`+
+          f.map(x=>{
+            const cls=({critical:'crit',high:'high',medium:'med',low:'ok'})[x.severity]||'';
+            const tag=x.reflected===true?'✓CONFIRMED':'·accepted';
+            return `  <span class="${cls}">[${x.severity.toUpperCase()}]</span> ${x.impact.padEnd(13)} ${(x.field||'').padEnd(16)} ${tag}`;
+          }).join('\n');
+      }catch(e){o.textContent=`error: ${e.message||e}`;}
+    };
+
     window._auth_bypass=async function(){
       const url=document.getElementById('bypass-url')?.value.trim();
       const token=document.getElementById('bypass-tok')?.value.trim();
@@ -1190,6 +1269,32 @@
       }catch(e){o.textContent=`error: ${e.message||e}`;}
     };
 
+    // ── Triage Pipeline handler ─────────────────────────────────────────
+    window._finding_pipeline=async function(){
+      const program=document.getElementById('pipeline-prog')?.value.trim();
+      const token=document.getElementById('pipeline-tok')?.value.trim();
+      const raw=document.getElementById('pipeline-finding')?.value.trim();
+      const o=document.getElementById('pipeline-out'); if(!o)return;
+      let finding; try{finding=JSON.parse(raw||'{}');}catch(e){o.style.display='block';o.textContent='finding must be valid JSON';return;}
+      if(!finding.url&&!finding.endpoint){o.style.display='block';o.textContent='finding needs at least a url or endpoint';return;}
+      o.style.display='block'; o.textContent='verify → dedup → evidence → draft …';
+      try{
+        const d=await jpost('/pipeline',{finding,program:program||undefined,token:token||undefined});
+        if(!d.ok){o.innerHTML=`<span class="med">${d.error||'pipeline failed'}</span>`;return;}
+        const vcls=({SUBMIT:'ok',REVIEW:'med',HOLD:'crit'})[d.verdict]||'';
+        const st=d.stages||{};
+        const v=st.verify||{}, dd=st.dedup||{}, ev=st.evidence||{}, dr=st.draft||{};
+        let html=`<span class="${vcls}" style="font-weight:700">▸ ${d.verdict}</span>  <span style="color:var(--text3)">${d.class} @ ${d.endpoint}</span>\n\n`;
+        html+=(d.reasons||[]).map(r=>`  · ${r}`).join('\n')+'\n\n';
+        html+=`  verify:   ${v.reproduced||(v.skipped?'skipped':'—')}`+(v.original_status!=null?`  (HTTP ${v.original_status}→${v.current_status})`:'')+'\n';
+        html+=`  dedup:    ${dd.verdict||'—'}  ${dd.prob!=null?dd.prob+'% dup':''}  ${(dd.nearest||'').slice(0,44)}\n`;
+        html+=`  evidence: ${ev.skipped?'—':(ev.bundle||'—')}\n`;
+        html+=`  draft:    ${dr.title?('“'+dr.title+'”  score '+(dr.score||'?')+'/100'):(dr.error?('<span class="med">'+dr.error+'</span>'):'—')}`;
+        if(d.report_markdown){ html+='\n\n'+'─'.repeat(48)+'\n'+d.report_markdown.replace(/</g,'&lt;'); }
+        o.innerHTML=html;
+      }catch(e){o.textContent=`error: ${e.message||e}`;}
+    };
+
     // ── Tier 6 · Evidence & Dedup handlers ──────────────────────────────
     window._disclosed_index=async function(){
       const program=document.getElementById('disclosed-prog')?.value.trim();
@@ -1233,6 +1338,52 @@
         else if(d.set){o.innerHTML=`<span class="ok">set ${d.set}: rps=${d.rps} burst=${d.burst}</span>`;}
         else{o.textContent=JSON.stringify(d);}
       }catch(e){o.textContent=`error: ${e.message||e}`;}
+    };
+
+    const _pct=v=>v==null?'n/a':Math.round(v*100)+'%';
+    window._funnel_stats=async function(){
+      const target=document.getElementById('funnel-target')?.value.trim();
+      const o=document.getElementById('funnel-out'); if(!o)return;
+      o.style.display='block'; o.textContent='computing funnel…';
+      try{
+        const d=await jpost('/funnel',{action:'stats',target:target||undefined});
+        if(!d.ok){o.innerHTML=`<span class="med">${d.error||'no data'}</span>`;return;}
+        const m=d.metrics||{};
+        let html=`<span class="hi">flagged ${m.flagged}</span> → confirmed ${m.confirmed} → submitted ${m.submitted}\n`+
+          `accepted ${m.accepted}  dupe ${m.dupe}  rejected ${m.rejected}  (adjudicated ${m.adjudicated})\n\n`+
+          `  <span class="crit">false-positive rate</span> : ${_pct(m.false_positive_rate)}\n`+
+          `  acceptance rate     : ${_pct(m.acceptance_rate)}\n`+
+          `  <span class="ok">unique rate</span>         : ${_pct(m.unique_rate)}\n`+
+          `  flag→submit ratio   : ${_pct(m.flag_to_submit)}\n`+
+          `  paid total          : $${m.paid_total}`;
+        if((d.fp_by_class||[]).length){
+          html+='\n\n  FP by class:\n'+d.fp_by_class.map(r=>`    ${(r.class||'?').padEnd(12)} ${_pct(r.fp_rate)}  (a${r.accepted}/d${r.dupe}/r${r.rejected})`).join('\n');
+        }
+        o.innerHTML=html;
+      }catch(e){o.textContent=`error: ${e.message||e}`;}
+    };
+    window._funnel_list=async function(){
+      const target=document.getElementById('funnel-target')?.value.trim();
+      const o=document.getElementById('funnel-out'); if(!o)return;
+      o.style.display='block'; o.textContent='loading…';
+      try{
+        const d=await jpost('/funnel',{action:'list',target:target||undefined});
+        const f=(d.findings||[]);
+        o.innerHTML=f.length?f.map(r=>`  ${(r.target||'?').padEnd(12)} ${(r.id||'?').padEnd(8)} [${(r.stage||'').padEnd(9)}] ${r.class||''}${r.amount?'  $'+r.amount:''}`).join('\n'):'<span class="med">no findings logged yet</span>';
+      }catch(e){o.textContent=`error: ${e.message||e}`;}
+    };
+    window._funnel_log=async function(){
+      const o=document.getElementById('funnel-out'); if(!o)return;
+      const body={action:'log',
+        target:document.getElementById('funnel-target')?.value.trim()||'default',
+        id:document.getElementById('funnel-id')?.value.trim(),
+        class:document.getElementById('funnel-class')?.value.trim()||undefined,
+        stage:document.getElementById('funnel-stage')?.value,
+        amount:document.getElementById('funnel-amount')?.value.trim()||undefined};
+      if(!body.id){o.style.display='block';o.textContent='enter a finding id to log';return;}
+      o.style.display='block'; o.textContent='logging…';
+      const d=await jpost('/funnel',body).catch(e=>({ok:false,error:String(e)}));
+      o.innerHTML=d.ok?`<span class="ok">logged ${body.target}:${body.id} → ${body.stage}</span>`:`<span class="med">${d.error||'failed'}</span>`;
     };
 
     // ── Tier 6 · Integrations handlers ──────────────────────────────────

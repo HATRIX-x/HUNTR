@@ -46,6 +46,7 @@ python3 tools/huntr-server.py
 | `rate-limit.py` | Throttle detection + bypass (X-Forwarded-For / null-Origin / UA / path-case) |
 | `oauth-probe.py` | redirect_uri, state/CSRF, implicit leak, PKCE downgrade, scope escalation, code reuse |
 | `logic-fuzz.py` | Per-field JSON mutation: negatives, 2^31/2^63, type confusion, bool flip, array-wrap, dup key |
+| `mass-assign.py` | Promote a write into a chain: probes `password`/`role`/`type`/`active`/`tenantId`… for mass-assignment → ATO / privesc / lockout / cross-tenant, confirmed by GET reflection |
 
 ### Tier 5 — LLM intelligence
 | Tool | Purpose |
@@ -69,6 +70,15 @@ the environment (or `--api-key`); they degrade gracefully when no key is set.
 | `ws-probe.py` | WebSocket: CSWSH, missing auth, origin reflection, graphql-ws subscriptions |
 | `nuclei-gen.py` | Turn a confirmed finding into a reusable Nuclei YAML template |
 | `retest.py` | Re-fire a stored finding to confirm still-vulnerable / fixed (retest bonus) |
+| `funnel.py` | Log findings `flagged → confirmed → submitted → accepted` and compute the real false-positive / acceptance / unique rates |
+
+### Capstone — triage pipeline
+| Tool | Purpose |
+|------|---------|
+| `finding-pipeline.py` | One command per finding: verify (retest + adversarial-verify) → dedup-score → evidence-bundle → report-draft → **SUBMIT / REVIEW / HOLD**. Never auto-submits. |
+
+`finding-pipeline.py` orchestrates the tools above, so a raw probe hit comes out as a
+verified, deduped, evidence-backed, draft-ready decision. Exit: `0` SUBMIT · `1` REVIEW · `2` HOLD.
 
 ## Requirements
 
@@ -90,3 +100,30 @@ The server injects `huntr-bridge.js` into the UI at runtime. The bridge override
 UI render functions to fire live engine calls instead of demo data.
 
 All tools accept `--json` for structured output and are safe to pipe.
+
+## Engineering
+
+- **`tools/huntrlib.py`** — the shared core (arg parsing, one HTTP client with SSL /
+  auth / timeout / size-cap / uniform error handling, the JSON envelope). New tools
+  `import huntrlib as H` instead of re-implementing it, so a fix lands once.
+- **`tests/`** — stdlib `unittest`, zero deps. A reusable in-process mock target
+  (`tests/mock_target.py`) plus regression tests that lock in real bugs found in review
+  (e.g. mass-assign's reflection false-positive). Run:
+
+  ```bash
+  python3 -m unittest discover -s tests -p "test_*.py"
+  ```
+- **CI** — `.github/workflows/ci.yml` byte-compiles every tool and runs the suite on
+  each push and PR.
+
+## Measuring detection quality
+
+`funnel.py` turns "is it accurate?" into a number. Log each finding as it moves:
+
+```bash
+funnel.py --log --id F1 --target acme --tool mass-assign --class idor --stage flagged
+funnel.py --log --id F1 --target acme --stage accepted --amount 500
+funnel.py --stats --target acme          # false-positive rate, acceptance, unique, paid
+```
+False-positive rate = `rejected / (accepted + dupe + rejected)` — of everything a program
+adjudicated, how much it deemed not-a-bug.
