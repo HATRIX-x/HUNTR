@@ -1,0 +1,27 @@
+# Fly.io deployment config
+app = "huntr-cloud"
+primary_region = "iad"
+
+[build]
+
+[http_service]
+  internal_port = 8000
+  force_https   = true
+  auto_stop_machines  = true
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type       = "connections"
+    hard_limit = 100
+    soft_limit = 80
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
+
+[env]
+  ENV = "production"
+
+# Set secrets with: fly secrets set SECRET_KEY=... DATABASE_URL=... STRIPE_SECRET_KEY=...

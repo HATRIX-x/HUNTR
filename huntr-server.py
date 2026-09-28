@@ -782,6 +782,44 @@ class H(BaseHTTPRequestHandler):
             ids[name] = rec
             p.write_text(json.dumps(ids, indent=2))
             return self._send({"ok": True, "identities": list(ids.keys())})
+        # ── Cloud config / sync ─────────────────────────────────────────
+        if u.path == "/api/cloud/config":  # POST {agent_token?, cloud_url?}
+            args = []
+            if b.get("agent_token"): args += ["--set-token", b["agent_token"]]
+            if b.get("cloud_url"):   args += ["--set-url",   b["cloud_url"]]
+            if not args:
+                r = run("cloud-config.py", ["--show"])
+                return self._send({"ok": True, "output": r.get("out", "")})
+            for i in range(0, len(args), 2):
+                run("cloud-config.py", args[i:i+2])
+            return self._send({"ok": True})
+        if u.path == "/api/cloud/sync":  # POST {finding_file?, finding?, funnel?, flush?}
+            if b.get("flush"):
+                r = run("sync.py", ["--flush"])
+                try:    return self._send(json.loads(r["out"]))
+                except: return self._send({"ok": True, "output": r.get("out", "")})
+            if b.get("funnel"):
+                ev = b["funnel"]
+                args = ["--funnel-finding-id", ev.get("finding_id",""),
+                        "--funnel-stage", ev.get("stage","confirmed")]
+                if ev.get("amount"): args += ["--amount", str(ev["amount"])]
+                if ev.get("program"): args += ["--program", ev["program"]]
+                r = run("sync.py", args)
+                try:    return self._send(json.loads(r["out"]))
+                except: return self._send({"ok": False, "error": r.get("err","")[:300]})
+            if b.get("finding"):
+                ftmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+                ftmp.write(json.dumps(b["finding"])); ftmp.close()
+                args = ["--finding-file", ftmp.name]
+                if b.get("program"): args += ["--program", b["program"]]
+                r = run("sync.py", args)
+                os.unlink(ftmp.name)
+                try:    return self._send(json.loads(r["out"]))
+                except: return self._send({"ok": False, "error": r.get("err","")[:300]})
+            return self._send({"error": "pass finding, funnel, or flush:true"}, 400)
+        if u.path == "/api/cloud/status":  # POST {}
+            r = run("sync.py", ["--status"])
+            return self._send({"ok": True, "output": r.get("out","")})
         return self._send({"error": "unknown route"}, 404)
 
 
