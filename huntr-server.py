@@ -129,6 +129,31 @@ class H(BaseHTTPRequestHandler):
             return self._send(run("hunt-next.py", ["--stack", q.get("stack", "generic"), "--json"], t))
         if u.path == "/api/status":
             return self._send(run("hunt-status.py", [], t))
+        if u.path == "/api/hunt/status":  # GET ?target=<t> — live state of a dashboard-driven hunt
+            rf = hunt_dir(q.get("target", "")) / "run.json"
+            if rf.exists():
+                try:
+                    return self._send(json.loads(rf.read_text()))
+                except Exception:
+                    return self._send({"status": "none"})
+            return self._send({"status": "none"})
+        if u.path == "/api/log-doctor":  # GET ?apply=1 — the self-healing agent: diagnose + fix engine problems
+            a = ["--json"] + ([] if q.get("apply") else ["--dry"])
+            r = run("log-doctor.py", a, timeout=90)
+            try:
+                return self._send(json.loads(r["out"]))
+            except Exception:
+                return self._send({"ok": False, "error": r.get("err", "")[:400], "problems": [], "fixes_applied": []})
+        if u.path == "/api/claude-account":  # how the engine authenticates to Claude (API key vs linked account)
+            try:
+                import importlib.util as _il
+                _spec = _il.spec_from_file_location("llm_auth", str(TOOLS / "llm_auth.py"))
+                _m = _il.module_from_spec(_spec); _spec.loader.exec_module(_m)
+                st = _m.account_status(); _h, mode = _m.llm_headers()
+                st["mode"] = mode
+                return self._send(st)
+            except Exception as e:
+                return self._send({"linked": False, "mode": None, "error": str(e)[:200]})
         if u.path == "/api/earnings":  # the bounty-business ledger summary
             r = run("earnings.py", ["--json"])
             try:
@@ -242,6 +267,57 @@ class H(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         b = self._body()
         t = b.get("target")
+        if u.path == "/api/hunt/start":  # POST {target, program?, mode?, scope_types?, session_token?, token2?} — start a REAL hunt
+            if not t:
+                return self._send({"ok": False, "error": "no target"}, 400)
+            hd = hunt_dir(t)
+            # credentials go to a 0600 file (never argv — keeps tokens out of `ps`)
+            st = (b.get("session_token") or "").strip()
+            t2 = (b.get("token2") or "").strip()
+            cf = hd / "creds.json"
+            try:
+                if st or t2:
+                    cf.write_text(json.dumps({"session_token": st, "token2": t2}))
+                    try: os.chmod(cf, 0o600)
+                    except Exception: pass
+                elif cf.exists():
+                    cf.unlink()
+            except Exception:
+                pass
+            args = [sys.executable, str(TOOLS / "hunt-run.py"), "--target", t,
+                    "--program", b.get("program", ""), "--mode", b.get("mode", "grey"),
+                    "--scope-types", ",".join(b.get("scope_types") or ["web", "api"])]
+            env = dict(os.environ); env["HUNT_DIR"] = str(hd)
+            try:
+                lf = open(hd / "run.log", "a")
+                subprocess.Popen(args, stdout=lf, stderr=lf, env=env, start_new_session=True)
+                return self._send({"ok": True, "target": t})
+            except Exception as e:
+                return self._send({"ok": False, "error": str(e)[:200]}, 500)
+        if u.path == "/api/hunt/control":  # POST {target, action: stop|pause|resume}
+            tgt = t; act = (b.get("action") or "").strip()
+            hd = hunt_dir(tgt); pidf = hd / "run.pid"
+            try:
+                pid = int(pidf.read_text().strip())
+            except Exception:
+                return self._send({"ok": False, "error": "no running hunt"}, 404)
+            import signal
+            sig = {"stop": signal.SIGTERM, "pause": signal.SIGSTOP, "resume": signal.SIGCONT}.get(act)
+            if not sig:
+                return self._send({"ok": False, "error": "bad action"}, 400)
+            try:
+                os.killpg(os.getpgid(pid), sig)
+            except Exception as e:
+                return self._send({"ok": False, "error": str(e)[:120]}, 500)
+            if act == "stop":
+                try:
+                    rf = hd / "run.json"; d = json.loads(rf.read_text())
+                    d["status"] = "stopped"; d["stage"] = "Stopped"
+                    d.setdefault("logs", []).append({"t": "warn", "v": "■ hunt stopped by operator"})
+                    rf.write_text(json.dumps(d))
+                except Exception:
+                    pass
+            return self._send({"ok": True, "action": act})
         if u.path == "/api/js-diff/add-url":  # POST {target, url}
             r = run("js-diff.py", ["--target", b.get("target","default"), "--add-url", b.get("url","")])
             return self._send({"ok": r["code"] == 0, "msg": r["out"].strip()})
