@@ -28,6 +28,14 @@ import sys, os, re, json, time, subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
+# sync is optional — works without cloud config
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import sync as _sync
+    _HAS_SYNC = True
+except ImportError:
+    _HAS_SYNC = False
+
 TOOLS = Path(__file__).resolve().parent
 
 
@@ -220,6 +228,15 @@ def main():
         "report_markdown": report_md,
     }
 
+    # ── SYNC to cloud (non-blocking; queues offline) ───────────────────
+    sync_result = {"ok": False, "skipped": True}
+    if _HAS_SYNC and not flag("--no-sync") and verdict in ("SUBMIT", "REVIEW"):
+        sync_payload = {**finding, "class": cls, "endpoint": endpoint,
+                        "severity": severity, "verdict": verdict,
+                        "dup_prob": dup_prob, "report_score": stages.get("draft", {}).get("score")}
+        sync_result = _sync.push_finding(sync_payload, program=program)
+    result["sync"] = sync_result
+
     if flag("--json"):
         print(json.dumps(result))
         sys.exit(0 if verdict == "SUBMIT" else 1 if verdict == "REVIEW" else 2)
@@ -241,6 +258,12 @@ def main():
         print(f"  draft:    “{dr['title']}”  score {dr.get('score')}/100")
     if report_md:
         print("\n" + "─" * 60 + "\n" + report_md)
+    if sync_result.get("ok"):
+        print("  cloud:    synced ✓")
+    elif sync_result.get("queued"):
+        print("  cloud:    offline — queued for retry")
+    elif not sync_result.get("skipped"):
+        print(f"  cloud:    not configured (run: huntr config set-token <token>)")
     print("\n  [pipeline] never auto-submits — review before sending.")
     sys.exit(0 if verdict == "SUBMIT" else 1 if verdict == "REVIEW" else 2)
 
