@@ -275,7 +275,11 @@ def phase_surface():
         host = h.get("host")
         if not host:
             continue
-        url = (h.get("scheme") or "https") + "://" + host   # honor http targets (localhost/dev/plain-http)
+        sch = h.get("scheme")
+        if not sch:                                  # determine the working scheme per crawl target
+            try: sch = probe_host(host)[2]
+            except Exception: sch = "https"
+        url = (sch or "https") + "://" + host        # honor http targets (localhost/dev/plain-http)
         if has("katana"):
             log("cmd", "$ katana -u " + url + " -silent -d 2")
             out, _, _ = sh(["katana", "-u", url, "-silent", "-d", "2", "-c", "15",
