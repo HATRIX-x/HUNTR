@@ -130,7 +130,7 @@ def tool_json(tool, args, timeout=240):
     return None
 
 
-def add_finding(sev, title, detail, endpoint, cvss="", cls="", verdict=""):
+def add_finding(sev, title, detail, endpoint, cvss="", cls="", verdict="", det=None):
     sev = sev if sev in SEVLABEL else SEVMAP.get((sev or "i").lower(), "i")
     key = (title + "|" + (endpoint or "")).lower()
     if any((f["title"] + "|" + (f.get("endpoint") or "")).lower() == key for f in STATE["findings"]):
@@ -139,10 +139,13 @@ def add_finding(sev, title, detail, endpoint, cvss="", cls="", verdict=""):
         "sev": sev, "label": SEVLABEL[sev], "title": title, "detail": detail or "",
         "cvss": cvss or "", "endpoint": endpoint or "", "cls": cls or "",
     }
-    if verdict:                       # tool-level evidence (deterministic) — never gated on the AI judge
+    if verdict:                       # tool-level evidence — reaches the submit queue without the AI judge
         f["verdict"] = verdict
-        if verdict == "confirmed":
-            f["_det"] = True          # the judge may enrich this but must not drop it
+        # _det = "undroppable": the judge may enrich but must not drop it. Default on for a confirmed
+        # verdict (near-certain tools like sqlmap/OAST), but callers can pass det=False for
+        # higher-FP-rate tools (e.g. nuclei) so the judge can still veto a false positive.
+        if det if det is not None else (verdict == "confirmed"):
+            f["_det"] = True
     STATE["findings"].append(f)
     STATE["stats"]["findings"] = len(STATE["findings"])
     sevw = SEVLABEL[sev]
@@ -365,7 +368,7 @@ def phase_active():
             if f.get("confirmed") or f.get("vulnerable"):
                 add_finding("h", "Subdomain takeover — " + (f.get("service") or "dangling CNAME"),
                             f.get("detail") or f.get("cname") or "", f.get("host") or f.get("subdomain") or "",
-                            cls="Subdomain takeover")
+                            cls="Subdomain takeover", verdict="confirmed")  # tool proved the dangling claim
     stage("Exploit", 68)
 
     # 2) nuclei on live hosts — misconfig / exposure / CVE
@@ -381,9 +384,11 @@ def phase_active():
         for h in live_hosts:
             mark_tested("https://" + h, "misconfig")
         for f in (d or {}).get("findings", []):
+            # a matched nuclei template is deterministic evidence → confirmed (so real exposures/CVEs
+            # reach the submit queue instead of being demoted to needs-work by the economics brain)
             add_finding(f.get("severity", "i"), f.get("name", "nuclei match"),
                         (f.get("template") or "") + (("  ·  " + f["matcher"]) if f.get("matcher") else ""),
-                        f.get("url", ""), cls="Misconfig/CVE")
+                        f.get("url", ""), cls="Misconfig/CVE", verdict="confirmed", det=False)  # judge may still veto an FP
         if not (d or {}).get("findings"):
             log("out", "→ nuclei: no critical/high/medium matches")
     stage("Exploit", 82)
@@ -451,7 +456,7 @@ def phase_authed():
         d = tool_json("jwt-test.py", ["--token", tok_bare, "--url", base_url, "--json"], timeout=120)
         for f in (d or {}).get("findings", []):
             add_finding(f.get("severity", "h"), "JWT — " + (f.get("name") or f.get("type") or "weakness"),
-                        f.get("detail") or f.get("description") or "", base_url, cls="JWT")
+                        f.get("detail") or f.get("description") or "", base_url, cls="JWT", verdict="confirmed")
     stage("Authed", 78)
     # authenticated per-endpoint classes (auth-bypass / param / idor) are run by the
     # adaptive coverage loop below, which has the token and covers every applicable cell.
@@ -1037,7 +1042,7 @@ def phase_methodology():
                 inv_type = parts[1] if len(parts) > 1 else ""
                 title = TYPE_TITLE.get(inv_type, "Logic/authz violation")
                 n += 1
-                add_finding("h", title + (" [" + inv_id + "]" if inv_id else ""), ln.strip()[:200], "", cls="Invariant")
+                add_finding("h", title + (" [" + inv_id + "]" if inv_id else ""), ln.strip()[:200], "", cls="Invariant", verdict="confirmed")  # a logic-oracle VIOLATION is deterministic
         STATE["invariants"] = [l.strip() for l in (out or "").splitlines() if l.strip() and "INFO" not in l][:40]
         log("warn" if n else "out", ("⚑ " + str(n) + " invariant violation(s) — broken authorization/logic") if n else "→ invariants held (no logic violations)")
     stage("Validate", 94)
