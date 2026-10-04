@@ -51,7 +51,7 @@ STATE = {
     "status": "running", "stage": "Boot", "pct": 0,
     "started": time.time(), "updated": time.time(),
     "logs": [], "hosts": [], "endpoints": [], "findings": [], "leads": [],
-    "chains": [], "invariants": [],
+    "chains": [], "invariants": [], "economics": {},
     "coverage": {"breadth": 0, "depth": 0, "verified": 0, "total": 0, "resolved": 0, "todo": 0},
     "stats": {"subs": 0, "live": 0, "endpoints": 0, "findings": 0, "leads": 0, "chains": 0},
 }
@@ -687,6 +687,68 @@ def phase_ai_judge():
     flush(); stage("AI-judge", 98)
 
 
+# ══ Economics brain — EV-rank findings + hard dedup gate (spend submissions where the money is) ══
+DEFAULT_BOUNTY = {"c": 4000, "h": 1500, "m": 500, "l": 150, "i": 0}
+P_REAL = {"confirmed": 0.92, "likely": 0.6, "false_positive": 0.0}
+P_ACCEPT = {"c": 0.85, "h": 0.8, "m": 0.7, "l": 0.55, "i": 0.2}
+DUP_GATE = 80  # dup% at/above which a finding is held OFF the submit queue
+
+
+def _bounty_model():
+    """$ per severity, scaled up for high-value program domains (fintech/crypto/infra)."""
+    p = (PROGRAM + " " + TARGET).lower()
+    mult = 1.0
+    if any(k in p for k in ("bank", "pay", "fin", "wallet", "crypto", "trading", "ledger", "exchange", "card")):
+        mult = 2.5
+    elif any(k in p for k in ("cloud", "infra", "identity", "auth", "admin", "enterprise")):
+        mult = 1.6
+    return {k: int(v * mult) for k, v in DEFAULT_BOUNTY.items()}, mult
+
+
+def phase_economics():
+    """Rank findings by expected value; hold likely duplicates before they reach the operator.
+    EV = P(real) × P(accepted) × bounty$ × (1 − P(duplicate)). Does NOT reorder findings
+    (chain↔finding links depend on index) — the dashboard ranks for display."""
+    finds = STATE["findings"]
+    if not finds:
+        return
+    stage("Economics", 98)
+    bounty, mult = _bounty_model()
+    for f in finds:
+        sev = f.get("sev", "i")
+        verdict = (f.get("verdict") or ("confirmed" if f.get("steps") else "likely")).lower()
+        preal = P_REAL.get(verdict, 0.5)
+        pacc = P_ACCEPT.get(sev, 0.3)
+        if (f.get("cls") or "").lower() == "chain":
+            pacc = min(0.95, pacc + 0.05)   # proven escalated impact lands better
+        dup = f.get("dup")
+        pdup = (dup / 100.0) if isinstance(dup, (int, float)) else 0.15
+        b = bounty.get(sev, 0)
+        ev = preal * pacc * b * (1 - pdup)
+        if isinstance(dup, (int, float)) and dup >= DUP_GATE:
+            reco = "hold-duplicate"
+        elif verdict != "confirmed" or not (f.get("steps") or f.get("detail")):
+            reco = "needs-work"
+        else:
+            reco = "submit"
+        f["ev"] = int(ev); f["bounty_est"] = b; f["reco"] = reco
+        f["ev_band"] = "high" if ev >= 1500 else "med" if ev >= 400 else "low"
+    submit_now = [f for f in finds if f.get("reco") == "submit"]
+    held = [f for f in finds if f.get("reco") == "hold-duplicate"]
+    needs = [f for f in finds if f.get("reco") == "needs-work"]
+    total_ev = sum(f.get("ev", 0) for f in submit_now)
+    STATE["economics"] = {
+        "bounty_model": bounty, "program_mult": mult, "pipeline_ev": total_ev,
+        "submit_now": len(submit_now), "needs_work": len(needs), "held_duplicate": len(held),
+        "top": sorted(([{"title": f["title"], "sev": f["sev"], "ev": f.get("ev", 0), "endpoint": f.get("endpoint", "")}
+                        for f in submit_now]), key=lambda x: -x["ev"])[:5],
+    }
+    STATE["stats"]["pipeline_ev"] = total_ev
+    log("ok", "$ economics · pipeline EV ~$" + format(total_ev, ",") + " · " + str(len(submit_now)) +
+        " submit-ready · " + str(len(held)) + " held (likely dup) · " + str(len(needs)) + " need work")
+    flush()
+
+
 # ══ Chain-to-Impact planner — the moat: reason isolated findings into max-impact chains ══
 IMPACT_SEV = {"account-takeover": "c", "rce": "c", "full-db-read": "c", "cloud-role": "c", "db-read": "c",
               "pii-read": "h", "other-user-data": "h", "admin-access": "h", "cloud-metadata": "h",
@@ -936,6 +998,7 @@ def main():
         phase_methodology()         # coverage ledger + invariants + chains + dedup
         phase_ai_judge()            # Layer 3 — strong-model validation + real repro/impact (Sonnet)
         phase_chain()               # Chain-to-Impact — reason findings into max-impact chains (the moat)
+        phase_economics()           # Economics brain — EV-rank findings + hard dedup gate
         STATE["status"] = "done"
         stage("Done", 100)
         nf = len(STATE["findings"]); cov = STATE["coverage"]

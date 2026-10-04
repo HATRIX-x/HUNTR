@@ -2158,11 +2158,20 @@ function sdMarkSent(sid,fi,btn){
 }
 function renderSend(el){
   const cts=(typeof fcContacts==='function'?fcContacts():[]);
-  const ready=cts.filter(x=>x.verdict==='READY');
-  const review=cts.filter(x=>x.verdict==='TRIAGE');
-  const sent=ready.filter(x=>x.f&&x.f._submitted);
-  const open=ready.filter(x=>!(x.f&&x.f._submitted));
-  const pot=open.reduce((a,x)=>a+(x.est||0),0);
+  // ── Economics brain: EV + reco-driven grouping + hard dedup gate ──
+  const evOf=x=>(x.f&&typeof x.f.ev==='number')?x.f.ev:(x.est||0);
+  const recoOf=x=>(x.f&&x.f.reco)||null;                 // engine reco wins; else fall back to verdict
+  const isSubmit=x=>recoOf(x)?recoOf(x)==='submit':x.verdict==='READY';
+  const isHold=x=>recoOf(x)==='hold-duplicate';
+  const isReview=x=>recoOf(x)?recoOf(x)==='needs-work':x.verdict==='TRIAGE';
+  const live=cts.filter(x=>!(x.f&&x.f._submitted));
+  const sent=cts.filter(x=>x.f&&x.f._submitted);
+  const openQ=live.filter(isSubmit).sort((a,b)=>evOf(b)-evOf(a));   // EV-ranked queue
+  const held=live.filter(isHold);                                   // dedup gate — off the queue
+  const review=live.filter(isReview);
+  const ready=openQ;   // back-compat alias
+  const pipelineEV=openQ.reduce((a,x)=>a+evOf(x),0);
+  const pot=pipelineEV;
   const sevName={c:'CRIT',h:'HIGH',m:'MED',l:'LOW',i:'INFO'};
   const E=(typeof fcEsc==='function')?fcEsc:(x=>x);
   const chains=[]; (typeof activeSessions==='function'?activeSessions():sessions).forEach(s=>{(s._run&&s._run.chains||[]).forEach(ch=>chains.push(ch));});
@@ -2178,28 +2187,30 @@ function renderSend(el){
       <div class="sd-mt">${l.attack?`<span>${E(l.attack)}</span>`:''}${l.endpoint?`<span>· ${E(l.endpoint)}</span>`:''}${l.host?`<span>· ${E(l.host)}</span>`:''}</div>
       ${l.why?`<div class="sd-mt" style="color:var(--text3);white-space:normal">${E(l.why)}</div>`:''}</div>
     </div>`).join('') : '';
-  const rowHTML=(x,done)=>`<div class="sd-row">
+  const recoChip={submit:['SUBMIT','var(--green)'],'needs-work':['NEEDS WORK','var(--gold)'],'hold-duplicate':['LIKELY DUP','var(--text3)']};
+  const rowHTML=(x,done)=>{ const rc=recoChip[recoOf(x)]; const ev=evOf(x); return `<div class="sd-row">
       <div><div class="sd-id">${x.id}</div><div class="sd-sev ${x.sev}">${sevName[x.sev]||'—'}</div></div>
       <div>
-        <div class="sd-tt">${x.title}</div>
+        <div class="sd-tt">${x.title} ${rc?`<span style="font-family:var(--mono);font-size:9px;letter-spacing:.06em;color:${rc[1]};border:1px solid ${rc[1]};padding:1px 5px;margin-left:6px;vertical-align:middle">${rc[0]}</span>`:''}</div>
         <div class="sd-mt"><span>${x.host}</span>${x.program?`<span>· ${x.program}</span>`:''}<span>· ${x.cls}</span><span>· ${x.score}% accept · ${x.dup}% dup</span></div>
       </div>
       <div class="sd-act">
-        <span class="sd-est" title="estimated — not yet submitted">${fmt$(x.est||0)}</span>
+        <span class="sd-est" title="expected value = P(real) × P(accepted) × bounty × (1 − P(dup))">EV ~${fmt$(ev)}</span>
         ${done
           ? `<span class="sd-b done">✓ marked sent</span>`
           : `<button class="sd-b prim" onclick="fcOpenReport('${x._sid}',${x._fi})">Open report ▸</button>
              <button class="sd-b" onclick="fcCopyReport('${x._sid}',${x._fi},this)">Copy MD</button>
              <button class="sd-b" onclick="sdMarkSent('${x._sid}',${x._fi},this)">Mark sent</button>`}
       </div>
-    </div>`;
+    </div>`; };
   let body;
   if(!ready.length && !review.length){
     body=`<div class="sd-empty">NOTHING READY TO SEND YET
       <div class="pe-sub">When the engine clears a finding (validated + deduped), it lands here. Head to <b style="color:var(--accent);cursor:pointer" onclick="nav('dashboard')">Hunt</b> to watch progress.</div></div>`;
   } else {
-    body=`<div class="sd-note">⚠ HUNTR never submits for you. Copy the report, file it on the program's platform, then mark it sent.</div>
-      ${open.map(x=>rowHTML(x,false)).join('')}
+    body=`<div class="sd-note">⚠ HUNTR never submits for you. Copy the report, file it on the program's platform, then mark it sent. &nbsp;·&nbsp; Queue is ranked by expected value.</div>
+      ${openQ.map(x=>rowHTML(x,false)).join('')}
+      ${held.length?`<div class="sd-note" style="margin-top:20px">⊘ HELD — likely duplicate (dedup gate · ${held.length}) · matches the program's disclosed history; don't burn a submission</div>${held.map(x=>rowHTML(x,false)).join('')}`:''}
       ${sent.length?`<div class="sd-note" style="margin-top:20px">✓ MARKED SENT (${sent.length})</div>${sent.map(x=>rowHTML(x,true)).join('')}`:''}
       ${review.length?`<div class="sd-note" style="margin-top:20px">◐ STILL IN TRIAGE — not ready (${review.length}) · finish them in <b style="color:var(--accent);cursor:pointer" onclick="nav('dashboard')">Hunt</b></div>
         ${review.map(x=>rowHTML(x,true).replace('✓ marked sent','needs review')).join('')}`:''}`;
@@ -2211,9 +2222,9 @@ function renderSend(el){
         <div class="sd-sub">These findings passed validation and dedup. Open each report, copy it, and submit on the program's platform — you stay in control of every submission.</div>
       </div>
       <div class="sd-kpis">
-        <div class="sd-kpi"><div class="k-k">Ready</div><div class="k-v acc">${open.length}</div></div>
-        <div class="sd-kpi"><div class="k-k">In triage</div><div class="k-v">${review.length}</div></div>
-        <div class="sd-kpi"><div class="k-k">Est. potential</div><div class="k-v gold">${fmt$(pot)}</div></div>
+        <div class="sd-kpi"><div class="k-k">Submit-ready</div><div class="k-v acc">${openQ.length}</div></div>
+        <div class="sd-kpi"><div class="k-k">Held · dup</div><div class="k-v">${held.length}</div></div>
+        <div class="sd-kpi"><div class="k-k">Pipeline EV</div><div class="k-v gold">${fmt$(pipelineEV)}</div></div>
       </div>
     </div>
     <div class="sd-body">${body}${chainsHTML}${leadsHTML}</div>
@@ -3791,7 +3802,7 @@ function pollRealHunt(id, target, opts){
       sess._run=run;
       sess.status = (run.status==='done'||run.status==='error'||run.status==='stopped') ? 'completed' : 'active';
       sess.logs=[ (run.logs||[]).slice() ];
-      sess.findings=(run.findings||[]).map(f=>({sev:f.sev||'i',label:(f.label||'INFO'),title:f.title||f.name||'finding',detail:f.detail||'',cvss:f.cvss||'',endpoint:f.endpoint||'',steps:f.steps||'',remediation:f.remediation||'',cls:f.cls||'',dup:(typeof f.dup==='number'?f.dup:undefined)}));
+      sess.findings=(run.findings||[]).map(f=>({sev:f.sev||'i',label:(f.label||'INFO'),title:f.title||f.name||'finding',detail:f.detail||'',cvss:f.cvss||'',endpoint:f.endpoint||'',steps:f.steps||'',remediation:f.remediation||'',cls:f.cls||'',dup:(typeof f.dup==='number'?f.dup:undefined),verdict:f.verdict||'',ev:(typeof f.ev==='number'?f.ev:undefined),bounty_est:f.bounty_est,reco:f.reco||'',ev_band:f.ev_band||''}));
       sess._realHosts=run.hosts||[]; sess._realEndpoints=run.endpoints||[];
       updateBadges();
       if(V.page==='dashboard'&&(V.huntId===id||!V.huntId)) renderDashboard(document.getElementById('content'));
