@@ -690,6 +690,42 @@ def phase_ai_direct(deadline, max_rounds=3):
     log("ok", "✓ AI-directed pass complete")
 
 
+def phase_oob(deadline):
+    """Blind / out-of-band injection fuzzing via nuclei DAST + interactsh. Confirms SSRF and other
+    blind classes (cmdi/SSTI/XXE/log4j) that produce NO reflected response — an OAST callback is the
+    proof. OAST hits are deterministic → verdict=confirmed (never gated on the AI judge)."""
+    if not has("nuclei"):
+        return
+    params = [e["url"] for e in STATE["endpoints"] if re.search(r"[?&][\w\[\]]+=", e.get("url", ""))]
+    if not params:
+        return
+    remaining = int(deadline - time.time())
+    if remaining < 60:                       # not enough budget to run an OOB pass meaningfully
+        log("warn", "⏱ skipped OOB fuzzing — budget exhausted (" + str(remaining) + "s left)")
+        return
+    sl = max(60, min(remaining - 20, 240))   # OOB slice: leave headroom for judge/chain/economics
+    stage("OOB-fuzz", 92)
+    log("ok", "◆ blind/OOB fuzzing · nuclei DAST + interactsh · " + str(len(params)) + " param URL(s) · " + str(sl) + "s")
+    try:
+        pf = HUNT_DIR / "oob_urls.txt"
+        pf.write_text("\n".join(params[:120]))
+        d = tool_json("oob-fuzz.py", ["--targets-file", str(pf), "--budget-sec", str(sl), "--max-urls", "60"], timeout=sl + 30)
+    except Exception:
+        d = None
+    if d is None:
+        log("warn", "→ OOB fuzzing errored/timed out — no blind findings captured this pass")
+        return
+    n = 0
+    for f in (d or {}).get("findings", []):
+        add_finding(f.get("severity", "h"), f.get("title") or "Out-of-band injection",
+                    f.get("detail") or "", f.get("endpoint") or "", cls=f.get("cls", "OOB"),
+                    verdict=f.get("verdict", "confirmed"))
+        n += 1
+    log("ok" if n else "info", "✓ OOB fuzzing · " + str(d.get("urls", 0)) + " URL(s) fuzzed · " +
+        str(n) + " blind finding(s) confirmed via OAST")
+    flush()
+
+
 def phase_ai_judge():
     """Tri-hybrid Layer 3 — strong-model validation. Sonnet (fallback Haiku) reads every finding's real
     evidence, KILLS false positives, and writes real repro + impact + remediation + chains."""
@@ -1079,6 +1115,7 @@ def main():
         phase_authed()
         phase_adaptive(deadline)
         phase_ai_direct(deadline)   # Layer 2 — AI-directed targeted tests (Haiku)
+        phase_oob(deadline)         # Blind/OOB fuzzing — nuclei DAST + interactsh (blind SSRF etc.)
         phase_fingerprint()
         phase_methodology()         # coverage ledger + invariants + chains + dedup
         phase_ai_judge()            # Layer 3 — strong-model validation + real repro/impact (Sonnet)
