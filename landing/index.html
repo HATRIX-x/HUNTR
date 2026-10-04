@@ -248,6 +248,28 @@
   .cell p{color:var(--fg-2); font-size:.96rem; line-height:1.65;}
   @media(max-width:720px){ .grid4{grid-template-columns:1fr;} }
 
+  /* comparison — HUNTR vs scanner (adapted from 21st.dev 'Us vs Them', id 21217) */
+  .cmp{display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--line); margin-top:clamp(40px,5vw,60px); border:1px solid var(--line);}
+  .cmp-col{background:var(--bg); padding:clamp(28px,3vw,40px); display:flex; flex-direction:column;}
+  .cmp-col.win{background:linear-gradient(180deg,rgba(167,139,250,.05),transparent 60%); box-shadow:inset 0 0 0 1px rgba(167,139,250,.18);}
+  .cmp-h{display:flex; align-items:center; gap:10px; margin-bottom:6px;}
+  .cmp-h .n{font-family:'Archivo',sans-serif; font-weight:800; text-transform:uppercase; font-size:1.25rem; letter-spacing:-.01em;}
+  .cmp-col.lose .cmp-h .n{color:var(--fg-3);}
+  .cmp-tag{font-family:'JetBrains Mono',monospace; font-size:9.5px; letter-spacing:.12em; text-transform:uppercase; padding:4px 8px; border:1px solid var(--line-2);}
+  .cmp-tag.win{color:#0A0A0C; background:var(--purple); border-color:var(--purple);}
+  .cmp-tag.lose{color:var(--fg-3);}
+  .cmp-sub{font-size:.88rem; color:var(--fg-3); margin-bottom:20px; min-height:2.6em;}
+  .cmp-list{list-style:none; display:flex; flex-direction:column; gap:14px; margin:0 0 24px; flex:1;}
+  .cmp-list li{display:flex; align-items:flex-start; gap:12px; font-size:.95rem; line-height:1.5;}
+  .cmp-list .mk{flex:none; width:18px; height:18px; display:grid; place-items:center; margin-top:1px;}
+  .cmp-list .mk svg{width:11px; height:11px;}
+  .win .cmp-list li{color:var(--fg);}
+  .win .cmp-list .mk{background:var(--purple); color:#0A0A0C;}
+  .lose .cmp-list li{color:var(--fg-3);}
+  .lose .cmp-list .mk{border:1px solid var(--line-2); color:var(--fg-3);}
+  .cmp-col .btn{width:100%;}
+  @media(max-width:720px){ .cmp{grid-template-columns:1fr;} .cmp-sub{min-height:0;} }
+
   /* trust */
   .trust-box{border:1px solid var(--line-2); background:linear-gradient(135deg,var(--panel-2),var(--panel)); padding:clamp(40px,5vw,72px); text-align:center; position:relative; max-width:860px; margin:0 auto;}
   .trust-box::before,.trust-box::after{content:"+"; position:absolute; color:var(--purple); font-size:17px; line-height:1;}
@@ -447,6 +469,43 @@
           <div class="cl">04 · Control</div>
           <h3>You hold the trigger</h3>
           <p>Nothing is ever auto-submitted, and HUNTR only runs against targets you're authorized to test. The judgment stays human.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- COMPARISON -->
+  <section id="compare">
+    <div class="wrap sec">
+      <div class="kick"><span>Comparison</span></div>
+      <h2>HUNTR vs. a scanner.</h2>
+      <p class="sec-sub">Same target, two very different outputs. A scanner flags; HUNTR hunts, validates, and writes it up.</p>
+      <div class="cmp">
+        <div class="cmp-col win">
+          <div class="cmp-h"><span class="n">HUNTR</span><span class="cmp-tag win">Operator</span></div>
+          <p class="cmp-sub">Validated, report-ready findings — with you on the trigger.</p>
+          <ul class="cmp-list">
+            <li><span class="mk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg></span>Tests behavior, then validates every finding</li>
+            <li><span class="mk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg></span>Drops false positives before they reach you</li>
+            <li><span class="mk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg></span>Reproduction and impact drafted per finding</li>
+            <li><span class="mk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg></span>Covers the surface to depth — not one-shot</li>
+            <li><span class="mk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg></span>Never auto-submits — you review and send</li>
+            <li><span class="mk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg></span>Runs only on authorized, in-scope targets</li>
+          </ul>
+          <a href="#access" class="btn btn-primary">Request Access ►</a>
+        </div>
+        <div class="cmp-col lose">
+          <div class="cmp-h"><span class="n">Traditional scanner</span><span class="cmp-tag lose">Noise</span></div>
+          <p class="cmp-sub">Raw matches you still have to triage, prove, and write up.</p>
+          <ul class="cmp-list">
+            <li><span class="mk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M18 6L6 18M6 6l12 12"/></svg></span>Stops at surface signals (200 OK, reflected param)</li>
+            <li><span class="mk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M18 6L6 18M6 6l12 12"/></svg></span>Dumps everything — you sift the false positives</li>
+            <li><span class="mk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M18 6L6 18M6 6l12 12"/></svg></span>No reproduction or impact — you write the report</li>
+            <li><span class="mk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M18 6L6 18M6 6l12 12"/></svg></span>One-shot, shallow pass over the surface</li>
+            <li><span class="mk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M18 6L6 18M6 6l12 12"/></svg></span>Flags without judgment — confirms nothing</li>
+            <li><span class="mk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M18 6L6 18M6 6l12 12"/></svg></span>Scope and authorization left entirely to you</li>
+          </ul>
+          <span class="btn btn-ghost" aria-hidden="true" style="opacity:.5;cursor:default;">The status quo</span>
         </div>
       </div>
     </div>
