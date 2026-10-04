@@ -83,16 +83,22 @@ def llm_call(models, system, user, max_tokens=1600, timeout=100):
         if not hdrs:
             return None
         hdrs["content-type"] = "application/json"
+        import urllib.error, time as _time
         for m in (models if isinstance(models, list) else [models]):
             body = json.dumps({"model": m, "max_tokens": max_tokens, "system": system,
                                "messages": [{"role": "user", "content": user}]}).encode()
-            req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=body, headers=hdrs, method="POST")
-            try:
-                with urllib.request.urlopen(req, timeout=timeout) as r:
-                    data = json.loads(r.read())
-                return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
-            except Exception:
-                continue  # fall back to next model
+            for attempt in range(3):   # retry the same model on 429 before falling through
+                req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=body, headers=hdrs, method="POST")
+                try:
+                    with urllib.request.urlopen(req, timeout=timeout) as r:
+                        data = json.loads(r.read())
+                    return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+                except urllib.error.HTTPError as e:
+                    if e.code == 429 and attempt < 2:
+                        _time.sleep(2 * (attempt + 1)); continue   # backoff: 2s, 4s
+                    break   # non-retryable or exhausted → next model
+                except Exception:
+                    break   # next model
         return None
     except Exception:
         return None
@@ -124,15 +130,20 @@ def tool_json(tool, args, timeout=240):
     return None
 
 
-def add_finding(sev, title, detail, endpoint, cvss="", cls=""):
+def add_finding(sev, title, detail, endpoint, cvss="", cls="", verdict=""):
     sev = sev if sev in SEVLABEL else SEVMAP.get((sev or "i").lower(), "i")
     key = (title + "|" + (endpoint or "")).lower()
     if any((f["title"] + "|" + (f.get("endpoint") or "")).lower() == key for f in STATE["findings"]):
         return
-    STATE["findings"].append({
+    f = {
         "sev": sev, "label": SEVLABEL[sev], "title": title, "detail": detail or "",
         "cvss": cvss or "", "endpoint": endpoint or "", "cls": cls or "",
-    })
+    }
+    if verdict:                       # tool-level evidence (deterministic) — never gated on the AI judge
+        f["verdict"] = verdict
+        if verdict == "confirmed":
+            f["_det"] = True          # the judge may enrich this but must not drop it
+    STATE["findings"].append(f)
     STATE["stats"]["findings"] = len(STATE["findings"])
     sevw = SEVLABEL[sev]
     log("warn" if sev in ("c", "h", "m") else "out", "⚑ " + sevw + "  " + title + (" · " + endpoint if endpoint else ""))
@@ -280,6 +291,19 @@ def phase_surface():
             try: sch = probe_host(host)[2]
             except Exception: sch = "https"
         url = (sch or "https") + "://" + host        # honor http targets (localhost/dev/plain-http)
+        # recall: robots.txt + sitemap.xml often reveal surface the crawler won't reach
+        import urllib.request as _ur
+        for rf in ("/robots.txt", "/sitemap.xml"):
+            try:
+                with _ur.urlopen(_ur.Request(url + rf, headers={"User-Agent": "Mozilla/5.0 HUNTR"}), timeout=8) as r:
+                    txt = r.read(200000).decode("utf-8", "ignore")
+                for m in re.findall(r"(?:Allow|Disallow|Sitemap):\s*(\S+)", txt) + re.findall(r"<loc>\s*([^<\s]+)", txt):
+                    p = m.strip()
+                    full = p if p.startswith("http") else (url + ("" if p.startswith("/") else "/") + p)
+                    if full.startswith("http") and "*" not in full:
+                        eps[full] = host
+            except Exception:
+                pass
         if has("katana"):
             log("cmd", "$ katana -u " + url + " -silent -d 2")
             out, _, _ = sh(["katana", "-u", url, "-silent", "-d", "2", "-c", "15",
@@ -444,12 +468,14 @@ def _stack():
     return ",".join(dict.fromkeys(s))
 
 
-APPLICABLE = ["cors", "redirect", "jwt", "idor", "authz", "param", "sqli", "xss", "misconfig", "race"]
+APPLICABLE = ["cors", "redirect", "jwt", "idor", "authz", "param", "sqli", "xss", "ssti", "ssrf", "misconfig", "race"]
 
 
 def _cls_key(c):
     c = (c or "").lower()
     if "sqli" in c or "sql injection" in c: return "sqli"
+    if "ssti" in c or "template inj" in c: return "ssti"
+    if "ssrf" in c or "server-side request" in c: return "ssrf"
     if "xss" in c: return "xss"
     if "idor" in c: return "idor"
     if "auth" in c: return "authz"
@@ -489,7 +515,7 @@ def build_coverage():
 
 
 STATEFUL_RE = r"(redeem|coupon|voucher|order|checkout|cart|transfer|claim|vote|invite|apply|withdraw|balance|credit|gift|refund|payout)"
-RANK = {"sqli": 0, "idor": 1, "authz": 2, "xss": 3, "race": 4, "jwt": 5, "param": 6, "cors": 7, "redirect": 8}
+RANK = {"ssti": 0, "sqli": 0, "idor": 1, "ssrf": 1, "authz": 2, "xss": 3, "race": 4, "jwt": 5, "param": 6, "cors": 7, "redirect": 8}
 
 
 def applicable_classes(ep):
@@ -499,7 +525,9 @@ def applicable_classes(ep):
     if "/api" in low or "/graphql" in low:
         cl += ["cors", "param"]
     if has_param:                       # injectable surface (works unauth)
-        cl += ["param", "sqli", "xss"]
+        cl += ["param", "sqli", "xss", "ssti"]
+    if re.search(r"[?&](url|uri|path|dest|callback|webhook|fetch|load|src|target|feed|host|domain|site|proxy|redirect|return|next|continue|image|img|file)=", low):
+        cl.append("ssrf")
     if re.search(r"/\d{1,8}(?:/|\?|$)", ep) or re.search(r"[?&](id|uid|user|account|order|doc|file|key)=", low):
         cl.append("idor")
     if any(k in low for k in ("/admin", "/internal", "/debug", "/actuator", "/manage", "/private")):
@@ -512,48 +540,65 @@ def applicable_classes(ep):
 
 
 def scan_cell(ep, cls, tok, tok2):
+    """Scan one (endpoint × class) cell. Tool-level evidence sets a deterministic verdict
+    (so a confirmed bug never depends on the AI judge). Coverage integrity: a cell whose tool
+    ERRORED/timed-out is NOT marked tested — it stays TODO so resume re-does it (no silent miss)."""
+    ran = True   # a tool that was invoked but returned None = transient error → do not count as tested
     try:
         if cls == "cors" and (HERE / "cors-test.py").exists():
-            d = tool_json("cors-test.py", ["--url", ep, "--json"] + (["--token", tok] if tok else []), timeout=40)
+            d = tool_json("cors-test.py", ["--url", ep, "--json"] + (["--token", tok] if tok else []), timeout=40); ran = d is not None
             for f in (d or {}).get("findings", []):
-                add_finding(f.get("severity", "m"), "CORS — " + (f.get("type") or "misconfig"), f.get("detail") or "", ep, cls="CORS")
+                add_finding(f.get("severity", "m"), "CORS — " + (f.get("type") or "misconfig"), f.get("detail") or "", ep, cls="CORS", verdict="likely")
         elif cls == "redirect" and (HERE / "open-redirect.py").exists():
             import urllib.parse as _up
             qs = _up.urlparse(ep).query
             param = next((kv.split("=")[0] for kv in qs.split("&")
                           if kv.split("=")[0] in ("redirect", "url", "next", "return", "returnUrl", "redirect_uri", "dest", "continue", "goto", "u")), "redirect")
-            d = tool_json("open-redirect.py", ["--url", ep, "--param", param, "--json"], timeout=50)
+            d = tool_json("open-redirect.py", ["--url", ep, "--param", param, "--json"], timeout=50); ran = d is not None
             for f in (d or {}).get("findings", []):
-                add_finding(f.get("severity", "m"), "Open redirect — " + param, f.get("payload") or "", ep, cls="Open redirect")
+                add_finding(f.get("severity", "m"), "Open redirect — " + param, f.get("payload") or "", ep, cls="Open redirect", verdict="confirmed")
         elif cls == "idor" and tok and (HERE / "idor-chain.py").exists():
             a = ["--base-url", ep, "--token", tok, "--json"] + (["--token2", tok2] if tok2 else [])
-            d = tool_json("idor-chain.py", a, timeout=150)
+            d = tool_json("idor-chain.py", a, timeout=150); ran = d is not None
             for f in (d or {}).get("findings", []):
-                add_finding(f.get("severity", "h"), "IDOR — " + (f.get("name") or "object reference"), f.get("detail") or "", ep, cls="IDOR")
+                add_finding(f.get("severity", "h"), "IDOR — " + (f.get("name") or "object reference"), f.get("detail") or "", ep, cls="IDOR", verdict="confirmed")
         elif cls == "authz" and tok and (HERE / "auth-bypass.py").exists():
-            d = tool_json("auth-bypass.py", ["--url", ep, "--token", tok, "--json"], timeout=60)
+            d = tool_json("auth-bypass.py", ["--url", ep, "--token", tok, "--json"], timeout=60); ran = d is not None
             for f in (d or {}).get("findings", []):
-                add_finding(f.get("severity", "h"), "Auth bypass — " + (f.get("technique") or f.get("name") or "access control"), f.get("detail") or "", ep, cls="Auth bypass")
+                add_finding(f.get("severity", "h"), "Auth bypass — " + (f.get("technique") or f.get("name") or "access control"), f.get("detail") or "", ep, cls="Auth bypass", verdict="confirmed")
         elif cls == "param" and (HERE / "param-fuzz.py").exists():
-            d = tool_json("param-fuzz.py", ["--url", ep, "--json"] + (["--token", tok] if tok else []), timeout=120)
+            d = tool_json("param-fuzz.py", ["--url", ep, "--json"] + (["--token", tok] if tok else []), timeout=120); ran = d is not None
             for f in (d or {}).get("findings", []):
-                add_finding(f.get("severity", "m"), "Hidden param — " + (f.get("param") or f.get("name") or "parameter"), f.get("detail") or "", ep, cls="Param/IDOR")
+                add_finding(f.get("severity", "m"), "Hidden param — " + (f.get("param") or f.get("name") or "parameter"), f.get("detail") or "", ep, cls="Param/IDOR", verdict="likely")
         elif cls == "xss" and (HERE / "xss-test.py").exists():
-            d = tool_json("xss-test.py", ["--url", ep, "--json"] + (["--token", tok] if tok else []), timeout=80)
+            d = tool_json("xss-test.py", ["--url", ep, "--json"] + (["--token", tok] if tok else []), timeout=80); ran = d is not None
             for f in (d or {}).get("findings", []):
-                add_finding(f.get("severity", "m"), (f.get("type") or "Reflected XSS") + " — " + (f.get("param") or "param"), f.get("detail") or f.get("payload") or "", ep, cls="XSS")
+                v = "confirmed" if "verified" in (f.get("type", "").lower()) else "likely"
+                add_finding(f.get("severity", "m"), (f.get("type") or "Reflected XSS") + " — " + (f.get("param") or "param"), f.get("detail") or f.get("payload") or "", ep, cls="XSS", verdict=v)
         elif cls == "sqli" and (HERE / "sqli-test.py").exists():
-            d = tool_json("sqli-test.py", ["--url", ep, "--json"] + (["--token", tok] if tok else []), timeout=160)
+            d = tool_json("sqli-test.py", ["--url", ep, "--json"] + (["--token", tok] if tok else []), timeout=160); ran = d is not None
             for f in (d or {}).get("findings", []):
-                add_finding(f.get("severity", "c"), "SQL injection — " + (f.get("param") or "parameter"), f.get("detail") or "", ep, cls="SQLi")
+                add_finding(f.get("severity", "c"), "SQL injection — " + (f.get("param") or "parameter"), f.get("detail") or "", ep, cls="SQLi", verdict="confirmed")
+        elif cls == "ssti" and (HERE / "ssti-test.py").exists():
+            d = tool_json("ssti-test.py", ["--url", ep, "--json"] + (["--token", tok] if tok else []), timeout=70); ran = d is not None
+            for f in (d or {}).get("findings", []):
+                add_finding(f.get("severity", "c"), "Server-side template injection — " + (f.get("param") or "param"), f.get("detail") or "", ep, cls="SSTI", verdict="confirmed")
+        elif cls == "ssrf" and (HERE / "ssrf-test.py").exists():
+            d = tool_json("ssrf-test.py", ["--url", ep, "--json"] + (["--token", tok] if tok else []), timeout=60); ran = d is not None
+            for f in (d or {}).get("findings", []):
+                add_finding(f.get("severity", "h"), "SSRF — " + (f.get("param") or "server-side request"), f.get("detail") or "", ep, cls="SSRF", verdict=f.get("verdict", "likely"))
         elif cls == "race" and (HERE / "race-fire.py").exists():
             a = ["--url", ep, "--count", "20", "--json"] + (["--token", tok] if tok else [])
-            d = tool_json("race-fire.py", a, timeout=90)
+            d = tool_json("race-fire.py", a, timeout=90); ran = d is not None
             for f in (d or {}).get("findings", []):
-                add_finding(f.get("severity", "h"), "Race condition — " + (f.get("type") or "state divergence"), f.get("note") or "", ep, cls="Race")
+                add_finding(f.get("severity", "h"), "Race condition — " + (f.get("type") or "state divergence"), f.get("note") or "", ep, cls="Race", verdict="confirmed")
     except Exception:
-        pass
-    mark_tested(ep, cls)
+        ran = False
+    if ran:
+        mark_tested(ep, cls)
+    else:
+        log("warn", "⚠ " + cls + " cell errored — left TODO (not counted as tested): " + ep[:70])
+    return ran
 
 
 def phase_adaptive(deadline, max_cells=120):
@@ -673,13 +718,17 @@ def phase_ai_judge():
             continue
         f = STATE["findings"][i]
         if j.get("drop") or j.get("verdict") == "false_positive":
+            if f.get("_det"):   # tool-confirmed (e.g. sqlmap) — the judge enriches, it cannot drop it
+                f["detail"] = (f.get("detail", "") + " · note: AI judge flagged for review; tool evidence stands").strip(" ·")
+                kept += 1; conf += 1; continue
             drop.add(i); continue
         if j.get("repro"): f["steps"] = j["repro"]
         if j.get("remediation"): f["remediation"] = j["remediation"]
         if j.get("impact"): f["detail"] = (f.get("detail", "") + " · impact: " + j["impact"]).strip(" ·")
         if j.get("cvss"): f["cvss"] = str(j["cvss"]) or f.get("cvss", "")
-        f["verdict"] = j.get("verdict", "")
-        kept += 1; conf += 1 if j.get("verdict") == "confirmed" else 0
+        if not (f.get("_det") and j.get("verdict") != "confirmed"):   # never downgrade a deterministic confirmation
+            f["verdict"] = j.get("verdict", "") or f.get("verdict", "")
+        kept += 1; conf += 1 if f.get("verdict") == "confirmed" else 0
     if drop:
         STATE["findings"] = [f for k, f in enumerate(STATE["findings"]) if k not in drop]
         STATE["stats"]["findings"] = len(STATE["findings"])
@@ -806,6 +855,8 @@ def _finding_edges(f, fi, start):
         return [(start, "subdomain-takeover " + s, "host-control", "proven", "h", fi)]
     M = {
         "sqli":     [(start, "SQLi " + s, "db-read", "proven", "c", fi), ("db-read", "dump PII tables", "pii-read", "unproven", "h", -1)],
+        "ssti":     [(start, "SSTI " + s, "rce", "proven", "c", fi)],
+        "ssrf":     [(start, "SSRF " + s, "cloud-metadata", "proven", "h", fi), ("cloud-metadata", "IMDS creds → role", "cloud-role", "unproven", "c", -1)],
         "idor":     [(start, "IDOR " + s, "other-user-data", "proven", "h", fi), ("other-user-data", "read secret / reset token", "account-takeover", "unproven", "c", -1)],
         "authz":    [(start, "auth-bypass " + s, "admin-access", "proven", "h", fi), ("admin-access", "privileged action", "account-takeover", "unproven", "c", -1)],
         "ssrf":     [(start, "SSRF " + s, "cloud-metadata", "proven", "h", fi), ("cloud-metadata", "IMDS creds → role", "cloud-role", "unproven", "c", -1)],
