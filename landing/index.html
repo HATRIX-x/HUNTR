@@ -81,6 +81,11 @@
           "@type": "Question",
           "name": "How is HUNTR different from a vulnerability scanner?",
           "acceptedAnswer": { "@type": "Answer", "text": "Scanners stop at surface signals and produce noise. HUNTR runs a real methodology end-to-end, validates each finding to drop false positives, and delivers report-ready vulnerabilities with reproduction and impact." }
+        },
+        {
+          "@type": "Question",
+          "name": "Does it only run against authorized targets?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Yes. HUNTR only runs against targets you are authorized to test, and it respects program scope. It is a tool for authorized security research." }
         }
       ]
     }
@@ -174,6 +179,17 @@
   .eyebrow .d{width:7px; height:7px; border-radius:50%; background:var(--green); box-shadow:0 0 10px var(--green); animation:pulse 2.4s infinite;}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
   .cta-row{margin-top:38px; display:flex; flex-wrap:wrap; gap:14px;}
+  /* a11y: visible focus ring on every interactive control (ui-ux-pro-max UX, High) */
+  a:focus-visible, button:focus-visible, input:focus-visible, .btn:focus-visible{
+    outline:2px solid var(--purple); outline-offset:3px; border-radius:1px;}
+  /* hero email capture (above the fold — Waitlist/Coming-Soon pattern) */
+  .hero-wl{margin-top:34px; max-width:440px;}
+  .hero-benefit{margin-top:12px; font-size:12.5px; color:var(--fg-3); line-height:1.6;}
+  .hero-benefit b{color:var(--fg-2); font-weight:500;}
+  .hero-link{display:inline-block; margin-top:16px; font-family:'JetBrains Mono',monospace;
+    font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--fg-2);
+    border-bottom:1px solid var(--line-2); padding-bottom:2px; transition:color .18s, border-color .18s;}
+  .hero-link:hover{color:var(--purple); border-color:var(--purple);}
   .spec{margin-top:34px; display:grid; gap:12px; max-width:46ch;}
   .spec div{display:flex; gap:14px; align-items:baseline; font-size:.92rem; color:var(--fg-2);}
   .spec .k{font-family:'JetBrains Mono',monospace; font-size:10.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--purple); flex:none; width:68px;}
@@ -241,6 +257,24 @@
   .trust-box .barline{margin-top:28px; display:inline-flex; flex-wrap:wrap; justify-content:center; gap:8px 16px; font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--fg-3); border:1px dashed var(--line-2); padding:12px 22px;}
   .trust-box .barline b{color:var(--fg); font-weight:500;}
 
+  /* faq — ghost accordion (adapted from 21st.dev 'Ghost Accordion', operator-styled) */
+  .faq-list{margin-top:clamp(36px,4vw,52px); border-top:1px solid var(--line); max-width:820px;}
+  .faq-item{border-bottom:1px solid var(--line);}
+  .faq-q{width:100%; display:flex; align-items:center; gap:16px; padding:22px 4px; background:none;
+    border:none; cursor:pointer; text-align:left; color:var(--fg); font-family:'Inter',sans-serif;
+    font-size:clamp(.98rem,1.4vw,1.08rem); font-weight:500; transition:color .18s;}
+  .faq-q:hover{color:var(--purple);}
+  .faq-n{font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--fg-3); letter-spacing:.1em; flex:none; width:22px;}
+  .faq-t{flex:1;}
+  .faq-ind{flex:none; width:16px; height:16px; position:relative; color:var(--purple); transition:transform .25s;}
+  .faq-ind::before,.faq-ind::after{content:""; position:absolute; background:currentColor;}
+  .faq-ind::before{top:50%; left:0; right:0; height:2px; transform:translateY(-50%);}
+  .faq-ind::after{left:50%; top:0; bottom:0; width:2px; transform:translateX(-50%); transition:opacity .25s;}
+  .faq-q[aria-expanded="true"] .faq-ind{transform:rotate(90deg);}
+  .faq-q[aria-expanded="true"] .faq-ind::after{opacity:0;}
+  .faq-a{overflow:hidden; max-height:0; transition:max-height .28s ease;}
+  .faq-a-in{padding:0 4px 24px 42px; color:var(--fg-2); font-size:.97rem; line-height:1.7; max-width:64ch;}
+
   /* waitlist */
   .wl-sec{text-align:center;}
   .wl-sec h2{margin:0 auto;}
@@ -297,10 +331,13 @@
         <span class="eyebrow"><span class="d"></span> Autonomous AI operator · Live</span>
         <h1>The autonomous operator for <span class="acc">bug bounty.</span></h1>
         <p class="lede">Point it at a target you're authorized to test. HUNTR maps the attack surface, tests it, validates what it finds, and drafts the report. You review and submit — <b>it never submits for you.</b></p>
-        <div class="cta-row">
-          <a href="#access" class="btn btn-primary">Request Early Access ►</a>
-          <a href="#how" class="btn btn-ghost">View Pipeline</a>
-        </div>
+        <form class="wl-form hero-wl" data-wl novalidate>
+          <input type="email" placeholder="you@domain.com" autocomplete="email" aria-label="Email address for early access" required>
+          <button type="submit" class="btn btn-primary">Request Access ►</button>
+        </form>
+        <p class="wl-msg" role="status"></p>
+        <p class="hero-benefit"><b>Early access:</b> priority onboarding and a direct line to the team. No spam — launch notice only.</p>
+        <a href="#how" class="hero-link">View the pipeline ↓</a>
         <div class="spec">
           <div><span class="k">Output</span> validated, report-ready findings — not scanner noise</div>
           <div><span class="k">Control</span> human gate · never auto-submits</div>
@@ -427,17 +464,51 @@
     </div>
   </section>
 
+  <!-- FAQ -->
+  <section id="faq">
+    <div class="wrap sec">
+      <div class="kick"><span>FAQ</span></div>
+      <h2>Questions, answered.</h2>
+      <div class="faq-list" id="faq-list">
+        <div class="faq-item">
+          <button class="faq-q" aria-expanded="false">
+            <span class="faq-n">01</span><span class="faq-t">What is HUNTR?</span><span class="faq-ind" aria-hidden="true"></span>
+          </button>
+          <div class="faq-a"><div class="faq-a-in">HUNTR is an autonomous AI operator for bug bounty. You point it at a target you're authorized to test and it maps the attack surface, tests it, validates what it finds, and drafts the report. You review and submit.</div></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" aria-expanded="false">
+            <span class="faq-n">02</span><span class="faq-t">Does HUNTR submit reports automatically?</span><span class="faq-ind" aria-hidden="true"></span>
+          </button>
+          <div class="faq-a"><div class="faq-a-in">No. HUNTR never auto-submits. Every finding is a draft for you to review and submit. The judgment stays human.</div></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" aria-expanded="false">
+            <span class="faq-n">03</span><span class="faq-t">How is HUNTR different from a vulnerability scanner?</span><span class="faq-ind" aria-hidden="true"></span>
+          </button>
+          <div class="faq-a"><div class="faq-a-in">Scanners stop at surface signals and produce noise. HUNTR runs a real methodology end-to-end, validates each finding to drop false positives, and delivers report-ready vulnerabilities with reproduction and impact.</div></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" aria-expanded="false">
+            <span class="faq-n">04</span><span class="faq-t">Does it only run against authorized targets?</span><span class="faq-ind" aria-hidden="true"></span>
+          </button>
+          <div class="faq-a"><div class="faq-a-in">Yes. HUNTR only runs against targets you're authorized to test, and it respects program scope. It's a tool for authorized security research.</div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- WAITLIST -->
   <section id="access">
     <div class="wrap sec wl-sec">
       <div class="kick" style="justify-content:center;"><span>Early Access</span></div>
       <h2>Stop scanning.<br>Start hunting.</h2>
       <p class="sec-sub" style="margin-inline:auto;">Request early access to HUNTR and we'll reach out when your spot opens.</p>
-      <form class="wl-form" id="wl" novalidate>
-        <input type="email" id="wl-email" placeholder="you@domain.com" autocomplete="email" aria-label="Email address" required>
-        <button type="submit" class="btn btn-primary" id="wl-btn">Request Access ►</button>
+      <form class="wl-form" data-wl novalidate>
+        <input type="email" placeholder="you@domain.com" autocomplete="email" aria-label="Email address" required>
+        <button type="submit" class="btn btn-primary">Request Access ►</button>
       </form>
-      <p class="wl-msg" id="wl-msg" role="status"></p>
+      <p class="wl-msg" role="status"></p>
     </div>
   </section>
 
@@ -472,21 +543,45 @@
     {c:'ok', t:'✓ report drafted — awaiting your review'},
     {c:'s',  t:'■ it hunts. you decide. nothing auto-submitted.'},
   ];
+  // Fire-control feed — respects reduced-motion (static final state) and pauses when hidden
   const feed=document.getElementById('feed'); let head=0; const WINDOW=7;
   function render(){ let h=''; for(let k=0;k<WINDOW;k++){ const l=FEED[(head+k)%FEED.length]; const cur=(k===WINDOW-1)?'<span class="cursor"></span>':''; h+='<span class="ln '+l.c+'">'+l.t+cur+'</span>'; } feed.innerHTML=h; }
-  setInterval(()=>{ head=(head+1)%FEED.length; render(); }, 2200);
+  const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let feedTimer=null;
+  function startFeed(){ if(reduce||feedTimer) return; feedTimer=setInterval(()=>{ head=(head+1)%FEED.length; render(); }, 2200); }
+  function stopFeed(){ if(feedTimer){ clearInterval(feedTimer); feedTimer=null; } }
+  document.addEventListener('visibilitychange', ()=> document.hidden ? stopFeed() : startFeed());
+  startFeed();   // page already renders the full feed at rest; this only animates it
 
-  const form=document.getElementById('wl'), email=document.getElementById('wl-email'), btn=document.getElementById('wl-btn'), msg=document.getElementById('wl-msg');
+  // FAQ accordion (single-collapsible; adapted from 21st.dev Ghost Accordion)
+  document.querySelectorAll('#faq-list .faq-q').forEach(q=>{
+    q.addEventListener('click', ()=>{
+      const panel=q.nextElementSibling;
+      const open=q.getAttribute('aria-expanded')==='true';
+      document.querySelectorAll('#faq-list .faq-q').forEach(o=>{
+        o.setAttribute('aria-expanded','false');
+        if(o.nextElementSibling) o.nextElementSibling.style.maxHeight='0px';
+      });
+      if(!open){ q.setAttribute('aria-expanded','true'); panel.style.maxHeight=panel.scrollHeight+'px'; }
+    });
+  });
+
+  // Waitlist — binds every [data-wl] form (hero + footer), each with its own nearest .wl-msg
   const valid=v=>/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
-  form.addEventListener('submit', async e=>{
-    e.preventDefault(); msg.className='wl-msg';
-    if(!valid(email.value.trim())){ msg.textContent='→ enter a valid email address.'; msg.classList.add('err'); return; }
-    if(!FORM_ENDPOINT){ msg.textContent='→ waitlist opens soon — follow for the launch.'; msg.classList.add('ok'); return; }
-    btn.disabled=true; btn.textContent='Sending…';
-    try{ const r=await fetch(FORM_ENDPOINT,{method:'POST',headers:{'Accept':'application/json','Content-Type':'application/json'},body:JSON.stringify({email:email.value.trim(),source:'huntr.run'})});
-      if(r.ok){ msg.textContent='✓ you\'re on the list. we\'ll be in touch.'; msg.classList.add('ok'); form.reset(); } else throw 0;
-    }catch{ msg.textContent='→ something went wrong — try again.'; msg.classList.add('err'); }
-    finally{ btn.disabled=false; btn.textContent='Request Access ►'; }
+  document.querySelectorAll('form[data-wl]').forEach(form=>{
+    const email=form.querySelector('input[type=email]');
+    const btn=form.querySelector('button[type=submit]');
+    const msg=form.parentElement.querySelector('.wl-msg') || form.nextElementSibling;
+    form.addEventListener('submit', async e=>{
+      e.preventDefault(); if(msg) msg.className='wl-msg';
+      if(!valid((email.value||'').trim())){ if(msg){msg.textContent='→ enter a valid email address.'; msg.classList.add('err');} return; }
+      if(!FORM_ENDPOINT){ if(msg){msg.textContent='→ waitlist opens soon — follow for the launch.'; msg.classList.add('ok');} return; }
+      btn.disabled=true; const label=btn.textContent; btn.textContent='Sending…';
+      try{ const r=await fetch(FORM_ENDPOINT,{method:'POST',headers:{'Accept':'application/json','Content-Type':'application/json'},body:JSON.stringify({email:email.value.trim(),source:'huntr.run'})});
+        if(r.ok){ if(msg){msg.textContent='✓ you\'re on the list. we\'ll be in touch.'; msg.classList.add('ok');} form.reset(); } else throw 0;
+      }catch{ if(msg){msg.textContent='→ something went wrong — try again.'; msg.classList.add('err');} }
+      finally{ btn.disabled=false; btn.textContent=label; }
+    });
   });
 </script>
 </body>
