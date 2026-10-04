@@ -174,21 +174,21 @@ def has(binname):
 
 
 def probe_host(host, timeout=8):
-    """Directly probe a single host (https then http). Returns (status|None, title)."""
+    """Directly probe a single host (https then http). Returns (status|None, title, scheme)."""
     import urllib.request, urllib.error
-    for scheme in ("https://", "http://"):
+    for scheme in ("https", "http"):
         try:
-            req = urllib.request.Request(scheme + host, method="GET",
+            req = urllib.request.Request(scheme + "://" + host, method="GET",
                                          headers={"User-Agent": "Mozilla/5.0 HUNTR"})
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 body = r.read(4096).decode("utf-8", "ignore")
                 m = re.search(r"<title[^>]*>(.*?)</title>", body, re.I | re.S)
-                return (getattr(r, "status", 200) or 200), (m.group(1).strip()[:60] if m else "")
+                return (getattr(r, "status", 200) or 200), (m.group(1).strip()[:60] if m else ""), scheme
         except urllib.error.HTTPError as e:
-            return e.code, ""
+            return e.code, "", scheme
         except Exception:
             continue
-    return None, ""
+    return None, "", "https"
 
 
 def phase_scope():
@@ -238,8 +238,8 @@ def phase_recon():
         hosts.insert(0, {"host": lithost, "status": None})
     lit = next((h for h in hosts if h.get("host") == lithost), None)
     if lit is not None and not lit.get("status"):
-        st, title = probe_host(lithost)
-        lit["status"] = st
+        st, title, sch = probe_host(lithost)
+        lit["status"] = st; lit["scheme"] = sch
         if title:
             lit["title"] = title
     if lit is not None and lit.get("status"):
@@ -275,7 +275,7 @@ def phase_surface():
         host = h.get("host")
         if not host:
             continue
-        url = "https://" + host
+        url = (h.get("scheme") or "https") + "://" + host   # honor http targets (localhost/dev/plain-http)
         if has("katana"):
             log("cmd", "$ katana -u " + url + " -silent -d 2")
             out, _, _ = sh(["katana", "-u", url, "-silent", "-d", "2", "-c", "15",
