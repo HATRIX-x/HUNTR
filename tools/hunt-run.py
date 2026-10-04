@@ -1028,7 +1028,7 @@ def phase_chain():
     flush()
 
 
-def phase_methodology():
+def phase_methodology(deadline=None):
     """The /autohunt methodology: invariant oracles, race, capability-graph chaining, dedup, coverage ledger."""
     stage("Validate", 90)
     live = [h["host"] for h in STATE["hosts"] if h.get("status")]
@@ -1078,9 +1078,12 @@ def phase_methodology():
         if chains:
             log("warn", "⛓ " + str(len(chains)) + " proven chain path(s) — escalated impact")
 
-    # dedup vs disclosed corpus
+    # dedup vs disclosed corpus (bounded: 20s per finding × N can overrun — stop at the budget)
     if (HERE / "dedup-check.py").exists():
         for f in STATE["findings"]:
+            if deadline and time.time() > deadline:
+                log("warn", "⏱ budget reached — dedup skipped for remaining findings")
+                break
             d = tool_json("dedup-check.py", ["--class", _cls_key(f.get("cls")), "--endpoint", f.get("endpoint", ""),
                                              "--title", f.get("title", "")], timeout=20)
             if isinstance(d, dict):
@@ -1146,7 +1149,7 @@ def main():
         phase_ai_direct(deadline)   # Layer 2 — AI-directed targeted tests (Haiku)
         phase_oob(deadline)         # Blind/OOB fuzzing — nuclei DAST + interactsh (blind SSRF etc.)
         phase_fingerprint()
-        phase_methodology()         # coverage ledger + invariants + chains + dedup
+        phase_methodology(deadline)  # coverage ledger + invariants + chains + dedup (dedup bounded by budget)
         phase_ai_judge()            # Layer 3 — strong-model validation + real repro/impact (Sonnet)
         phase_chain()               # Chain-to-Impact — reason findings into max-impact chains (the moat)
         phase_economics()           # Economics brain — EV-rank findings + hard dedup gate
