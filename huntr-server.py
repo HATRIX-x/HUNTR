@@ -144,6 +144,12 @@ class H(BaseHTTPRequestHandler):
                 return self._send(json.loads(r["out"]))
             except Exception:
                 return self._send({"ok": False, "error": r.get("err", "")[:400], "problems": [], "fixes_applied": []})
+        if u.path == "/api/outcomes":  # GET calibrated priors from the learning loop
+            pf = ROOT / "corpus" / "priors.json"
+            try:
+                return self._send(json.loads(pf.read_text()) if pf.exists() else {"total": 0, "buckets": {}})
+            except Exception:
+                return self._send({"total": 0, "buckets": {}})
         if u.path == "/api/claude-account":  # how the engine authenticates to Claude (API key vs linked account)
             try:
                 import importlib.util as _il
@@ -318,6 +324,24 @@ class H(BaseHTTPRequestHandler):
                 except Exception:
                     pass
             return self._send({"ok": True, "action": act})
+        if u.path == "/api/outcome":  # POST a finding outcome → fleet learning loop
+            import time as _t
+            rec = {k: b.get(k) for k in ("target", "program", "stack", "cls", "sev", "title", "endpoint", "outcome", "bounty", "dup", "ev", "chain")}
+            rec["ts"] = _t.time()
+            if not rec.get("outcome"):
+                return self._send({"ok": False, "error": "no outcome"}, 400)
+            corp = ROOT / "corpus"
+            try:
+                corp.mkdir(parents=True, exist_ok=True)
+                with open(corp / "outcomes.jsonl", "a") as fh:
+                    fh.write(json.dumps(rec) + "\n")
+            except Exception as e:
+                return self._send({"ok": False, "error": str(e)[:120]}, 500)
+            try:  # recalibrate priors from all outcomes so far
+                subprocess.run([sys.executable, str(TOOLS / "hunt-learn.py")], timeout=30, capture_output=True)
+            except Exception:
+                pass
+            return self._send({"ok": True, "recorded": rec.get("outcome")})
         if u.path == "/api/js-diff/add-url":  # POST {target, url}
             r = run("js-diff.py", ["--target", b.get("target","default"), "--add-url", b.get("url","")])
             return self._send({"ok": r["code"] == 0, "msg": r["out"].strip()})

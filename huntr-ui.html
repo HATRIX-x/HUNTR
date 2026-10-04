@@ -2156,6 +2156,18 @@ function sdMarkSent(sid,fi,btn){
   s.findings[fi]._submitted=true; updateBadges();
   if(V.page==='send') renderSend(document.getElementById('content'));
 }
+/* learning loop: record a real outcome → recalibrates EV/dedup priors for future hunts */
+function sdOutcome(sid,fi,outcome){
+  const s=sessions.find(x=>x.id===sid); if(!s||!s.findings[fi])return;
+  const f=s.findings[fi];
+  let bounty=null;
+  if(outcome==='paid'){ const v=prompt('Bounty paid (USD)?',''); if(v===null) return; bounty=parseFloat((''+v).replace(/[^0-9.]/g,''))||0; }
+  f._outcome=outcome; f._bounty=bounty;
+  const body={target:s.scope,program:s.program||'',stack:'',cls:(f.cls||''),sev:f.sev,title:f.title,endpoint:f.endpoint||'',
+    outcome, bounty, dup:(typeof f.dup==='number'?f.dup:null), ev:(typeof f.ev==='number'?f.ev:null), chain:(f.cls||'').toLowerCase()==='chain'};
+  if(window.__HUNTR_LIVE){ fetch('/api/outcome',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).catch(()=>{}); }
+  if(V.page==='send') renderSend(document.getElementById('content'));
+}
 function renderSend(el){
   const cts=(typeof fcContacts==='function'?fcContacts():[]);
   // ── Economics brain: EV + reco-driven grouping + hard dedup gate ──
@@ -2172,6 +2184,7 @@ function renderSend(el){
   const ready=openQ;   // back-compat alias
   const pipelineEV=openQ.reduce((a,x)=>a+evOf(x),0);
   const pot=pipelineEV;
+  let learnedN=0; (typeof activeSessions==='function'?activeSessions():sessions).forEach(s=>{ const l=s._run&&s._run.economics&&s._run.economics.learned; if(l&&l.outcomes)learnedN=Math.max(learnedN,l.outcomes); });
   const sevName={c:'CRIT',h:'HIGH',m:'MED',l:'LOW',i:'INFO'};
   const E=(typeof fcEsc==='function')?fcEsc:(x=>x);
   const chains=[]; (typeof activeSessions==='function'?activeSessions():sessions).forEach(s=>{(s._run&&s._run.chains||[]).forEach(ch=>chains.push(ch));});
@@ -2197,7 +2210,13 @@ function renderSend(el){
       <div class="sd-act">
         <span class="sd-est" title="expected value = P(real) × P(accepted) × bounty × (1 − P(dup))">EV ~${fmt$(ev)}</span>
         ${done
-          ? `<span class="sd-b done">✓ marked sent</span>`
+          ? (x.f&&x.f._outcome
+              ? `<span class="sd-b done">⟲ ${x.f._outcome}${x.f._bounty?' · $'+x.f._bounty:''}</span>`
+              : `<span style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-right:6px">outcome →</span>
+                 <button class="sd-b" onclick="sdOutcome('${x._sid}',${x._fi},'accepted')">Accepted</button>
+                 <button class="sd-b" onclick="sdOutcome('${x._sid}',${x._fi},'paid')">Paid $</button>
+                 <button class="sd-b" onclick="sdOutcome('${x._sid}',${x._fi},'duplicate')">Dup</button>
+                 <button class="sd-b" onclick="sdOutcome('${x._sid}',${x._fi},'na')">N-A</button>`)
           : `<button class="sd-b prim" onclick="fcOpenReport('${x._sid}',${x._fi})">Open report ▸</button>
              <button class="sd-b" onclick="fcCopyReport('${x._sid}',${x._fi},this)">Copy MD</button>
              <button class="sd-b" onclick="sdMarkSent('${x._sid}',${x._fi},this)">Mark sent</button>`}
@@ -2209,6 +2228,7 @@ function renderSend(el){
       <div class="pe-sub">When the engine clears a finding (validated + deduped), it lands here. Head to <b style="color:var(--accent);cursor:pointer" onclick="nav('dashboard')">Hunt</b> to watch progress.</div></div>`;
   } else {
     body=`<div class="sd-note">⚠ HUNTR never submits for you. Copy the report, file it on the program's platform, then mark it sent. &nbsp;·&nbsp; Queue is ranked by expected value.</div>
+      ${learnedN?`<div class="sd-note" style="color:var(--accent)">⟲ Learning loop · EV + dedup priors calibrated from ${learnedN} past outcome(s) — record each result below so future hunts rank sharper.</div>`:`<div class="sd-note" style="color:var(--text3)">⟲ Learning loop · record each finding's outcome (accepted / paid / dup / n-a) after you mark it sent — HUNTR calibrates EV + dedup from your real results.</div>`}
       ${openQ.map(x=>rowHTML(x,false)).join('')}
       ${held.length?`<div class="sd-note" style="margin-top:20px">⊘ HELD — likely duplicate (dedup gate · ${held.length}) · matches the program's disclosed history; don't burn a submission</div>${held.map(x=>rowHTML(x,false)).join('')}`:''}
       ${sent.length?`<div class="sd-note" style="margin-top:20px">✓ MARKED SENT (${sent.length})</div>${sent.map(x=>rowHTML(x,true)).join('')}`:''}

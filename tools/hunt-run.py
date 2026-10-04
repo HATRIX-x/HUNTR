@@ -714,8 +714,26 @@ def phase_economics():
         return
     stage("Economics", 98)
     bounty, mult = _bounty_model()
+    # ── learning loop: calibrated priors from past operator-reported outcomes ──
+    priors = {}; ptot = 0
+    try:
+        pf = Path(os.environ.get("HUNTR_HOME", str(Path.home() / ".huntr"))) / "corpus" / "priors.json"
+        if pf.exists():
+            pj = json.loads(pf.read_text()); priors = pj.get("buckets", {}); ptot = pj.get("total", 0)
+    except Exception:
+        priors = {}; ptot = 0
+    stack0 = _stack().split(",")[0]
+
+    def _blend(default, learned, n, k=5):
+        if learned is None or not n:
+            return default
+        w = n / (n + k)
+        return default * (1 - w) + learned * w
+
+    applied = 0
     for f in finds:
         sev = f.get("sev", "i")
+        cls = _cls_key(f.get("cls"))
         verdict = (f.get("verdict") or ("confirmed" if f.get("steps") else "likely")).lower()
         preal = P_REAL.get(verdict, 0.5)
         pacc = P_ACCEPT.get(sev, 0.3)
@@ -724,6 +742,15 @@ def phase_economics():
         dup = f.get("dup")
         pdup = (dup / 100.0) if isinstance(dup, (int, float)) else 0.15
         b = bounty.get(sev, 0)
+        # blend learned priors (per class|stack, else per class) weighted by sample count
+        pb = priors.get("cs|" + cls + "|" + stack0) or priors.get("cls|" + cls)
+        if pb and pb.get("n", 0) >= 3:
+            pacc = _blend(pacc, pb.get("p_accept"), pb["n"])
+            if not isinstance(dup, (int, float)) and pb.get("p_dup") is not None:
+                pdup = _blend(0.15, pb.get("p_dup"), pb["n"])
+            if pb.get("avg_bounty"):
+                b = int(_blend(b, pb.get("avg_bounty"), pb["n"]))
+            f["learned"] = pb["n"]; applied += 1
         ev = preal * pacc * b * (1 - pdup)
         if isinstance(dup, (int, float)) and dup >= DUP_GATE:
             reco = "hold-duplicate"
@@ -740,12 +767,15 @@ def phase_economics():
     STATE["economics"] = {
         "bounty_model": bounty, "program_mult": mult, "pipeline_ev": total_ev,
         "submit_now": len(submit_now), "needs_work": len(needs), "held_duplicate": len(held),
+        "learned": {"outcomes": ptot, "applied": applied},
         "top": sorted(([{"title": f["title"], "sev": f["sev"], "ev": f.get("ev", 0), "endpoint": f.get("endpoint", "")}
                         for f in submit_now]), key=lambda x: -x["ev"])[:5],
     }
     STATE["stats"]["pipeline_ev"] = total_ev
     log("ok", "$ economics · pipeline EV ~$" + format(total_ev, ",") + " · " + str(len(submit_now)) +
         " submit-ready · " + str(len(held)) + " held (likely dup) · " + str(len(needs)) + " need work")
+    if ptot:
+        log("out", "⟲ learning loop · EV calibrated from " + str(ptot) + " past outcome(s) · " + str(applied) + " finding(s) adjusted")
     flush()
 
 
