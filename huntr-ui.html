@@ -31,6 +31,15 @@ body::before{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;opa
              linear-gradient(90deg,var(--border) 1px,transparent 1px) 0 0/96px 96px;
   -webkit-mask-image:radial-gradient(ellipse 100% 70% at 50% 0%,#000 0%,transparent 78%);
           mask-image:radial-gradient(ellipse 100% 70% at 50% 0%,#000 0%,transparent 78%);}
+/* refined-operator cohesion: display font on brand + headings, huntr.run status rail */
+.sr-brandtxt{font-family:var(--disp)!important;font-weight:800;letter-spacing:1px;}
+.view-title,.mc-title,.modal-title{font-family:var(--disp)!important;font-weight:800;text-transform:uppercase;letter-spacing:-.01em;}
+.statrail{display:flex;align-items:center;justify-content:space-between;gap:16px;height:30px;flex-shrink:0;padding:0 16px;
+  border-bottom:1px solid var(--border);background:var(--bg);font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--text3);white-space:nowrap;overflow:hidden;position:relative;z-index:2;}
+.statrail .sl-live{color:var(--green);}
+.statrail .sl-dot{color:var(--green);}
+@media(max-width:700px){.statrail .sl-mid{display:none;}}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
 html,body{height:100%;background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased;}
 body{overflow:hidden;font-family:var(--sans);font-size:13px;background:var(--bg);}
@@ -1307,6 +1316,11 @@ textarea.form-input{min-height:104px;resize:vertical;line-height:1.6;}
   </nav>
 
   <main class="main">
+    <div class="statrail">
+      <span><span class="sl-dot">●</span> <span class="sl-live">System online</span> &nbsp; Huntr-01</span>
+      <span class="sl-mid">Autonomous AI operator · Fire control</span>
+      <span>⌖ Target standby</span>
+    </div>
     <div class="topbar" id="topbar">
       <button class="tb-back" id="tb-back" onclick="goBack()" title="Back to the previous screen" hidden>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
