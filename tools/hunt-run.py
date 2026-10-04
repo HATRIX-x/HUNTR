@@ -688,7 +688,7 @@ def phase_ai_direct(deadline, max_rounds=3):
             break
         sys_p = ("You are a bug-bounty lead directing an automated scanner. You get the target's mapped endpoints, "
                  "the findings so far, and the UNTESTED (endpoint,class) cells. Pick the highest-ROI cells to test next "
-                 "(max 12). Reply STRICT JSON: {\"tests\":[{\"endpoint\":\"..\",\"class\":\"sqli|xss|cors|redirect|idor|authz|param|race\"}],"
+                 "(max 12). Reply STRICT JSON: {\"tests\":[{\"endpoint\":\"..\",\"class\":\"sqli|xss|ssti|ssrf|cors|redirect|idor|authz|param|race\"}],"
                  "\"done\":false,\"why\":\"one short line\"}. Set done=true when nothing left is worth testing.")
         usr = json.dumps({"target": TARGET, "mode": MODE,
                           "findings": [{"title": f["title"], "endpoint": f.get("endpoint", ""), "cls": f.get("cls", "")} for f in STATE["findings"]],
@@ -702,8 +702,8 @@ def phase_ai_direct(deadline, max_rounds=3):
             if time.time() > deadline:
                 break
             ep = t.get("endpoint", ""); cls = (t.get("class") or "").lower()
-            if not ep or cls not in ("cors", "redirect", "idor", "authz", "param", "race"):
-                continue
+            if not ep or cls not in ("sqli", "xss", "ssti", "ssrf", "cors", "redirect", "idor", "authz", "param", "race"):
+                continue   # allow the injection classes the prompt advertises (were silently dropped before)
             if cls in TESTED.get(ep, set()):
                 continue
             if cls in ("idor", "authz", "param") and not authed:
