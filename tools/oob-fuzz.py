@@ -30,7 +30,12 @@ MAX_URLS = int(arg("--max-urls", "60") or 60)
 def out(d):
     print(json.dumps(d)); sys.exit(0)
 
-if not shutil.which("nuclei"):
+# prefer a freshly-built nuclei (~/go/bin) — its embedded interactsh client decodes OAST correctly;
+# older system builds (<v3.11) fail to unmarshal interaction data from the current public servers
+NUCLEI = os.path.expanduser("~/go/bin/nuclei")
+if not os.path.exists(NUCLEI):
+    NUCLEI = shutil.which("nuclei")
+if not NUCLEI:
     out({"findings": [], "tested": False, "error": "nuclei not installed"})
 
 # gather param-bearing URLs (only those with a query parameter are fuzzable)
@@ -73,7 +78,7 @@ SEVMAP = {"critical": "c", "high": "h", "medium": "m", "low": "l", "info": "i", 
 try:
     tmp = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
     tmp.write("\n".join(uniq)); tmp.close()
-    cmd = ["nuclei", "-l", tmp.name, "-dast", "-jsonl", "-silent", "-duc",
+    cmd = [NUCLEI, "-l", tmp.name, "-dast", "-jsonl", "-silent", "-duc",
            "-no-color", "-rl", "50", "-c", "25", "-timeout", "10"]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=BUDGET)
