@@ -1,0 +1,946 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+
+<!-- ===== SEO: primary ===== -->
+<title>HUNTR — Autonomous AI Bug Bounty Operator</title>
+<meta name="description" content="HUNTR is an autonomous AI operator for bug bounty. It maps the attack surface, tests it, validates findings, and drafts the report — you review and submit. Validated, report-ready vulnerabilities, not scanner noise.">
+<meta name="keywords" content="bug bounty automation, AI bug bounty, automated bug bounty, autonomous security agent, automated penetration testing, automated recon, vulnerability hunting, bug bounty tools, bug bounty platform, report-ready findings, security researcher tools, AI vulnerability scanner, agentic security testing">
+<meta name="author" content="HUNTR">
+<meta name="robots" content="index, follow, max-image-preview:large">
+<link rel="canonical" href="https://huntr.run/">
+<meta name="theme-color" content="#0A0B0D">
+
+<!-- ===== SEO: Open Graph ===== -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="HUNTR">
+<meta property="og:title" content="HUNTR — Autonomous AI Bug Bounty Operator">
+<meta property="og:description" content="It maps the surface, tests it, validates findings, and drafts the report. You review and submit — it never submits for you. Validated, report-ready vulnerabilities, not noise.">
+<meta property="og:url" content="https://huntr.run/">
+<meta property="og:image" content="https://huntr.run/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="HUNTR — the autonomous operator for bug bounty.">
+
+<!-- ===== SEO: Twitter ===== -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="HUNTR — Autonomous AI Bug Bounty Operator">
+<meta name="twitter:description" content="It hunts. You decide. Validated, report-ready vulnerabilities — not scanner noise. Never auto-submits; authorized targets only.">
+<meta name="twitter:image" content="https://huntr.run/og.png">
+
+<!-- ===== SEO: structured data ===== -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareApplication",
+      "name": "HUNTR",
+      "applicationCategory": "SecurityApplication",
+      "operatingSystem": "Web, Linux, macOS",
+      "url": "https://huntr.run/",
+      "description": "HUNTR is an autonomous AI operator for bug bounty. It maps the attack surface, tests it, validates findings, and drafts the report. You review and submit — it never submits for you.",
+      "featureList": [
+        "Autonomous end-to-end bug bounty hunting",
+        "Attack surface mapping and recon",
+        "Automated vulnerability testing across classes",
+        "Finding validation and false-positive removal",
+        "Report-ready reproduction and impact drafting",
+        "Human-gated submission — never auto-submits"
+      ],
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD", "availability": "https://schema.org/PreOrder" }
+    },
+    {
+      "@type": "Organization",
+      "name": "HUNTR",
+      "url": "https://huntr.run/",
+      "logo": "https://huntr.run/og.png",
+      "description": "The autonomous operator for bug bounty."
+    },
+    {
+      "@type": "WebSite",
+      "name": "HUNTR",
+      "url": "https://huntr.run/"
+    },
+    {
+      "@type": "FAQPage",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "What is HUNTR?",
+          "acceptedAnswer": { "@type": "Answer", "text": "HUNTR is an autonomous AI operator for bug bounty. You point it at a target you are authorized to test and it maps the attack surface, tests it, validates what it finds, and drafts the report. You review and submit." }
+        },
+        {
+          "@type": "Question",
+          "name": "Does HUNTR submit reports automatically?",
+          "acceptedAnswer": { "@type": "Answer", "text": "No. HUNTR never auto-submits. Every finding is a draft for you to review and submit. The judgment stays human." }
+        },
+        {
+          "@type": "Question",
+          "name": "How is HUNTR different from a vulnerability scanner?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Scanners stop at surface signals and produce noise. HUNTR runs a real methodology end-to-end, validates each finding to drop false positives, and delivers report-ready vulnerabilities with reproduction and impact." }
+        },
+        {
+          "@type": "Question",
+          "name": "Does it only run against authorized targets?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Yes. HUNTR only runs against targets you are authorized to test, and it respects program scope. It is a tool for authorized security research." }
+        }
+      ]
+    }
+  ]
+}
+</script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800;900&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0A0B0D;
+    --panel:#101217;
+    --panel-2:#15181e;
+    --fg:#EDEFF2;
+    --fg-2:#A3A9B4;
+    --fg-3:#656C78;
+    --line:#1C1F26;
+    --line-2:#2A2F38;
+    --purple:#A78BFA;
+    --gold:#E7C983;
+    --green:#4ADE80;
+    --crit:#E66;
+    --maxw:1200px;
+    color-scheme:dark;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html{-webkit-text-size-adjust:100%; scroll-behavior:smooth;}
+  body{
+    background:var(--bg); color:var(--fg);
+    font-family:'Inter',system-ui,sans-serif; line-height:1.6;
+    overflow-x:hidden; -webkit-font-smoothing:antialiased;
+  }
+  ::selection{background:rgba(167,139,250,.28); color:#fff;}
+  a{color:inherit; text-decoration:none;}
+  .mono{font-family:'JetBrains Mono',ui-monospace,monospace;}
+  .disp{font-family:'Archivo',sans-serif;}
+  .wrap{max-width:var(--maxw); margin:0 auto; padding-inline:clamp(20px,5vw,48px);}
+  .label{font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:.18em; text-transform:uppercase; color:var(--fg-3);}
+
+  /* calmer blueprint grid — bigger cells, low opacity, no scanlines */
+  .bg-grid{position:fixed; inset:0; z-index:0; pointer-events:none; opacity:.5;
+    background:
+      linear-gradient(var(--line) 1px, transparent 1px) 0 0/96px 96px,
+      linear-gradient(90deg, var(--line) 1px, transparent 1px) 0 0/96px 96px;
+    -webkit-mask-image:radial-gradient(ellipse 90% 60% at 50% -5%, #000 0%, transparent 72%);
+            mask-image:radial-gradient(ellipse 90% 60% at 50% -5%, #000 0%, transparent 72%);
+  }
+  main,header,nav,footer{position:relative; z-index:1;}
+
+  /* status rail — subtle */
+  .rail{border-bottom:1px solid var(--line);}
+  .rail .wrap{display:flex; justify-content:space-between; align-items:center; height:34px; gap:16px; white-space:nowrap; overflow:hidden;}
+  .rail span{font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--fg-3);}
+  .rail .live{color:var(--green);}
+  @media(max-width:640px){ .rail .r-hide{display:none;} }
+
+  /* nav */
+  nav{position:sticky; top:0; z-index:100; background:rgba(10,11,13,.94); backdrop-filter:blur(12px); border-bottom:1px solid var(--line);}
+  nav .wrap{display:flex; align-items:center; justify-content:space-between; height:66px;}
+  .brand{display:flex; align-items:center; gap:12px; font-family:'Archivo',sans-serif; font-weight:800; font-size:19px; letter-spacing:.05em;}
+  .brand svg{width:28px; height:28px; flex:none;}
+  .nav-links{display:flex; align-items:center; gap:34px;}
+  .nav-links a{font-family:'JetBrains Mono',monospace; font-size:12px; letter-spacing:.1em; text-transform:uppercase; color:var(--fg-2); transition:color .18s;}
+  .nav-links a:hover{color:var(--fg);}
+  .nav-links a.btn-primary, .nav-links a.btn-primary:hover{color:#0A0A0C;}  /* keep CTA text dark over .nav-links a */
+  .btn{display:inline-flex; align-items:center; gap:9px; justify-content:center; font-family:'JetBrains Mono',monospace; font-weight:500; font-size:12.5px; letter-spacing:.06em; text-transform:uppercase; padding:12px 22px; border-radius:0; border:1px solid transparent; cursor:pointer; transition:background .18s, color .18s, border-color .18s;}
+  .btn-primary{background:var(--purple); color:#0A0A0C; border-color:var(--purple); font-weight:600;}
+  .btn-primary:hover{background:#b9a3fb; border-color:#b9a3fb;}
+  .btn-ghost{background:transparent; color:var(--fg); border-color:var(--line-2);}
+  .btn-ghost:hover{border-color:var(--purple); color:var(--purple);}
+  @media(max-width:860px){ .nav-links a.n-hide{display:none;} }
+
+  /* kicker — a thin rule + mono label, no /// gimmick */
+  .kick{display:flex; align-items:center; gap:14px; margin-bottom:22px;}
+  .kick::before{content:""; width:26px; height:1px; background:var(--purple);}
+  .kick span{font-family:'JetBrains Mono',monospace; font-size:11.5px; letter-spacing:.2em; text-transform:uppercase; color:var(--purple);}
+
+  h1{font-family:'Archivo',sans-serif; font-weight:900; text-transform:uppercase; letter-spacing:-.025em; line-height:.92; font-size:clamp(2.7rem,6.6vw,4.9rem);}
+  h1 .acc{color:var(--purple);}
+  h2{font-family:'Archivo',sans-serif; font-weight:800; text-transform:uppercase; letter-spacing:-.02em; line-height:1.02; font-size:clamp(1.8rem,4vw,2.8rem);}
+  .lede{margin-top:26px; font-size:clamp(1rem,1.5vw,1.14rem); color:var(--fg-2); max-width:50ch; line-height:1.7;}
+  .lede b{color:var(--fg); font-weight:600;}
+  .sec-sub{margin-top:18px; color:var(--fg-2); max-width:56ch; font-size:1.02rem; line-height:1.65;}
+
+  /* ===== hero ===== */
+  .hero{border-bottom:1px solid var(--line);}
+  .hero .wrap{display:grid; grid-template-columns:1.04fr .96fr; gap:clamp(40px,5vw,72px); align-items:center; padding-block:clamp(56px,8vw,110px);}
+  @media(max-width:900px){ .hero .wrap{grid-template-columns:1fr; gap:48px; padding-block:56px;} }
+  .eyebrow{display:inline-flex; align-items:center; gap:10px; font-family:'JetBrains Mono',monospace; font-size:11.5px; letter-spacing:.16em; text-transform:uppercase; color:var(--fg-2); margin-bottom:30px;}
+  .eyebrow .d{width:7px; height:7px; border-radius:50%; background:var(--green); box-shadow:0 0 10px var(--green); animation:pulse 2.4s infinite;}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  .cta-row{margin-top:38px; display:flex; flex-wrap:wrap; gap:14px;}
+  /* a11y: visible focus ring on every interactive control (ui-ux-pro-max UX, High) */
+  a:focus-visible, button:focus-visible, input:focus-visible, .btn:focus-visible{
+    outline:2px solid var(--purple); outline-offset:3px; border-radius:1px;}
+  /* hero email capture (above the fold — Waitlist/Coming-Soon pattern) */
+  .hero-wl{margin-top:34px; max-width:440px;}
+  .hero-benefit{margin-top:12px; font-size:12.5px; color:var(--fg-3); line-height:1.6;}
+  .hero-benefit b{color:var(--fg-2); font-weight:500;}
+  .hero-link{display:inline-block; margin-top:16px; font-family:'JetBrains Mono',monospace;
+    font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--fg-2);
+    border-bottom:1px solid var(--line-2); padding-bottom:2px; transition:color .18s, border-color .18s;}
+  .hero-link:hover{color:var(--purple); border-color:var(--purple);}
+  .spec{margin-top:34px; display:grid; gap:12px; max-width:46ch;}
+  .spec div{display:flex; gap:14px; align-items:baseline; font-size:.92rem; color:var(--fg-2);}
+  .spec .k{font-family:'JetBrains Mono',monospace; font-size:10.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--purple); flex:none; width:68px;}
+
+  /* ===== fire-control HUD ===== */
+  .hud{width:100%; border:1px solid var(--line-2); background:linear-gradient(180deg,var(--panel-2),var(--panel)); box-shadow:0 40px 90px -50px #000;}
+  .hud-top{display:flex; align-items:center; gap:8px; padding:12px 16px; border-bottom:1px solid var(--line); background:var(--panel-2);}
+  .hud-top .sq{width:9px; height:9px; border-radius:50%; background:var(--line-2);}
+  .hud-top .t{margin-left:8px; font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--fg-3);}
+  .hud-top .st{margin-left:auto; font-family:'JetBrains Mono',monospace; font-size:10.5px; letter-spacing:.1em; color:var(--green); text-transform:uppercase; display:flex; align-items:center; gap:7px;}
+  .hud-top .st .d{width:6px; height:6px; border-radius:50%; background:var(--green); box-shadow:0 0 8px var(--green);}
+  .hud-meta{display:grid; grid-template-columns:repeat(3,1fr); border-bottom:1px solid var(--line); background:var(--line);}
+  .hud-meta div{background:var(--panel); padding:13px 15px;}
+  .hud-meta .l{font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--fg-3);}
+  .hud-meta .v{font-family:'JetBrains Mono',monospace; font-size:14px; color:var(--fg); margin-top:4px; font-weight:500;}
+  .hud-meta .v.p{color:var(--purple);}
+  .hud-feed{padding:16px; font-family:'JetBrains Mono',monospace; font-size:12px; line-height:2.0; min-height:156px;}
+  .hud-feed .ln{display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .hud-feed .c{color:var(--purple);} .hud-feed .o{color:var(--fg-2);} .hud-feed .ok{color:var(--green);}
+  .hud-feed .w{color:var(--gold);} .hud-feed .s{color:var(--fg-3);}
+  .hud-cov{padding:0 16px 16px;}
+  .hud-cov .cl{display:flex; justify-content:space-between; font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--fg-3); margin-bottom:7px;}
+  .hud-cov .cl b{color:var(--gold); font-weight:500;}
+  .meter{height:8px; background:var(--panel-2); border:1px solid var(--line);}
+  .meter i{display:block; height:100%; width:91%; background:repeating-linear-gradient(90deg,var(--purple) 0 5px, transparent 5px 8px);}
+  .hud-sev{display:flex; border-top:1px solid var(--line); background:var(--line);}
+  .hud-sev span{flex:1; background:var(--panel); padding:11px 12px; font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--fg-3); display:flex; justify-content:space-between;}
+  .hud-sev .crit b{color:var(--crit);} .hud-sev .high b{color:var(--gold);} .hud-sev .val b{color:var(--green);}
+
+  /* ===== signature craft: live-hunt canvas, custom cursor, grain, reveal ===== */
+  /* film grain */
+  .grain{position:fixed; inset:0; z-index:3; pointer-events:none; opacity:.05; mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");}
+  /* custom crosshair cursor (pointer:fine only) */
+  @media (pointer:fine){
+    html.cursor-on, html.cursor-on *{cursor:none !important;}
+    .cursor{position:fixed; top:0; left:0; z-index:9999; pointer-events:none; width:26px; height:26px;
+      transform:translate(-50%,-50%); transition:width .18s, height .18s, opacity .2s; mix-blend-mode:difference;}
+    .cursor::before,.cursor::after{content:""; position:absolute; background:#fff;}
+    .cursor::before{top:50%; left:0; right:0; height:1px; transform:translateY(-50%);}
+    .cursor::after{left:50%; top:0; bottom:0; width:1px; transform:translateX(-50%);}
+    .cursor .ring{position:absolute; inset:0; border:1px solid rgba(255,255,255,.5); border-radius:50%;}
+    .cursor.hot{width:46px; height:46px;}
+    .cursor-dot{position:fixed; top:0; left:0; z-index:9999; width:4px; height:4px; border-radius:50%;
+      background:var(--purple); transform:translate(-50%,-50%); pointer-events:none;}
+  }
+  /* live-hunt stage replaces the static HUD visual */
+  .hunt-stage{position:relative; width:100%; aspect-ratio:1/1; border:1px solid var(--line-2);
+    background:radial-gradient(ellipse at 50% 45%, rgba(167,139,250,.06), transparent 60%), var(--panel);
+    overflow:hidden; box-shadow:0 40px 110px -50px #000;}
+  .hunt-stage canvas{position:absolute; inset:0; width:100%; height:100%; display:block;}
+  .hunt-tel{position:absolute; left:14px; bottom:14px; right:14px; display:flex; flex-direction:column; gap:9px;
+    font-family:'JetBrains Mono',monospace; pointer-events:none;}
+  .ht-row{display:flex; align-items:center; gap:9px; font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--fg-3);}
+  .ht-dot{width:7px; height:7px; border-radius:50%; background:var(--green); box-shadow:0 0 9px var(--green);}
+  .ht-run{color:var(--green);} .ht-tgt{margin-left:auto; color:var(--fg-2);}
+  .ht-stat{display:flex; gap:16px; font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg-3);}
+  .ht-stat b{color:var(--fg); font-variant-numeric:tabular-nums;} .ht-stat b.g{color:var(--green);}
+  .ht-cov-l{display:flex; justify-content:space-between; font-size:9.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--fg-3); margin-bottom:5px;}
+  .ht-cov-l b{color:var(--gold);}
+  .ht-meter{height:6px; background:var(--panel-2); border:1px solid var(--line);}
+  .ht-meter i{display:block; height:100%; width:0; background:repeating-linear-gradient(90deg,var(--purple) 0 5px, transparent 5px 8px); transition:width .3s;}
+  /* scroll-reveal base (JS removes when motion allowed; stays visible otherwise) */
+  .reveal{will-change:transform,opacity;}
+  @media (prefers-reduced-motion:reduce){ .cursor,.cursor-dot{display:none!important;} html.cursor-on,html.cursor-on *{cursor:auto!important;} }
+
+  /* ticker */
+  .ticker{border-bottom:1px solid var(--line);}
+  .ticker .wrap{display:flex; flex-wrap:wrap; gap:12px 40px; padding-block:20px;}
+  .ticker span{font-family:'JetBrains Mono',monospace; font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg-3); display:inline-flex; align-items:center; gap:11px;}
+  .ticker .m{color:var(--purple);}
+
+  /* sections */
+  section{border-bottom:1px solid var(--line);}
+  .sec{padding-block:clamp(64px,8vw,112px);}
+  .pipe{display:grid; grid-template-columns:repeat(3,1fr); gap:1px; background:var(--line); margin-top:clamp(44px,5vw,64px); border:1px solid var(--line);}
+  .pstep{background:var(--bg); padding:clamp(32px,3.2vw,46px);}
+  .pstep .num{font-family:'Archivo',sans-serif; font-weight:900; font-size:clamp(2.2rem,3.4vw,3rem); color:var(--line-2); line-height:1; letter-spacing:-.04em;}
+  .pstep .tag{font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--purple); margin-top:18px;}
+  .pstep h3{font-family:'Archivo',sans-serif; font-weight:800; text-transform:uppercase; font-size:1.3rem; margin:10px 0 12px; letter-spacing:-.01em;}
+  .pstep p{color:var(--fg-2); font-size:.96rem; line-height:1.65;}
+  @media(max-width:820px){ .pipe{grid-template-columns:1fr;} }
+
+  .grid4{display:grid; grid-template-columns:repeat(2,1fr); gap:1px; background:var(--line); margin-top:clamp(44px,5vw,64px); border:1px solid var(--line);}
+  .cell{background:var(--bg); padding:clamp(34px,3.4vw,48px);}
+  .cell .ci{width:40px; height:40px; border:1px solid var(--line-2); display:grid; place-items:center; color:var(--purple); margin-bottom:22px;}
+  .cell .ci svg{width:19px; height:19px;}
+  .cell .cl{font-family:'JetBrains Mono',monospace; font-size:10.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--fg-3); margin-bottom:12px;}
+  .cell h3{font-family:'Archivo',sans-serif; font-weight:800; text-transform:uppercase; font-size:1.22rem; letter-spacing:-.01em; margin-bottom:11px;}
+  .cell p{color:var(--fg-2); font-size:.96rem; line-height:1.65;}
+  @media(max-width:720px){ .grid4{grid-template-columns:1fr;} }
+
+  /* ===== boot intro ===== */
+  #boot{position:fixed; inset:0; z-index:10000; background:var(--bg); display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:22px; transition:opacity .5s ease, visibility .5s;}
+  #boot.done{opacity:0; visibility:hidden; pointer-events:none;}
+  #boot .b-mark{width:62px; height:62px;}
+  #boot .b-mark circle, #boot .b-mark line{stroke-dasharray:140; stroke-dashoffset:140; animation:bdraw .9s ease forwards;}
+  @keyframes bdraw{to{stroke-dashoffset:0;}}
+  #boot .b-log{font-family:'JetBrains Mono',monospace; font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--fg-3); height:16px; text-align:center;}
+  #boot .b-log b{color:var(--green);}
+  #boot .b-bar{width:min(240px,60vw); height:3px; background:var(--panel-2); border:1px solid var(--line); overflow:hidden;}
+  #boot .b-bar i{display:block; height:100%; width:0; background:var(--purple); transition:width .18s linear;}
+
+  /* ===== product shot ===== */
+  #product{overflow:hidden;}
+  .pshot{position:relative; margin-top:clamp(40px,5vw,60px); perspective:1800px;}
+  .pshot-glow{position:absolute; inset:-8% 8% 12%; background:radial-gradient(ellipse at 50% 38%, rgba(167,139,250,.22), transparent 62%); filter:blur(42px); pointer-events:none;}
+  .pframe{position:relative; border:1px solid var(--line-2); background:var(--panel-2);
+    box-shadow:0 60px 140px -50px #000, 0 0 0 1px rgba(167,139,250,.06);
+    transform:rotateX(13deg); transform-origin:50% 100%; will-change:transform;}
+  .pframe-bar{display:flex; align-items:center; gap:7px; padding:11px 14px; border-bottom:1px solid var(--line); background:var(--panel);}
+  .pframe-bar .d{width:10px; height:10px; border-radius:50%; background:var(--line-2);}
+  .pframe-bar .u{margin-left:12px; font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--fg-3); letter-spacing:.06em;}
+  .pframe img{display:block; width:100%; height:auto;}
+  .pshot-cap{margin-top:26px; text-align:center; font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--fg-3);}
+  @media(max-width:700px){ .pframe{transform:none;} }
+
+  /* ===== pipeline scrollytelling ===== */
+  .pipe-grid{display:grid; grid-template-columns:1fr 1fr; gap:clamp(40px,5vw,72px); align-items:start; margin-top:clamp(20px,3vw,40px);}
+  .pipe-steps{display:flex; flex-direction:column;}
+  .pstep2{min-height:56vh; display:flex; flex-direction:column; justify-content:center; opacity:.3; transition:opacity .45s ease, transform .45s ease; transform:translateY(8px);}
+  .pstep2.active{opacity:1; transform:none;}
+  .pstep2 .num{font-family:'Archivo',sans-serif; font-weight:900; font-size:clamp(2.6rem,4vw,3.4rem); color:var(--line-2); line-height:1; letter-spacing:-.04em;}
+  .pstep2.active .num{color:var(--purple);}
+  .pstep2 .tag{font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--purple); margin-top:16px;}
+  .pstep2 h3{font-family:'Archivo',sans-serif; font-weight:800; text-transform:uppercase; font-size:clamp(1.6rem,2.6vw,2.2rem); margin:10px 0 14px; letter-spacing:-.01em;}
+  .pstep2 p{color:var(--fg-2); font-size:1.02rem; line-height:1.65; max-width:42ch;}
+  .pipe-sticky{position:sticky; top:20vh; align-self:start;}
+  .pipe-visual{border:1px solid var(--line-2); background:linear-gradient(180deg,var(--panel-2),var(--panel)); box-shadow:0 40px 90px -50px #000;}
+  .pv-top{display:flex; align-items:center; gap:8px; padding:11px 14px; border-bottom:1px solid var(--line); background:var(--panel-2); font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--fg-3); letter-spacing:.08em; text-transform:uppercase;}
+  .pv-top .d{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);}
+  .pv-top .pv-st{margin-left:auto; color:var(--purple);}
+  .pv-body{padding:18px; min-height:210px; font-family:'JetBrains Mono',monospace; font-size:12.5px; line-height:1.95;}
+  .pv-body .ln{display:block;}
+  .pv-body .k{color:var(--fg-3);} .pv-body .v{color:var(--fg);} .pv-body .p{color:var(--purple);} .pv-body .g{color:var(--green);} .pv-body .w{color:var(--gold);} .pv-body .o{color:var(--fg-2);}
+  .pv-card{margin-top:12px; border:1px solid var(--line-2); padding:11px 13px; display:flex; align-items:center; gap:10px; font-size:11.5px; color:var(--fg);}
+  .pv-card .sev{font-size:9.5px; padding:3px 7px; background:var(--crit); color:#0A0A0C; font-weight:700; letter-spacing:.04em;}
+  .pv-prog{height:4px; background:var(--panel-2); border-top:1px solid var(--line);}
+  .pv-prog i{display:block; height:100%; width:33%; background:var(--purple); transition:width .4s ease;}
+  @media(max-width:820px){
+    .pipe-grid{grid-template-columns:1fr; gap:0;}
+    .pstep2{min-height:auto; padding:26px 0; opacity:1; transform:none; border-bottom:1px solid var(--line);}
+    .pipe-sticky{display:none;}
+  }
+
+  /* comparison — HUNTR vs scanner (adapted from 21st.dev 'Us vs Them', id 21217) */
+  .cmp{display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--line); margin-top:clamp(40px,5vw,60px); border:1px solid var(--line);}
+  .cmp-col{background:var(--bg); padding:clamp(28px,3vw,40px); display:flex; flex-direction:column;}
+  .cmp-col.win{background:linear-gradient(180deg,rgba(167,139,250,.05),transparent 60%); box-shadow:inset 0 0 0 1px rgba(167,139,250,.18);}
+  .cmp-h{display:flex; align-items:center; gap:10px; margin-bottom:6px;}
+  .cmp-h .n{font-family:'Archivo',sans-serif; font-weight:800; text-transform:uppercase; font-size:1.25rem; letter-spacing:-.01em;}
+  .cmp-col.lose .cmp-h .n{color:var(--fg-3);}
+  .cmp-tag{font-family:'JetBrains Mono',monospace; font-size:9.5px; letter-spacing:.12em; text-transform:uppercase; padding:4px 8px; border:1px solid var(--line-2);}
+  .cmp-tag.win{color:#0A0A0C; background:var(--purple); border-color:var(--purple);}
+  .cmp-tag.lose{color:var(--fg-3);}
+  .cmp-sub{font-size:.88rem; color:var(--fg-3); margin-bottom:20px; min-height:2.6em;}
+  .cmp-list{list-style:none; display:flex; flex-direction:column; gap:14px; margin:0 0 24px; flex:1;}
+  .cmp-list li{display:flex; align-items:flex-start; gap:12px; font-size:.95rem; line-height:1.5;}
+  .cmp-list .mk{flex:none; width:18px; height:18px; display:grid; place-items:center; margin-top:1px;}
+  .cmp-list .mk svg{width:11px; height:11px;}
+  .win .cmp-list li{color:var(--fg);}
+  .win .cmp-list .mk{background:var(--purple); color:#0A0A0C;}
+  .lose .cmp-list li{color:var(--fg-3);}
+  .lose .cmp-list .mk{border:1px solid var(--line-2); color:var(--fg-3);}
+  .cmp-col .btn{width:100%;}
+  @media(max-width:720px){ .cmp{grid-template-columns:1fr;} .cmp-sub{min-height:0;} }
+
+  /* trust */
+  .trust-box{border:1px solid var(--line-2); background:linear-gradient(135deg,var(--panel-2),var(--panel)); padding:clamp(40px,5vw,72px); text-align:center; position:relative; max-width:860px; margin:0 auto;}
+  .trust-box::before,.trust-box::after{content:"+"; position:absolute; color:var(--purple); font-size:17px; line-height:1;}
+  .trust-box::before{top:-9px; left:-9px;} .trust-box::after{bottom:-9px; right:-9px;}
+  .trust-box .lock{width:54px; height:54px; border:1px solid var(--line-2); display:grid; place-items:center; color:var(--green); margin:0 auto 24px;}
+  .trust-box h2{margin:0 auto; max-width:20ch;}
+  .trust-box p{margin:18px auto 0; color:var(--fg-2); max-width:54ch; font-size:1.04rem; line-height:1.7;}
+  .trust-box .barline{margin-top:28px; display:inline-flex; flex-wrap:wrap; justify-content:center; gap:8px 16px; font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--fg-3); border:1px dashed var(--line-2); padding:12px 22px;}
+  .trust-box .barline b{color:var(--fg); font-weight:500;}
+
+  /* faq — ghost accordion (adapted from 21st.dev 'Ghost Accordion', operator-styled) */
+  .faq-list{margin-top:clamp(36px,4vw,52px); border-top:1px solid var(--line); max-width:820px;}
+  .faq-item{border-bottom:1px solid var(--line);}
+  .faq-q{width:100%; display:flex; align-items:center; gap:16px; padding:22px 4px; background:none;
+    border:none; cursor:pointer; text-align:left; color:var(--fg); font-family:'Inter',sans-serif;
+    font-size:clamp(.98rem,1.4vw,1.08rem); font-weight:500; transition:color .18s;}
+  .faq-q:hover{color:var(--purple);}
+  .faq-n{font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--fg-3); letter-spacing:.1em; flex:none; width:22px;}
+  .faq-t{flex:1;}
+  .faq-ind{flex:none; width:16px; height:16px; position:relative; color:var(--purple); transition:transform .25s;}
+  .faq-ind::before,.faq-ind::after{content:""; position:absolute; background:currentColor;}
+  .faq-ind::before{top:50%; left:0; right:0; height:2px; transform:translateY(-50%);}
+  .faq-ind::after{left:50%; top:0; bottom:0; width:2px; transform:translateX(-50%); transition:opacity .25s;}
+  .faq-q[aria-expanded="true"] .faq-ind{transform:rotate(90deg);}
+  .faq-q[aria-expanded="true"] .faq-ind::after{opacity:0;}
+  .faq-a{overflow:hidden; max-height:0; transition:max-height .28s ease;}
+  .faq-a-in{padding:0 4px 24px 42px; color:var(--fg-2); font-size:.97rem; line-height:1.7; max-width:64ch;}
+
+  /* waitlist */
+  .wl-sec{text-align:center;}
+  .wl-sec h2{margin:0 auto;}
+  .wl-form{margin:32px auto 0; display:flex; max-width:500px; border:1px solid var(--line-2);}
+  .wl-form input{flex:1; background:var(--panel); border:none; color:var(--fg); padding:15px 17px; font-family:'JetBrains Mono',monospace; font-size:14px; outline:none;}
+  .wl-form input::placeholder{color:var(--fg-3);}
+  .wl-form input:focus{box-shadow:inset 0 0 0 1px var(--purple);}
+  .wl-form button{border-radius:0; border:none; border-left:1px solid var(--line-2);}
+  .wl-msg{margin-top:16px; font-family:'JetBrains Mono',monospace; font-size:12.5px; min-height:18px; color:var(--fg-2);}
+  .wl-msg.ok{color:var(--green);} .wl-msg.err{color:var(--gold);}
+  @media(max-width:500px){ .wl-form{flex-direction:column;} .wl-form button{border-left:none; border-top:1px solid var(--line-2);} }
+
+  footer{padding-block:34px calc(44px + env(safe-area-inset-bottom,0px));}
+  .foot{display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:16px;}
+  .foot .brand{font-size:16px;}
+  .foot .fmeta{font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--fg-3); display:flex; gap:20px; flex-wrap:wrap;}
+  .foot .fmeta b{color:var(--fg-2); font-weight:400;}
+
+  @media (prefers-reduced-motion:reduce){ *{animation:none!important;} }
+  /* ============================================================
+     FLOW + GLASSMORPHISM LAYER (tasteful, operator-grade)
+     ============================================================ */
+  :root{
+    --glass:rgba(18,21,27,.5); --glass-2:rgba(24,28,36,.62);
+    --glass-brd:rgba(255,255,255,.09); --glass-hi:inset 0 1px 0 rgba(255,255,255,.07);
+    --blur:saturate(150%) blur(16px);
+  }
+  /* ambient depth glows — give the glass something to refract, and tie sections together */
+  .ambient{position:fixed; inset:0; z-index:0; pointer-events:none; overflow:hidden; will-change:transform;}
+  .ambient i{position:absolute; border-radius:50%; filter:blur(95px);}
+  .ambient .a1{width:50vw; height:50vw; left:-12vw; top:-8vw; background:radial-gradient(circle,rgba(167,139,250,.22),transparent 70%);}
+  .ambient .a2{width:44vw; height:44vw; right:-10vw; top:120vh; background:radial-gradient(circle,rgba(74,222,128,.10),transparent 70%);}
+  .ambient .a3{width:48vw; height:48vw; left:18vw; top:250vh; background:radial-gradient(circle,rgba(167,139,250,.15),transparent 70%);}
+  .ambient .a4{width:40vw; height:40vw; right:-6vw; top:380vh; background:radial-gradient(circle,rgba(231,201,131,.08),transparent 70%);}
+  .bg-grid{opacity:.32;}
+  /* flow — dissolve hard section seams into a soft fading hairline */
+  section{border-bottom:none !important; position:relative;}
+  section::after{content:""; position:absolute; left:12%; right:12%; bottom:0; height:1px;
+    background:linear-gradient(90deg,transparent,var(--glass-brd),transparent);}
+  .hero, .ticker, #product{border-bottom:none !important;}
+  .ticker{background:transparent;}
+  /* scroll progress */
+  #sprog{position:fixed; top:0; left:0; height:2px; width:0; z-index:9998;
+    background:linear-gradient(90deg,var(--purple),var(--gold)); box-shadow:0 0 12px rgba(167,139,250,.6); transition:width .1s linear;}
+  /* ---- glass panels ---- */
+  .rail{background:rgba(10,11,13,.4); -webkit-backdrop-filter:var(--blur); backdrop-filter:var(--blur); border-bottom:1px solid var(--glass-brd);}
+  nav{background:var(--glass)!important; -webkit-backdrop-filter:var(--blur); backdrop-filter:var(--blur); border-bottom:1px solid var(--glass-brd)!important;}
+  .eyebrow{background:var(--glass); border:1px solid var(--glass-brd); -webkit-backdrop-filter:var(--blur); backdrop-filter:var(--blur); border-radius:999px;}
+  .hunt-stage{background:var(--glass)!important; -webkit-backdrop-filter:var(--blur); backdrop-filter:var(--blur); border:1px solid var(--glass-brd); border-radius:14px; box-shadow:var(--glass-hi),0 40px 110px -50px #000;}
+  .hunt-tel{background:var(--glass-2); -webkit-backdrop-filter:var(--blur); backdrop-filter:var(--blur); border:1px solid var(--glass-brd); box-shadow:var(--glass-hi); border-radius:10px; padding:12px 14px;}
+  .pipe-visual{background:var(--glass-2); -webkit-backdrop-filter:var(--blur); backdrop-filter:var(--blur); border:1px solid var(--glass-brd); border-radius:12px; box-shadow:var(--glass-hi),0 40px 90px -50px #000;}
+  /* capability: float the cells as glass cards instead of a hairline grid */
+  .grid4{background:transparent; border:none; gap:16px;}
+  .cell{background:var(--glass); border:1px solid var(--glass-brd); border-radius:12px; -webkit-backdrop-filter:var(--blur); backdrop-filter:var(--blur); box-shadow:var(--glass-hi);}
+  .cell .ci{background:rgba(255,255,255,.04); border-color:var(--glass-brd);}
+  /* comparison: floating glass cards */
+  .cmp{background:transparent; border:none; gap:18px;}
+  .cmp-col{border:1px solid var(--glass-brd); border-radius:12px; -webkit-backdrop-filter:var(--blur); backdrop-filter:var(--blur); background:var(--glass);}
+  .cmp-col.win{background:linear-gradient(180deg,rgba(167,139,250,.1),var(--glass) 60%); box-shadow:var(--glass-hi),0 0 0 1px rgba(167,139,250,.25);}
+  .cmp-col.lose{background:var(--glass);}
+  /* trust */
+  .trust-box{background:var(--glass-2)!important; border:1px solid var(--glass-brd); border-radius:16px; -webkit-backdrop-filter:var(--blur); backdrop-filter:var(--blur); box-shadow:var(--glass-hi),0 40px 120px -60px #000;}
+  /* faq */
+  .faq-list{background:var(--glass); border:1px solid var(--glass-brd); border-radius:14px; padding:4px 20px; -webkit-backdrop-filter:var(--blur); backdrop-filter:var(--blur); box-shadow:var(--glass-hi); max-width:860px;}
+  /* product frame */
+  .pframe{background:var(--glass-2); border:1px solid var(--glass-brd); border-radius:12px; -webkit-backdrop-filter:var(--blur); backdrop-filter:var(--blur);}
+  .pframe-bar{background:rgba(255,255,255,.03); border-radius:12px 12px 0 0;}
+  /* waitlist form + modal */
+  .wl-form{background:var(--glass); border:1px solid var(--glass-brd); border-radius:10px; overflow:hidden; -webkit-backdrop-filter:var(--blur); backdrop-filter:var(--blur);}
+  .wl-form input{background:transparent;}
+  .btn-ghost{-webkit-backdrop-filter:var(--blur); backdrop-filter:var(--blur);}
+  @media (prefers-reduced-motion:reduce){ .ambient i{filter:blur(110px);} }
+</style>
+</head>
+<body>
+<div id="boot" aria-hidden="true">
+  <svg class="b-mark" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="11" stroke="#A78BFA" stroke-width="2"/><line x1="16" y1="1" x2="16" y2="8" stroke="#A78BFA" stroke-width="2"/><line x1="16" y1="24" x2="16" y2="31" stroke="#A78BFA" stroke-width="2"/><line x1="1" y1="16" x2="8" y2="16" stroke="#A78BFA" stroke-width="2"/><line x1="24" y1="16" x2="31" y2="16" stroke="#A78BFA" stroke-width="2"/><circle cx="16" cy="16" r="3" fill="#4ADE80"/></svg>
+  <div class="b-log" id="b-log">Initializing operator…</div>
+  <div class="b-bar"><i id="b-bar"></i></div>
+</div>
+<div class="ambient" aria-hidden="true"><i class="a1"></i><i class="a2"></i><i class="a3"></i><i class="a4"></i></div>
+<div class="bg-grid"></div>
+<div class="grain" aria-hidden="true"></div>
+<div id="sprog" aria-hidden="true"></div>
+<div class="cursor" id="cursor" aria-hidden="true"><span class="ring"></span></div>
+<div class="cursor-dot" id="cursor-dot" aria-hidden="true"></div>
+
+<div class="rail">
+  <div class="wrap">
+    <span><b class="live">● System online</b> &nbsp; Huntr-01</span>
+    <span class="r-hide">Autonomous AI operator · Bug bounty</span>
+    <span class="r-hide">⌖ Target ready</span>
+  </div>
+</div>
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="#top" aria-label="HUNTR home">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="11" fill="none" stroke="#A78BFA" stroke-width="2"/><path d="M16 1v7M16 24v7M1 16h7M24 16h7" stroke="#A78BFA" stroke-width="2"/><circle cx="16" cy="16" r="3" fill="#4ADE80"/></svg>
+      HUNTR
+    </a>
+    <div class="nav-links">
+      <a href="#how" class="n-hide">Pipeline</a>
+      <a href="#why" class="n-hide">Capability</a>
+      <a href="#trust" class="n-hide">Protocol</a>
+      <a href="#access" class="btn btn-primary">Request Access ►</a>
+    </div>
+  </div>
+</nav>
+
+<main id="top">
+
+  <!-- HERO -->
+  <header class="hero">
+    <div class="wrap">
+      <div class="hero-left">
+        <span class="eyebrow"><span class="d"></span> Autonomous AI operator · Live</span>
+        <h1>The autonomous operator for <span class="acc">bug bounty.</span></h1>
+        <p class="lede">Point it at a target you're authorized to test. HUNTR maps the attack surface, tests it, validates what it finds, and drafts the report. You review and submit — <b>it never submits for you.</b></p>
+        <form class="wl-form hero-wl" data-wl novalidate>
+          <input type="email" placeholder="you@domain.com" autocomplete="email" aria-label="Email address for early access" required>
+          <button type="submit" class="btn btn-primary">Request Access ►</button>
+        </form>
+        <p class="wl-msg" role="status"></p>
+        <p class="hero-benefit"><b>Early access:</b> priority onboarding and a direct line to the team. No spam — launch notice only.</p>
+        <a href="#how" class="hero-link">View the pipeline ↓</a>
+        <div class="spec">
+          <div><span class="k">Output</span> validated, report-ready findings — not scanner noise</div>
+          <div><span class="k">Control</span> human gate · never auto-submits</div>
+          <div><span class="k">Scope</span> authorized targets only · scope respected</div>
+        </div>
+      </div>
+
+      <div class="hero-right">
+        <div class="hunt-stage" id="hunt-stage" aria-hidden="true">
+          <canvas id="hunt-canvas"></canvas>
+          <div class="hunt-tel">
+            <div class="ht-row"><span class="ht-dot"></span><span class="ht-run">Running</span><span class="ht-tgt">acme.api · web·api</span></div>
+            <div class="ht-stat">
+              <span>Tested <b id="t-tested">0</b></span>
+              <span>Validated <b id="t-val" class="g">0</b></span>
+              <span>Noise&nbsp;dropped <b id="t-noise">0</b></span>
+            </div>
+            <div><div class="ht-cov-l"><span>Coverage ledger</span><b id="t-cov">0%</b></div><div class="ht-meter"><i id="t-bar"></i></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- TICKER -->
+  <div class="ticker">
+    <div class="wrap">
+      <span><span class="m">◆</span> It hunts. You decide.</span>
+      <span><span class="m">◆</span> Surface → report, while you sleep.</span>
+      <span><span class="m">◆</span> Validated. Never auto-submitted.</span>
+      <span><span class="m">◆</span> Target acquired.</span>
+    </div>
+  </div>
+
+  <!-- PIPELINE (scroll-told) -->
+  <section id="how">
+    <div class="wrap sec">
+      <div class="kick"><span>The Pipeline</span></div>
+      <h2>Three steps.<br>The rest is automated.</h2>
+      <p class="sec-sub">No tool soup, no config maze. Scroll through one hunt — pick a target, let HUNTR work, review what it hands back.</p>
+      <div class="pipe-grid">
+        <div class="pipe-steps">
+          <div class="pstep2 active" data-step="0">
+            <div class="num">01</div><div class="tag">Pick</div>
+            <h3>Pick</h3>
+            <p>Enter a target you're authorized to test and choose the scope — web, API, mobile, source. Black, grey, or white box. The engine decides the methodology.</p>
+          </div>
+          <div class="pstep2" data-step="1">
+            <div class="num">02</div><div class="tag">Hunt</div>
+            <h3>Hunt</h3>
+            <p>HUNTR maps the attack surface, tests it class by class, and validates every finding — dropping the false positives before they ever reach you.</p>
+          </div>
+          <div class="pstep2" data-step="2">
+            <div class="num">03</div><div class="tag">Send</div>
+            <h3>Send</h3>
+            <p>Each finding arrives report-ready, reproduction and impact drafted. You review, decide, and submit. Nothing goes out without you.</p>
+          </div>
+        </div>
+        <div class="pipe-sticky">
+          <div class="pipe-visual">
+            <div class="pv-top"><span class="d"></span> huntr · fire control <span class="pv-st" id="pv-st">PICK</span></div>
+            <div class="pv-body" id="pv-body"></div>
+            <div class="pv-prog"><i id="pv-bar"></i></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PRODUCT SHOT -->
+  <section id="product">
+    <div class="wrap sec">
+      <div class="kick"><span>The Console</span></div>
+      <h2>Your operator dashboard.</h2>
+      <p class="sec-sub">Watch the hunt live, review what's validated, and send when you're ready — all from one calm console.</p>
+      <div class="pshot">
+        <div class="pshot-glow"></div>
+        <div class="pframe" id="pframe">
+          <div class="pframe-bar"><span class="d"></span><span class="d"></span><span class="d"></span><span class="u">huntr.run — fire control</span></div>
+          <img src="dashboard.png?v=2" width="1600" height="1000" alt="The HUNTR operator dashboard: live Fire Control view with status rail, contacts, and scan feed." loading="lazy">
+        </div>
+      </div>
+      <p class="pshot-cap">Live fire control · runs on your machine · nothing auto-submitted</p>
+    </div>
+  </section>
+
+  <!-- WHY -->
+  <section id="why">
+    <div class="wrap sec">
+      <div class="kick"><span>Capability</span></div>
+      <h2>Scanners give noise.<br>Hunters give payouts.</h2>
+      <p class="sec-sub">HUNTR runs a real methodology end-to-end — automated recon, testing, and validation — so what lands in your queue is signal, not a scanner dump.</p>
+      <div class="grid4">
+        <div class="cell">
+          <div class="ci"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg></div>
+          <div class="cl">01 · Coverage</div>
+          <h3>End-to-end hunt</h3>
+          <p>Maps the surface, tests it, and keeps going until coverage is real — not a one-shot scan that stops at the first 200 OK.</p>
+        </div>
+        <div class="cell">
+          <div class="ci"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg></div>
+          <div class="cl">02 · Signal</div>
+          <h3>Validated, not noisy</h3>
+          <p>Findings are validated before they reach you. False positives are dropped, so you read a short list of real vulnerabilities — not a 400-line export.</p>
+        </div>
+        <div class="cell">
+          <div class="ci"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg></div>
+          <div class="cl">03 · Output</div>
+          <h3>Report-ready</h3>
+          <p>Reproduction and impact come drafted with each finding. You spend minutes reviewing, not hours writing up the report.</p>
+        </div>
+        <div class="cell">
+          <div class="ci"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+          <div class="cl">04 · Control</div>
+          <h3>You hold the trigger</h3>
+          <p>Nothing is ever auto-submitted, and HUNTR only runs against targets you're authorized to test. The judgment stays human.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- COMPARISON -->
+  <section id="compare">
+    <div class="wrap sec">
+      <div class="kick"><span>Comparison</span></div>
+      <h2>HUNTR vs. a scanner.</h2>
+      <p class="sec-sub">Same target, two very different outputs. A scanner flags; HUNTR hunts, validates, and writes it up.</p>
+      <div class="cmp">
+        <div class="cmp-col win">
+          <div class="cmp-h"><span class="n">HUNTR</span><span class="cmp-tag win">Operator</span></div>
+          <p class="cmp-sub">Validated, report-ready findings — with you on the trigger.</p>
+          <ul class="cmp-list">
+            <li><span class="mk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg></span>Tests behavior, then validates every finding</li>
+            <li><span class="mk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg></span>Drops false positives before they reach you</li>
+            <li><span class="mk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg></span>Reproduction and impact drafted per finding</li>
+            <li><span class="mk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg></span>Covers the surface to depth — not one-shot</li>
+            <li><span class="mk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg></span>Never auto-submits — you review and send</li>
+            <li><span class="mk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg></span>Runs only on authorized, in-scope targets</li>
+          </ul>
+          <a href="#access" class="btn btn-primary">Request Access ►</a>
+        </div>
+        <div class="cmp-col lose">
+          <div class="cmp-h"><span class="n">Traditional scanner</span><span class="cmp-tag lose">Noise</span></div>
+          <p class="cmp-sub">Raw matches you still have to triage, prove, and write up.</p>
+          <ul class="cmp-list">
+            <li><span class="mk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M18 6L6 18M6 6l12 12"/></svg></span>Stops at surface signals (200 OK, reflected param)</li>
+            <li><span class="mk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M18 6L6 18M6 6l12 12"/></svg></span>Dumps everything — you sift the false positives</li>
+            <li><span class="mk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M18 6L6 18M6 6l12 12"/></svg></span>No reproduction or impact — you write the report</li>
+            <li><span class="mk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M18 6L6 18M6 6l12 12"/></svg></span>One-shot, shallow pass over the surface</li>
+            <li><span class="mk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M18 6L6 18M6 6l12 12"/></svg></span>Flags without judgment — confirms nothing</li>
+            <li><span class="mk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M18 6L6 18M6 6l12 12"/></svg></span>Scope and authorization left entirely to you</li>
+          </ul>
+          <span class="btn btn-ghost" aria-hidden="true" style="opacity:.5;cursor:default;">The status quo</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- TRUST -->
+  <section id="trust">
+    <div class="wrap sec">
+      <div class="trust-box">
+        <div class="lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg></div>
+        <div class="kick" style="justify-content:center;"><span>Protocol</span></div>
+        <h2>HUNTR drafts.<br>You submit.</h2>
+        <p>Every finding is a draft for you to review. HUNTR only runs against targets you're authorized to test, and it respects scope. It replaces the tedium — never your judgment.</p>
+        <div class="barline"><b>Scope in</b> · scope respected · <b>human gate</b> · never auto-submits</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section id="faq">
+    <div class="wrap sec">
+      <div class="kick"><span>FAQ</span></div>
+      <h2>Questions, answered.</h2>
+      <div class="faq-list" id="faq-list">
+        <div class="faq-item">
+          <button class="faq-q" aria-expanded="false">
+            <span class="faq-n">01</span><span class="faq-t">What is HUNTR?</span><span class="faq-ind" aria-hidden="true"></span>
+          </button>
+          <div class="faq-a"><div class="faq-a-in">HUNTR is an autonomous AI operator for bug bounty. You point it at a target you're authorized to test and it maps the attack surface, tests it, validates what it finds, and drafts the report. You review and submit.</div></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" aria-expanded="false">
+            <span class="faq-n">02</span><span class="faq-t">Does HUNTR submit reports automatically?</span><span class="faq-ind" aria-hidden="true"></span>
+          </button>
+          <div class="faq-a"><div class="faq-a-in">No. HUNTR never auto-submits. Every finding is a draft for you to review and submit. The judgment stays human.</div></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" aria-expanded="false">
+            <span class="faq-n">03</span><span class="faq-t">How is HUNTR different from a vulnerability scanner?</span><span class="faq-ind" aria-hidden="true"></span>
+          </button>
+          <div class="faq-a"><div class="faq-a-in">Scanners stop at surface signals and produce noise. HUNTR runs a real methodology end-to-end, validates each finding to drop false positives, and delivers report-ready vulnerabilities with reproduction and impact.</div></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" aria-expanded="false">
+            <span class="faq-n">04</span><span class="faq-t">Does it only run against authorized targets?</span><span class="faq-ind" aria-hidden="true"></span>
+          </button>
+          <div class="faq-a"><div class="faq-a-in">Yes. HUNTR only runs against targets you're authorized to test, and it respects program scope. It's a tool for authorized security research.</div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- WAITLIST -->
+  <section id="access">
+    <div class="wrap sec wl-sec">
+      <div class="kick" style="justify-content:center;"><span>Early Access</span></div>
+      <h2>Stop scanning.<br>Start hunting.</h2>
+      <p class="sec-sub" style="margin-inline:auto;">Request early access to HUNTR and we'll reach out when your spot opens.</p>
+      <form class="wl-form" data-wl novalidate>
+        <input type="email" placeholder="you@domain.com" autocomplete="email" aria-label="Email address" required>
+        <button type="submit" class="btn btn-primary">Request Access ►</button>
+      </form>
+      <p class="wl-msg" role="status"></p>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <a class="brand" href="#top">
+      <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><circle cx="16" cy="16" r="11" fill="none" stroke="#A78BFA" stroke-width="2"/><path d="M16 1v7M16 24v7M1 16h7M24 16h7" stroke="#A78BFA" stroke-width="2"/><circle cx="16" cy="16" r="3" fill="#4ADE80"/></svg>
+      HUNTR
+    </a>
+    <div class="fmeta">
+      <span>It hunts. You decide.</span>
+      <span>© <span id="yr"></span> HUNTR</span>
+    </div>
+  </div>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lenis/1.1.13/lenis.min.js"></script>
+<script>
+  // Paste a Formspree endpoint to collect emails (no backend), e.g. "https://formspree.io/f/abcwxyz".
+  const FORM_ENDPOINT = "";
+  document.getElementById('yr').textContent = new Date().getFullYear();
+  const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ===== flow: scroll progress + ambient parallax ===== */
+  (function(){
+    const sp=document.getElementById('sprog'), amb=document.querySelector('.ambient');
+    const de=document.documentElement;
+    function onScroll(){
+      const max=de.scrollHeight-de.clientHeight;
+      const p=max>0?(de.scrollTop||window.scrollY||0)/max:0;
+      if(sp) sp.style.width=(Math.min(1,Math.max(0,p))*100)+'%';
+      if(amb&&!reduce) amb.style.transform='translateY('+(-(de.scrollTop||window.scrollY||0)*0.04)+'px)';
+    }
+    addEventListener('scroll',onScroll,{passive:true}); onScroll();
+    if(!reduce){ addEventListener('pointermove',e=>{ if(!amb)return;
+      amb.style.setProperty('--mx',((e.clientX/innerWidth-0.5)*18)+'px');
+      amb.style.setProperty('--my',((e.clientY/innerHeight-0.5)*18)+'px'); },{passive:true}); }
+  })();
+
+  /* ===== boot intro (once per session) ===== */
+  (function(){
+    const boot=document.getElementById('boot'); if(!boot) return;
+    const done=()=>{ boot.classList.add('done'); setTimeout(()=>{ try{boot.remove();}catch(e){} },600); };
+    let seen=false; try{ seen=sessionStorage.getItem('huntr_boot')==='1'; }catch(e){}
+    if(reduce||seen){ done(); return; }
+    try{ sessionStorage.setItem('huntr_boot','1'); }catch(e){}
+    const log=document.getElementById('b-log'), bar=document.getElementById('b-bar');
+    const steps=[[8,'Initializing operator…'],[34,'Loading surface map…'],[62,'Arming class matrix…'],[90,'<b>● System online</b>'],[100,'Target ready']];
+    let i=0; (function go(){ if(i>=steps.length){ setTimeout(done,340); return; }
+      const s=steps[i++]; if(bar)bar.style.width=s[0]+'%'; if(log)log.innerHTML=s[1];
+      setTimeout(go, 300+Math.random()*170); })();
+    setTimeout(done, 3200); // safety: never trap the page
+  })();
+
+  /* ===== pipeline scrollytelling (sticky console tells one hunt) ===== */
+  (function(){
+    const steps=[].slice.call(document.querySelectorAll('.pstep2')); const body=document.getElementById('pv-body');
+    const st=document.getElementById('pv-st'), bar=document.getElementById('pv-bar');
+    if(!steps.length||!body) return;
+    body.style.transition='opacity .22s ease';
+    const VIS=[
+      {st:'PICK', w:'33%', html:'<span class="ln"><span class="k">TARGET</span>&nbsp; <span class="v">acme.api</span></span><span class="ln"><span class="k">SCOPE</span>&nbsp;&nbsp; <span class="p">web · api</span></span><span class="ln"><span class="k">MODE</span>&nbsp;&nbsp;&nbsp; <span class="v">grey-box</span></span><span class="ln"><span class="o">▸ engine selects methodology + class matrix</span></span>'},
+      {st:'HUNT', w:'66%', html:'<span class="ln"><span class="g">■</span> <span class="o">target acquired · surface mapped</span></span><span class="ln"><span class="o">→ 94 endpoints · 7 hosts</span></span><span class="ln"><span class="p">$</span> testing — cors · idor · sqli · xss · authz</span><span class="ln"><span class="w">◆</span> AI directing targeted tests…</span><span class="ln"><span class="p">$</span> validating — dropping noise</span>'},
+      {st:'SEND', w:'100%', html:'<span class="ln"><span class="g">✓</span> 3 validated · 11 false-positive dropped</span><div class="pv-card"><span class="sev">CRIT</span> SQLi — /items?id · CVSS 7.5 · confirmed</div><span class="ln"><span class="w">$</span> report drafted — reproduction + impact</span><span class="ln"><span class="o">▸ you review &amp; submit — never auto-sent</span></span>'}
+    ];
+    let cur=-1;
+    function set(n){ if(n===cur) return; cur=n;
+      steps.forEach((s,k)=>s.classList.toggle('active',k===n));
+      const v=VIS[n]; if(st)st.textContent=v.st; if(bar)bar.style.width=v.w;
+      body.style.opacity=0; setTimeout(()=>{ body.innerHTML=v.html; body.style.opacity=1; },150);
+    }
+    set(0);
+    const io=new IntersectionObserver(es=>es.forEach(e=>{ if(e.isIntersecting) set(+e.target.dataset.step); }),
+      {rootMargin:'-45% 0px -45% 0px', threshold:0});
+    steps.forEach(s=>io.observe(s));
+  })();
+
+  /* ===== product frame parallax ===== */
+  (function(){
+    if(reduce||typeof gsap==='undefined'||typeof ScrollTrigger==='undefined') return;
+    const f=document.getElementById('pframe'); if(!f) return;
+    gsap.fromTo(f,{rotateX:16},{rotateX:3, ease:'none', scrollTrigger:{trigger:'#product', start:'top 85%', end:'top 20%', scrub:true}});
+  })();
+
+  /* ===== LIVE HUNT CANVAS — the signature moment ===== */
+  (function(){
+    const stage=document.getElementById('hunt-stage'), cv=document.getElementById('hunt-canvas');
+    if(!stage||!cv) return;
+    const ctx=cv.getContext('2d'); const DPR=Math.min(window.devicePixelRatio||1,2);
+    let W=0,H=0,cx=0,cy=0,R=0,nodes=[];
+    const P={purple:'#A78BFA',green:'#4ADE80',txt:'#9AA0AB',dim:'#2A2F38'};
+    function build(){ nodes=[]; const N=Math.max(26,Math.round(W/15));
+      for(let i=0;i<N;i++){ const ring=1+Math.floor(Math.random()*3);
+        const rad=R*(0.28+ring*0.22)+Math.random()*R*0.07, a=Math.random()*Math.PI*2;
+        nodes.push({a,x:cx+Math.cos(a)*rad,y:cy+Math.sin(a)*rad,state:'idle',r:1.3+Math.random()*1.7,seen:false,pulse:0,fade:1}); }
+      nodes.sort((p,q)=>p.a-q.a);
+    }
+    function resize(){ const r=stage.getBoundingClientRect(); W=r.width;H=r.height; cv.width=W*DPR;cv.height=H*DPR;
+      ctx.setTransform(DPR,0,0,DPR,0,0); cx=W/2; cy=H*0.46; R=Math.min(W,H)*0.42; build(); }
+    let sweep=0, counts={tested:0,val:0,noise:0};
+    const elT=document.getElementById('t-tested'),elV=document.getElementById('t-val'),elN=document.getElementById('t-noise'),elC=document.getElementById('t-cov'),elB=document.getElementById('t-bar');
+    function tel(){ const total=nodes.length||1; const done=counts.tested+counts.val+counts.noise;
+      if(elT)elT.textContent=counts.tested+counts.val; if(elV)elV.textContent=counts.val; if(elN)elN.textContent=counts.noise;
+      const cov=Math.round(done/total*100); if(elC)elC.textContent=cov+'%'; if(elB)elB.style.width=cov+'%'; }
+    function activate(n){ n.seen=true; const r=Math.random();
+      if(r<0.10){n.state='finding';counts.val++;} else if(r<0.34){n.state='noise';counts.noise++;} else {n.state='tested';counts.tested++;} n.pulse=1; tel(); }
+    function reset(){ nodes.forEach(n=>{n.seen=false;n.state='idle';n.fade=1;n.pulse=0;}); counts={tested:0,val:0,noise:0}; tel(); }
+    let mx=0,my=0,tx=0,ty=0;
+    stage.addEventListener('pointermove',e=>{const r=stage.getBoundingClientRect();mx=(e.clientX-r.left-cx)/cx;my=(e.clientY-r.top-cy)/cy;});
+    stage.addEventListener('pointerleave',()=>{mx=0;my=0;});
+    function draw(dt){
+      tx+=(mx-tx)*0.06; ty+=(my-ty)*0.06; const ox=tx*R*0.12, oy=ty*R*0.12;
+      ctx.clearRect(0,0,W,H);
+      nodes.forEach(n=>{ ctx.strokeStyle='rgba(167,139,250,'+(n.state==='idle'?0.04:0.10)+')'; ctx.lineWidth=1;
+        ctx.beginPath(); ctx.moveTo(cx+ox,cy+oy); ctx.lineTo(n.x+ox,n.y+oy); ctx.stroke(); });
+      if(!reduce){ sweep+=dt*0.0012; if(sweep>=Math.PI*2){ sweep-=Math.PI*2; reset(); } }
+      const g=ctx.createRadialGradient(cx+ox,cy+oy,0,cx+ox,cy+oy,R*1.15);
+      g.addColorStop(0,'rgba(167,139,250,0.16)'); g.addColorStop(1,'rgba(167,139,250,0)');
+      ctx.save(); ctx.beginPath(); ctx.moveTo(cx+ox,cy+oy); ctx.arc(cx+ox,cy+oy,R*1.15,sweep-0.22,sweep); ctx.closePath(); ctx.fillStyle=g; ctx.fill(); ctx.restore();
+      ctx.strokeStyle='rgba(167,139,250,0.5)'; ctx.lineWidth=1.2; ctx.beginPath(); ctx.moveTo(cx+ox,cy+oy); ctx.lineTo(cx+ox+Math.cos(sweep)*R*1.15,cy+oy+Math.sin(sweep)*R*1.15); ctx.stroke();
+      ctx.strokeStyle='rgba(255,255,255,0.05)'; [0.42,0.66,0.9].forEach(f=>{ctx.beginPath();ctx.arc(cx+ox,cy+oy,R*f,0,Math.PI*2);ctx.stroke();});
+      nodes.forEach(n=>{ if(!reduce&&!n.seen){ let d=((sweep-n.a)%(Math.PI*2)+Math.PI*2)%(Math.PI*2); if(d<0.16) activate(n); }
+        const x=n.x+ox,y=n.y+oy; if(n.state==='noise') n.fade+=(0-n.fade)*0.04; n.pulse*=0.94;
+        let col=P.dim, rr=n.r; if(n.state==='tested')col=P.txt; if(n.state==='finding'){col=P.purple;rr=n.r+1;}
+        ctx.globalAlpha=n.state==='noise'?Math.max(0.28,n.fade):1;
+        if(n.pulse>0.02){ ctx.beginPath(); ctx.arc(x,y,rr+9*n.pulse,0,Math.PI*2); ctx.fillStyle=(n.state==='finding'?'rgba(167,139,250,':'rgba(255,255,255,')+(0.18*n.pulse)+')'; ctx.fill(); }
+        if(n.state==='noise')col='rgba(95,102,114,'+Math.max(0.3,n.fade)+')';
+        ctx.beginPath(); ctx.arc(x,y,rr,0,Math.PI*2); ctx.fillStyle=col; ctx.fill();
+        if(n.state==='finding'){ ctx.beginPath(); ctx.arc(x,y,rr+4,0,Math.PI*2); ctx.strokeStyle='rgba(167,139,250,0.6)'; ctx.lineWidth=1; ctx.stroke(); }
+        ctx.globalAlpha=1; });
+      ctx.beginPath(); ctx.arc(cx+ox,cy+oy,4,0,Math.PI*2); ctx.fillStyle=P.green; ctx.fill();
+      ctx.beginPath(); ctx.arc(cx+ox,cy+oy,9,0,Math.PI*2); ctx.strokeStyle='rgba(74,222,128,0.5)'; ctx.lineWidth=1; ctx.stroke();
+      ctx.strokeStyle='rgba(74,222,128,0.5)'; [[0,-16,0,-9],[0,9,0,16],[-16,0,-9,0],[9,0,16,0]].forEach(s=>{ctx.beginPath();ctx.moveTo(cx+ox+s[0],cy+oy+s[1]);ctx.lineTo(cx+ox+s[2],cy+oy+s[3]);ctx.stroke();});
+    }
+    let last=performance.now(), raf=null;
+    function loop(t){ const dt=Math.min(t-last,50); last=t; draw(dt); raf=requestAnimationFrame(loop); }
+    try{ new ResizeObserver(resize).observe(stage); }catch(e){ addEventListener('resize',resize); }
+    resize();
+    if(reduce){ nodes.forEach(n=>{const r=Math.random(); if(r<0.1){n.state='finding';counts.val++;} else if(r<0.3){n.state='noise';counts.noise++;n.fade=0.3;} else {n.state='tested';counts.tested++;} n.seen=true;}); sweep=0.7; tel(); draw(16); }
+    else { const io=new IntersectionObserver(es=>es.forEach(e=>{ if(e.isIntersecting){ if(!raf){last=performance.now();raf=requestAnimationFrame(loop);} } else if(raf){cancelAnimationFrame(raf);raf=null;} }),{threshold:0.02}); io.observe(stage);
+      document.addEventListener('visibilitychange',()=>{ if(document.hidden&&raf){cancelAnimationFrame(raf);raf=null;} else if(!document.hidden&&!raf){last=performance.now();raf=requestAnimationFrame(loop);} }); }
+  })();
+
+  /* ===== custom crosshair cursor + magnetic CTAs ===== */
+  (function(){
+    if(reduce || !window.matchMedia || !matchMedia('(pointer:fine)').matches) return;
+    const cur=document.getElementById('cursor'), dot=document.getElementById('cursor-dot'); if(!cur||!dot) return;
+    document.documentElement.classList.add('cursor-on');
+    let x=innerWidth/2,y=innerHeight/2,dx=x,dy=y;
+    addEventListener('pointermove',e=>{x=e.clientX;y=e.clientY; dot.style.transform='translate('+x+'px,'+y+'px) translate(-50%,-50%)';});
+    (function t(){ dx+=(x-dx)*0.2; dy+=(y-dy)*0.2; cur.style.transform='translate('+dx+'px,'+dy+'px) translate(-50%,-50%)'; requestAnimationFrame(t); })();
+    document.querySelectorAll('a,button,input,.btn,.faq-q,[data-wl]').forEach(el=>{
+      el.addEventListener('pointerenter',()=>cur.classList.add('hot')); el.addEventListener('pointerleave',()=>cur.classList.remove('hot')); });
+    document.querySelectorAll('.btn-primary').forEach(b=>{
+      b.addEventListener('pointermove',e=>{const r=b.getBoundingClientRect();b.style.transform='translate('+(e.clientX-(r.left+r.width/2))*0.18+'px,'+(e.clientY-(r.top+r.height/2))*0.3+'px)';});
+      b.addEventListener('pointerleave',()=>{b.style.transform='';}); });
+  })();
+
+  /* ===== smooth scroll (Lenis) ===== */
+  (function(){ if(reduce||typeof Lenis==='undefined') return;
+    try{ const lenis=new Lenis({duration:1.05,smoothWheel:true}); (function raf(t){lenis.raf(t);requestAnimationFrame(raf);})(performance.now());
+      document.querySelectorAll('a[href^="#"]').forEach(a=>a.addEventListener('click',e=>{const id=a.getAttribute('href'); if(id.length>1){const el=document.querySelector(id); if(el){e.preventDefault(); lenis.scrollTo(el,{offset:-20});}}}));
+      if(window.gsap&&window.ScrollTrigger) lenis.on('scroll',ScrollTrigger.update);
+    }catch(e){}
+  })();
+
+  /* ===== scroll reveal (GSAP ScrollTrigger) ===== */
+  (function(){ if(reduce||typeof gsap==='undefined'||typeof ScrollTrigger==='undefined') return;
+    gsap.registerPlugin(ScrollTrigger);
+    [['#how .kick, #how h2, #how .sec-sub'],['#product .kick, #product h2, #product .sec-sub'],['#product .pshot'],['#why .kick, #why h2, #why .sec-sub'],['.grid4 .cell'],
+     ['#compare .kick, #compare h2, #compare .sec-sub'],['.cmp .cmp-col'],['#trust .trust-box'],
+     ['#faq .kick, #faq h2'],['.faq-item'],['#access .kick, #access h2, #access .sec-sub, #access .wl-form']
+    ].forEach(([sel])=>{ const els=document.querySelectorAll(sel); if(!els.length) return;
+      gsap.set(els,{y:26,opacity:0});
+      gsap.to(els,{y:0,opacity:1,duration:.7,ease:'power3.out',stagger:.08,scrollTrigger:{trigger:els[0],start:'top 86%'}}); });
+    setTimeout(()=>ScrollTrigger.refresh(),300);
+  })();
+
+  // FAQ accordion (single-collapsible; adapted from 21st.dev Ghost Accordion)
+  document.querySelectorAll('#faq-list .faq-q').forEach(q=>{
+    q.addEventListener('click', ()=>{
+      const panel=q.nextElementSibling;
+      const open=q.getAttribute('aria-expanded')==='true';
+      document.querySelectorAll('#faq-list .faq-q').forEach(o=>{
+        o.setAttribute('aria-expanded','false');
+        if(o.nextElementSibling) o.nextElementSibling.style.maxHeight='0px';
+      });
+      if(!open){ q.setAttribute('aria-expanded','true'); panel.style.maxHeight=panel.scrollHeight+'px'; }
+    });
+  });
+
+  // Waitlist — binds every [data-wl] form (hero + footer), each with its own nearest .wl-msg
+  const valid=v=>/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+  document.querySelectorAll('form[data-wl]').forEach(form=>{
+    const email=form.querySelector('input[type=email]');
+    const btn=form.querySelector('button[type=submit]');
+    const msg=form.parentElement.querySelector('.wl-msg') || form.nextElementSibling;
+    form.addEventListener('submit', async e=>{
+      e.preventDefault(); if(msg) msg.className='wl-msg';
+      if(!valid((email.value||'').trim())){ if(msg){msg.textContent='→ enter a valid email address.'; msg.classList.add('err');} return; }
+      if(!FORM_ENDPOINT){ if(msg){msg.textContent='→ waitlist opens soon — follow for the launch.'; msg.classList.add('ok');} return; }
+      btn.disabled=true; const label=btn.textContent; btn.textContent='Sending…';
+      try{ const r=await fetch(FORM_ENDPOINT,{method:'POST',headers:{'Accept':'application/json','Content-Type':'application/json'},body:JSON.stringify({email:email.value.trim(),source:'huntr.run'})});
+        if(r.ok){ if(msg){msg.textContent='✓ you\'re on the list. we\'ll be in touch.'; msg.classList.add('ok');} form.reset(); } else throw 0;
+      }catch{ if(msg){msg.textContent='→ something went wrong — try again.'; msg.classList.add('err');} }
+      finally{ btn.disabled=false; btn.textContent=label; }
+    });
+  });
+</script>
+</body>
+</html>
