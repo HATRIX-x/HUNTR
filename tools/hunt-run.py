@@ -334,7 +334,20 @@ def phase_surface():
     # prefer parameterized URLs (the testable surface) when capping
     items = list(eps.items())
     items.sort(key=lambda kv: (0 if re.search(r"[?&][\w\[\]]+=", kv[0]) else 1, len(kv[0])))
-    endpoints = [{"url": u, "host": hh} for u, hh in items[:400]]
+    # collapse near-duplicates by (host, path, sorted param NAMES) — testing ReadNews.aspx?id=1 is the
+    # same cell as ?id=2..99; keeping one representative per shape stops the budget draining on clones
+    import urllib.parse as _upd
+    seen_sig = set(); deduped = []
+    for u, hh in items:
+        try:
+            pu = _upd.urlparse(u)
+            sig = (pu.netloc, pu.path, tuple(sorted(k for k, _ in _upd.parse_qsl(pu.query))))
+        except Exception:
+            sig = (u,)
+        if sig in seen_sig:
+            continue
+        seen_sig.add(sig); deduped.append((u, hh))
+    endpoints = [{"url": u, "host": hh} for u, hh in deduped[:400]]
     STATE["endpoints"] = endpoints
     STATE["stats"]["endpoints"] = len(endpoints)
     flush()
