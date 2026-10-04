@@ -57,6 +57,7 @@ STATE = {
 }
 
 TESTED = {}  # endpoint -> set(class) actually scanned, for the coverage ledger
+NO_TOOL = {}  # endpoint -> set(class) applicable but with no installed tool (honest "can't test" state)
 def mark_tested(ep, cls):
     TESTED.setdefault(ep, set()).add(cls)
 
@@ -511,6 +512,8 @@ def build_coverage():
                 cells.append("FINDING:" + find_cls[(ep, cls)] + "@ev#T3")
             elif cls in TESTED.get(ep, set()):
                 cells.append("TESTED-tool@ev#T2")
+            elif cls in NO_TOOL.get(ep, set()):
+                cells.append("NOTOOL")   # applicable but no scanner installed — honest, not false "tested"
             elif cls in appl:
                 cells.append("TODO")
             else:
@@ -548,7 +551,7 @@ def scan_cell(ep, cls, tok, tok2):
     """Scan one (endpoint × class) cell. Tool-level evidence sets a deterministic verdict
     (so a confirmed bug never depends on the AI judge). Coverage integrity: a cell whose tool
     ERRORED/timed-out is NOT marked tested — it stays TODO so resume re-does it (no silent miss)."""
-    ran = True   # a tool that was invoked but returned None = transient error → do not count as tested
+    ran = None   # None = no tool executed (missing/unknown class); True = ran OK; False = tool errored
     try:
         if cls == "cors" and (HERE / "cors-test.py").exists():
             d = tool_json("cors-test.py", ["--url", ep, "--json"] + (["--token", tok] if tok else []), timeout=40); ran = d is not None
@@ -599,10 +602,14 @@ def scan_cell(ep, cls, tok, tok2):
                 add_finding(f.get("severity", "h"), "Race condition — " + (f.get("type") or "state divergence"), f.get("note") or "", ep, cls="Race", verdict="confirmed")
     except Exception:
         ran = False
-    if ran:
-        mark_tested(ep, cls)
-    else:
+    if ran is True:
+        mark_tested(ep, cls)                 # a tool actually ran → the cell is genuinely covered
+    elif ran is False:
         log("warn", "⚠ " + cls + " cell errored — left TODO (not counted as tested): " + ep[:70])
+    else:
+        # ran is None: no tool for this class is installed. Record it as NOT-APPLICABLE so the coverage
+        # ledger neither claims false coverage nor loops on it forever (honest "no tool" state).
+        NO_TOOL.setdefault(ep, set()).add(cls)
     return ran
 
 
