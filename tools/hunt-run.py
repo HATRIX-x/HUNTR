@@ -353,7 +353,8 @@ def phase_active():
     """Real class-scanning across the mapped surface (best-effort; each tool guarded)."""
     stage("Exploit", 60)
     live = [h for h in STATE["hosts"] if h.get("status")]
-    live_hosts = [h["host"] for h in live if h.get("host")][:5]
+    live_entries = [(h["host"], h.get("scheme") or "https") for h in live if h.get("host")][:5]  # honor http-only hosts
+    live_hosts = [h for h, _ in live_entries]
     all_hosts = [h["host"] for h in STATE["hosts"] if h.get("host")]
     eps = [e["url"] for e in STATE["endpoints"]]
 
@@ -376,14 +377,14 @@ def phase_active():
     if live_hosts and (HERE / "nuclei-run.py").exists():
         log("cmd", "$ nuclei -severity critical,high,medium · " + str(len(live_hosts)) + " hosts")
         args = ["--json", "--severity", "critical,high,medium"]
-        for h in live_hosts:
-            args += ["--target", "https://" + h]
+        for h, sch in live_entries:
+            args += ["--target", sch + "://" + h]   # http-only hosts were silently skipped before
         args += ["--rate", "150"]
         d = tool_json("nuclei-run.py", args, timeout=240)
         for e in STATE["endpoints"]:
             mark_tested(e["url"], "misconfig")
-        for h in live_hosts:
-            mark_tested("https://" + h, "misconfig")
+        for h, sch in live_entries:
+            mark_tested(sch + "://" + h, "misconfig")
         for f in (d or {}).get("findings", []):
             # a matched nuclei template is deterministic evidence → confirmed (so real exposures/CVEs
             # reach the submit queue instead of being demoted to needs-work by the economics brain)
