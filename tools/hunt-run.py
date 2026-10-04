@@ -106,17 +106,43 @@ def llm_call(models, system, user, max_tokens=1600, timeout=100):
 
 
 def llm_json(models, system, user, max_tokens=1600, timeout=100):
-    """llm_call + extract the first JSON object/array from the reply."""
+    """llm_call + robustly extract a JSON object/array from the reply."""
     txt = llm_call(models, system, user, max_tokens, timeout)
     if not txt:
         return None
-    m = re.search(r"(\{.*\}|\[.*\])", txt, re.S)
-    if not m:
-        return None
-    try:
-        return json.loads(m.group(1))
-    except Exception:
-        return None
+    # strip ```json fences, then try the whole thing before falling back to a span search
+    t = re.sub(r"^\s*```(?:json)?\s*|\s*```\s*$", "", txt.strip(), flags=re.I | re.M).strip()
+    for cand in (t,):
+        try:
+            return json.loads(cand)
+        except Exception:
+            pass
+    # balanced-bracket scan from the FIRST container bracket (so an array of objects isn't mistaken
+    # for its first element), to its matching close (handles trailing prose)
+    firsts = [(t.find(o), o, c) for o, c in (("{", "}"), ("[", "]")) if t.find(o) >= 0]
+    for _, open_ch, close_ch in sorted(firsts):
+        i = t.find(open_ch)
+        depth = 0; instr = False; esc = False
+        for j in range(i, len(t)):
+            ch = t[j]
+            if esc:
+                esc = False; continue
+            if ch == "\\" and instr:
+                esc = True; continue
+            if ch == '"':
+                instr = not instr; continue
+            if instr:
+                continue
+            if ch == open_ch:
+                depth += 1
+            elif ch == close_ch:
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(t[i:j + 1])
+                    except Exception:
+                        break
+    return None
 
 
 def tool_json(tool, args, timeout=240):
@@ -683,7 +709,7 @@ def phase_ai_direct(deadline, max_rounds=3):
             for cls in applicable_classes(ep):
                 if cls in TESTED.get(ep, set()):
                     continue
-                if cls in ("idor", "authz", "param") and not authed:
+                if cls in ("idor", "authz") and not authed:   # param-fuzz works unauth (consistent with phase_adaptive)
                     continue
                 untested.append({"endpoint": ep, "class": cls})
         if not untested:
@@ -708,7 +734,7 @@ def phase_ai_direct(deadline, max_rounds=3):
                 continue   # allow the injection classes the prompt advertises (were silently dropped before)
             if cls in TESTED.get(ep, set()):
                 continue
-            if cls in ("idor", "authz", "param") and not authed:
+            if cls in ("idor", "authz") and not authed:
                 continue
             log("cmd", "$ [AI→" + cls + "] " + ep)
             scan_cell(ep, cls, tok, tok2); ran += 1
@@ -1162,10 +1188,6 @@ def main():
         log("ok", "■ hunt finished · " + str(nf) + " finding" + ("" if nf == 1 else "s") +
             " · " + str(len(STATE["leads"])) + " leads · " + str(len(STATE["chains"])) + " chains · coverage " +
             str(cov.get("breadth", 0)) + "%")
-    except Exception as e:
-        STATE["status"] = "error"
-        log("warn", "✗ runner error: " + str(e)[:200])
-        flush()
     except Exception as e:
         STATE["status"] = "error"
         log("warn", "✗ runner error: " + str(e)[:200])
