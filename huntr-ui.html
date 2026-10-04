@@ -2166,8 +2166,11 @@ function renderSend(el){
   const sevName={c:'CRIT',h:'HIGH',m:'MED',l:'LOW',i:'INFO'};
   const E=(typeof fcEsc==='function')?fcEsc:(x=>x);
   const chains=[]; (typeof activeSessions==='function'?activeSessions():sessions).forEach(s=>{(s._run&&s._run.chains||[]).forEach(ch=>chains.push(ch));});
-  const chainsHTML = chains.length ? `<div class="sd-note" style="margin-top:24px">⛓ PROVEN CHAINS — multi-step paths at escalated impact</div>`+
-    chains.map(ch=>`<div class="sd-row" style="grid-template-columns:1fr"><div><div class="sd-tt" style="font-family:var(--mono);font-size:12px;white-space:normal">${(typeof fcEsc==='function'?fcEsc:(x=>x))(ch)}</div></div></div>`).join('') : '';
+  const chSev={c:'var(--sev-c)',h:'var(--sev-h)',m:'var(--sev-m)'};
+  const chainsHTML = chains.length ? `<div class="sd-note" style="margin-top:24px">⛓ CHAIN-TO-IMPACT — multi-step paths at escalated impact</div>`+
+    chains.map(ch=>{ const nm=(ch&&ch.name)?ch.name:String(ch); const tier=(ch&&ch.tier)||''; const sv=(ch&&ch.sev)||'m';
+      const flow=(ch&&ch.steps)?ch.steps.map(s=>E(s.t)).join('  →  '):'';
+      return `<div class="sd-row" style="grid-template-columns:1fr"><div><div class="sd-tt" style="font-family:var(--mono);font-size:12px;white-space:normal"><span style="color:${chSev[sv]||'var(--text2)'}">⛓ ${E(nm)}</span> <span style="color:var(--text3)">· ${E(tier)}${ch&&ch.cvss?' · CVSS '+E(ch.cvss):''}</span><br><span style="color:var(--text3);font-size:11px">${flow}</span></div></div></div>`;}).join('') : '';
   const leads=[]; (typeof activeSessions==='function'?activeSessions():sessions).forEach(s=>{(s._run&&s._run.leads||[]).forEach(l=>leads.push({...l,host:s.scope}));});
   const leadsHTML = leads.length ? `<div class="sd-note" style="margin-top:24px">◆ LEADS — AI-prioritized ideas to test next (not confirmed findings)</div>`+
     leads.map(l=>`<div class="sd-row" style="grid-template-columns:1fr">
@@ -3231,21 +3234,13 @@ function invariantsFor(sess){
    CHAINS (multi-step / depth tracking)
 ══════════════════════════════════════════════ */
 function chainsFor(sess){
-  // real proven chains come from the capability graph (sess._run.chains); scripted chains removed
-  return [];
+  // structured chains from the Chain-to-Impact planner (sess._run.chains)
+  return (sess&&sess._run&&Array.isArray(sess._run.chains))?sess._run.chains:[];
 }
 
 function renderChains(el){
   const sess=getS()||sessions[0];
   if(!sess){el.innerHTML=`<div class="view-title">Chains</div><div class="view-sub">Run a hunt to build attack chains.</div>`;return;}
-  if(sess._run){   // REAL proven chains from the capability graph
-    const chains=sess._run.chains||[];
-    el.innerHTML=`<div class="view-title">Attack chains <span class="scope-tag">${fcEsc(sess.scope)}</span></div>
-      <div class="view-sub">Proven multi-step paths at escalated impact (capability-graph).</div>`+
-      (chains.length ? `<div class="table-glass">`+chains.map(ch=>`<div class="mon-row"><span class="mon-ico sev-c">⛓</span><div class="mon-main"><div class="mon-val" style="font-family:var(--mono);white-space:normal">${fcEsc(ch)}</div></div></div>`).join('')+`</div>`
-        : `<div class="table-glass"><div class="empty-state">No multi-step chains proven for this target yet.<br><span style="color:var(--text3);font-size:12px">Chains appear when the engine proves linkable primitives (e.g. SQLi → db-read → admin).</span></div></div>`);
-    return;
-  }
   const chains=chainsFor(sess);
   const sevName={c:'CRITICAL',h:'HIGH',m:'MEDIUM',x:'DEAD END'};
   const live=chains.filter(c=>c.sev!=='x');

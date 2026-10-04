@@ -687,6 +687,136 @@ def phase_ai_judge():
     flush(); stage("AI-judge", 98)
 
 
+# ══ Chain-to-Impact planner — the moat: reason isolated findings into max-impact chains ══
+IMPACT_SEV = {"account-takeover": "c", "rce": "c", "full-db-read": "c", "cloud-role": "c", "db-read": "c",
+              "pii-read": "h", "other-user-data": "h", "admin-access": "h", "cloud-metadata": "h",
+              "token-forge": "h", "host-control": "h", "cross-origin-read": "m", "js-exec": "m", "oauth-code": "m"}
+SEVRANK = {"c": 0, "h": 1, "m": 2, "l": 3, "i": 4}
+
+
+def _short_ep(ep):
+    try:
+        import urllib.parse as up
+        u = up.urlparse(ep); return ((u.netloc + (u.path or "")) or ep)[:46]
+    except Exception:
+        return (ep or "")[:46]
+
+
+def _finding_edges(f, fi, start):
+    """A validated finding → (proven base edge, unproven escalation edge) toward its natural max impact."""
+    cls = _cls_key(f.get("cls")); s = _short_ep(f.get("endpoint", "") or TARGET)
+    t = (str(f.get("cls", "")) + " " + str(f.get("title", ""))).lower()
+    if "takeover" in t and "sub" in t:
+        return [(start, "subdomain-takeover " + s, "host-control", "proven", "h", fi)]
+    M = {
+        "sqli":     [(start, "SQLi " + s, "db-read", "proven", "c", fi), ("db-read", "dump PII tables", "pii-read", "unproven", "h", -1)],
+        "idor":     [(start, "IDOR " + s, "other-user-data", "proven", "h", fi), ("other-user-data", "read secret / reset token", "account-takeover", "unproven", "c", -1)],
+        "authz":    [(start, "auth-bypass " + s, "admin-access", "proven", "h", fi), ("admin-access", "privileged action", "account-takeover", "unproven", "c", -1)],
+        "ssrf":     [(start, "SSRF " + s, "cloud-metadata", "proven", "h", fi), ("cloud-metadata", "IMDS creds → role", "cloud-role", "unproven", "c", -1)],
+        "xss":      [(start, "XSS " + s, "js-exec", "proven", "m", fi), ("js-exec", "steal session", "account-takeover", "unproven", "c", -1)],
+        "redirect": [(start, "open-redirect " + s, "oauth-code", "unproven", "m", fi), ("oauth-code", "steal code → token", "account-takeover", "unproven", "c", -1)],
+        "cors":     [(start, "CORS null+creds " + s, "cross-origin-read", "proven", "m", fi), ("cross-origin-read", "+XSS → session theft", "account-takeover", "unproven", "c", -1)],
+        "jwt":      [(start, "JWT weakness " + s, "token-forge", "proven", "h", fi), ("token-forge", "forge admin token", "account-takeover", "unproven", "c", -1)],
+    }
+    return M.get(cls, [])
+
+
+def _reach(edges, starts, allow):
+    """Fixed-point reachability. Returns {node: path(list of edges)} using edges whose status ∈ allow."""
+    seen = {n: [] for n in starts}; changed = True
+    while changed:
+        changed = False
+        for e in edges:
+            if e["status"] in allow and e["frm"] in seen and e["to"] not in seen:
+                seen[e["to"]] = seen[e["frm"]] + [e]; changed = True
+    return seen
+
+
+def phase_chain():
+    """Chain-to-Impact: capability graph from validated findings → proven multi-step chains +
+    the single highest-leverage missing edge, reported at escalated impact. (The competitor moat.)"""
+    stage("Chaining", 96)
+    finds = STATE["findings"]
+    if not finds:
+        return
+    authed = bool((_creds().get("session_token") or "").strip())
+    start = "userA" if authed else "anon"
+    starts = {"anon"} | ({"userA", "userB"} if authed else set())
+    edges = []
+    for fi, f in enumerate(finds):
+        for (frm, prim, to, status, imp, link) in _finding_edges(f, fi, start):
+            edges.append({"frm": frm, "prim": prim, "to": to, "status": status, "impact": imp, "fi": link})
+    if not edges:
+        return
+    try:  # persist edges for capability-graph.py audit
+        rows = ["# frm\tprim\tto\tstatus\timpact"] + ["\t".join([e["frm"], e["prim"], e["to"], e["status"], e["impact"] or "-"]) for e in edges]
+        (HUNT_DIR / "capabilities.tsv").write_text("\n".join(rows) + "\n")
+    except Exception:
+        pass
+
+    proven = _reach(edges, starts, {"proven"})
+    allr = _reach(edges, starts, {"proven", "unproven"})
+    cand = []
+    for node in [n for n in allr if n in IMPACT_SEV]:
+        if node in proven and len(proven[node]) >= 2:
+            cand.append({"node": node, "path": proven[node], "status": "proven"})
+        else:
+            path = allr[node]; missing = [e for e in path if e["status"] == "unproven"]
+            if missing and len(missing) <= 2:
+                cand.append({"node": node, "path": path, "status": "near-miss"})
+    if not cand:
+        STATE["chains"] = []; STATE["stats"]["chains"] = 0; flush(); return
+
+    nears = [c for c in cand if c["status"] == "near-miss"]
+    for ni, c in enumerate(nears):
+        c["_ni"] = ni
+    plan = {}
+    if nears:
+        items = [{"i": c["_ni"], "impact": c["node"],
+                  "path": " → ".join([c["path"][0]["frm"]] + [e["prim"] + "→" + e["to"] for e in c["path"]]),
+                  "missing": [e["prim"] + " (" + e["frm"] + "→" + e["to"] + ")" for e in c["path"] if e["status"] == "unproven"]} for c in nears]
+        sysp = ("You are a senior exploit-chain strategist for AUTHORIZED bug-bounty testing. Each near-miss chain has a "
+                "proven path so far and the UNPROVEN edge(s) needed to reach impact. Reply STRICT JSON: "
+                "{\"plans\":[{\"i\":<index>,\"plausible\":true|false,\"prove\":\"ONE concrete non-destructive step the operator "
+                "runs to confirm the missing edge\",\"cvss\":\"x.x\",\"impact\":\"one line\"}]}. plausible=false if the escalation "
+                "does not realistically follow. The step must be read-only / safe — never a destructive write.")
+        d = llm_json(MODEL_STRONG, sysp, json.dumps({"target": TARGET, "chains": items}), max_tokens=1600, timeout=140)
+        for p in ((d or {}).get("plans") or []):
+            try: plan[int(p.get("i"))] = p
+            except Exception: pass
+
+    chains = []
+    for c in cand:
+        pl = plan.get(c.get("_ni")) if c["status"] == "near-miss" else None
+        if pl and pl.get("plausible") is False:
+            continue
+        node = c["node"]; sev = IMPACT_SEV.get(node, "m"); path = c["path"]
+        steps = []
+        for e in path:
+            if e["status"] == "proven":
+                steps.append({"st": "done", "t": e["prim"], "note": "confirmed", "fi": e.get("fi", -1)})
+            else:
+                steps.append({"st": "partial", "t": e["prim"], "note": ((pl.get("prove") if pl else "") or "prove this edge to complete the chain")[:160], "fi": -1})
+        cvss = (pl.get("cvss") if pl else "") or ""
+        chains.append({"sev": sev, "name": path[0]["frm"] + " → " + node.replace("-", " "),
+                       "tier": "PROVEN CHAIN" if c["status"] == "proven" else "1 EDGE AWAY",
+                       "status": c["status"], "impact": node, "cvss": cvss, "steps": steps})
+        if c["status"] == "proven":
+            pe = next((e for e in path if e.get("fi", -1) >= 0), None)
+            ep = finds[pe["fi"]].get("endpoint", "") if pe else ""
+            add_finding(sev, "Chain → " + node.replace("-", " ") + " (" + " → ".join(e["prim"] for e in path) + ")",
+                        "Proven multi-step chain from " + path[0]["frm"] + " to " + node + ". Every edge is backed by a validated finding — report at this escalated impact.",
+                        ep, cvss=cvss, cls="Chain")
+    chains.sort(key=lambda c: (SEVRANK.get(c["sev"], 9), 0 if c["status"] == "proven" else 1))
+    STATE["chains"] = chains; STATE["stats"]["chains"] = len(chains)
+    nprov = sum(1 for c in chains if c["status"] == "proven")
+    if chains:
+        log("warn", "⛓ chain-to-impact · " + str(nprov) + " proven chain(s) · " + str(len(chains) - nprov) + " one edge from impact")
+        for c in chains[:4]:
+            log("out", "   [" + c["tier"] + "] " + c["name"] + (" · CVSS " + c["cvss"] if c["cvss"] else ""))
+    flush()
+
+
 def phase_methodology():
     """The /autohunt methodology: invariant oracles, race, capability-graph chaining, dedup, coverage ledger."""
     stage("Validate", 90)
@@ -805,6 +935,7 @@ def main():
         phase_fingerprint()
         phase_methodology()         # coverage ledger + invariants + chains + dedup
         phase_ai_judge()            # Layer 3 — strong-model validation + real repro/impact (Sonnet)
+        phase_chain()               # Chain-to-Impact — reason findings into max-impact chains (the moat)
         STATE["status"] = "done"
         stage("Done", 100)
         nf = len(STATE["findings"]); cov = STATE["coverage"]
