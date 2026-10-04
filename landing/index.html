@@ -283,6 +283,60 @@
   .cell p{color:var(--fg-2); font-size:.96rem; line-height:1.65;}
   @media(max-width:720px){ .grid4{grid-template-columns:1fr;} }
 
+  /* ===== boot intro ===== */
+  #boot{position:fixed; inset:0; z-index:10000; background:var(--bg); display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:22px; transition:opacity .5s ease, visibility .5s;}
+  #boot.done{opacity:0; visibility:hidden; pointer-events:none;}
+  #boot .b-mark{width:62px; height:62px;}
+  #boot .b-mark circle, #boot .b-mark line{stroke-dasharray:140; stroke-dashoffset:140; animation:bdraw .9s ease forwards;}
+  @keyframes bdraw{to{stroke-dashoffset:0;}}
+  #boot .b-log{font-family:'JetBrains Mono',monospace; font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--fg-3); height:16px; text-align:center;}
+  #boot .b-log b{color:var(--green);}
+  #boot .b-bar{width:min(240px,60vw); height:3px; background:var(--panel-2); border:1px solid var(--line); overflow:hidden;}
+  #boot .b-bar i{display:block; height:100%; width:0; background:var(--purple); transition:width .18s linear;}
+
+  /* ===== product shot ===== */
+  #product{overflow:hidden;}
+  .pshot{position:relative; margin-top:clamp(40px,5vw,60px); perspective:1800px;}
+  .pshot-glow{position:absolute; inset:-8% 8% 12%; background:radial-gradient(ellipse at 50% 38%, rgba(167,139,250,.22), transparent 62%); filter:blur(42px); pointer-events:none;}
+  .pframe{position:relative; border:1px solid var(--line-2); background:var(--panel-2);
+    box-shadow:0 60px 140px -50px #000, 0 0 0 1px rgba(167,139,250,.06);
+    transform:rotateX(13deg); transform-origin:50% 100%; will-change:transform;}
+  .pframe-bar{display:flex; align-items:center; gap:7px; padding:11px 14px; border-bottom:1px solid var(--line); background:var(--panel);}
+  .pframe-bar .d{width:10px; height:10px; border-radius:50%; background:var(--line-2);}
+  .pframe-bar .u{margin-left:12px; font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--fg-3); letter-spacing:.06em;}
+  .pframe img{display:block; width:100%; height:auto;}
+  .pshot-cap{margin-top:26px; text-align:center; font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--fg-3);}
+  @media(max-width:700px){ .pframe{transform:none;} }
+
+  /* ===== pipeline scrollytelling ===== */
+  .pipe-grid{display:grid; grid-template-columns:1fr 1fr; gap:clamp(40px,5vw,72px); align-items:start; margin-top:clamp(20px,3vw,40px);}
+  .pipe-steps{display:flex; flex-direction:column;}
+  .pstep2{min-height:56vh; display:flex; flex-direction:column; justify-content:center; opacity:.3; transition:opacity .45s ease, transform .45s ease; transform:translateY(8px);}
+  .pstep2.active{opacity:1; transform:none;}
+  .pstep2 .num{font-family:'Archivo',sans-serif; font-weight:900; font-size:clamp(2.6rem,4vw,3.4rem); color:var(--line-2); line-height:1; letter-spacing:-.04em;}
+  .pstep2.active .num{color:var(--purple);}
+  .pstep2 .tag{font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--purple); margin-top:16px;}
+  .pstep2 h3{font-family:'Archivo',sans-serif; font-weight:800; text-transform:uppercase; font-size:clamp(1.6rem,2.6vw,2.2rem); margin:10px 0 14px; letter-spacing:-.01em;}
+  .pstep2 p{color:var(--fg-2); font-size:1.02rem; line-height:1.65; max-width:42ch;}
+  .pipe-sticky{position:sticky; top:20vh; align-self:start;}
+  .pipe-visual{border:1px solid var(--line-2); background:linear-gradient(180deg,var(--panel-2),var(--panel)); box-shadow:0 40px 90px -50px #000;}
+  .pv-top{display:flex; align-items:center; gap:8px; padding:11px 14px; border-bottom:1px solid var(--line); background:var(--panel-2); font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--fg-3); letter-spacing:.08em; text-transform:uppercase;}
+  .pv-top .d{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);}
+  .pv-top .pv-st{margin-left:auto; color:var(--purple);}
+  .pv-body{padding:18px; min-height:210px; font-family:'JetBrains Mono',monospace; font-size:12.5px; line-height:1.95;}
+  .pv-body .ln{display:block;}
+  .pv-body .k{color:var(--fg-3);} .pv-body .v{color:var(--fg);} .pv-body .p{color:var(--purple);} .pv-body .g{color:var(--green);} .pv-body .w{color:var(--gold);} .pv-body .o{color:var(--fg-2);}
+  .pv-card{margin-top:12px; border:1px solid var(--line-2); padding:11px 13px; display:flex; align-items:center; gap:10px; font-size:11.5px; color:var(--fg);}
+  .pv-card .sev{font-size:9.5px; padding:3px 7px; background:var(--crit); color:#0A0A0C; font-weight:700; letter-spacing:.04em;}
+  .pv-prog{height:4px; background:var(--panel-2); border-top:1px solid var(--line);}
+  .pv-prog i{display:block; height:100%; width:33%; background:var(--purple); transition:width .4s ease;}
+  @media(max-width:820px){
+    .pipe-grid{grid-template-columns:1fr; gap:0;}
+    .pstep2{min-height:auto; padding:26px 0; opacity:1; transform:none; border-bottom:1px solid var(--line);}
+    .pipe-sticky{display:none;}
+  }
+
   /* comparison — HUNTR vs scanner (adapted from 21st.dev 'Us vs Them', id 21217) */
   .cmp{display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--line); margin-top:clamp(40px,5vw,60px); border:1px solid var(--line);}
   .cmp-col{background:var(--bg); padding:clamp(28px,3vw,40px); display:flex; flex-direction:column;}
@@ -355,6 +409,11 @@
 </style>
 </head>
 <body>
+<div id="boot" aria-hidden="true">
+  <svg class="b-mark" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="11" stroke="#A78BFA" stroke-width="2"/><line x1="16" y1="1" x2="16" y2="8" stroke="#A78BFA" stroke-width="2"/><line x1="16" y1="24" x2="16" y2="31" stroke="#A78BFA" stroke-width="2"/><line x1="1" y1="16" x2="8" y2="16" stroke="#A78BFA" stroke-width="2"/><line x1="24" y1="16" x2="31" y2="16" stroke="#A78BFA" stroke-width="2"/><circle cx="16" cy="16" r="3" fill="#4ADE80"/></svg>
+  <div class="b-log" id="b-log">Initializing operator…</div>
+  <div class="b-bar"><i id="b-bar"></i></div>
+</div>
 <div class="bg-grid"></div>
 <div class="grain" aria-hidden="true"></div>
 <div class="cursor" id="cursor" aria-hidden="true"><span class="ring"></span></div>
@@ -433,29 +492,55 @@
     </div>
   </div>
 
-  <!-- PIPELINE -->
+  <!-- PIPELINE (scroll-told) -->
   <section id="how">
     <div class="wrap sec">
       <div class="kick"><span>The Pipeline</span></div>
       <h2>Three steps.<br>The rest is automated.</h2>
-      <p class="sec-sub">No tool soup, no config maze. Pick a target, let HUNTR hunt, review what it hands back — automated bug bounty hunting that keeps you in control.</p>
-      <div class="pipe">
-        <div class="pstep">
-          <div class="num">01</div><div class="tag">Pick</div>
-          <h3>Pick</h3>
-          <p>Enter a target you're authorized to test and choose the scope — web, API, mobile, source. Black, grey, or white box. The engine decides the methodology.</p>
+      <p class="sec-sub">No tool soup, no config maze. Scroll through one hunt — pick a target, let HUNTR work, review what it hands back.</p>
+      <div class="pipe-grid">
+        <div class="pipe-steps">
+          <div class="pstep2 active" data-step="0">
+            <div class="num">01</div><div class="tag">Pick</div>
+            <h3>Pick</h3>
+            <p>Enter a target you're authorized to test and choose the scope — web, API, mobile, source. Black, grey, or white box. The engine decides the methodology.</p>
+          </div>
+          <div class="pstep2" data-step="1">
+            <div class="num">02</div><div class="tag">Hunt</div>
+            <h3>Hunt</h3>
+            <p>HUNTR maps the attack surface, tests it class by class, and validates every finding — dropping the false positives before they ever reach you.</p>
+          </div>
+          <div class="pstep2" data-step="2">
+            <div class="num">03</div><div class="tag">Send</div>
+            <h3>Send</h3>
+            <p>Each finding arrives report-ready, reproduction and impact drafted. You review, decide, and submit. Nothing goes out without you.</p>
+          </div>
         </div>
-        <div class="pstep">
-          <div class="num">02</div><div class="tag">Hunt</div>
-          <h3>Hunt</h3>
-          <p>HUNTR maps the attack surface, tests it class by class, and validates every finding — dropping the false positives before they ever reach you.</p>
-        </div>
-        <div class="pstep">
-          <div class="num">03</div><div class="tag">Send</div>
-          <h3>Send</h3>
-          <p>Each finding arrives report-ready, reproduction and impact drafted. You review, decide, and submit. Nothing goes out without you.</p>
+        <div class="pipe-sticky">
+          <div class="pipe-visual">
+            <div class="pv-top"><span class="d"></span> huntr · fire control <span class="pv-st" id="pv-st">PICK</span></div>
+            <div class="pv-body" id="pv-body"></div>
+            <div class="pv-prog"><i id="pv-bar"></i></div>
+          </div>
         </div>
       </div>
+    </div>
+  </section>
+
+  <!-- PRODUCT SHOT -->
+  <section id="product">
+    <div class="wrap sec">
+      <div class="kick"><span>The Console</span></div>
+      <h2>Your operator dashboard.</h2>
+      <p class="sec-sub">Watch the hunt live, review what's validated, and send when you're ready — all from one calm console.</p>
+      <div class="pshot">
+        <div class="pshot-glow"></div>
+        <div class="pframe" id="pframe">
+          <div class="pframe-bar"><span class="d"></span><span class="d"></span><span class="d"></span><span class="u">huntr.run — fire control</span></div>
+          <img src="dashboard.png" width="1600" height="1000" alt="The HUNTR operator dashboard: live Fire Control view with status rail, contacts, and scan feed." loading="lazy">
+        </div>
+      </div>
+      <p class="pshot-cap">Live fire control · runs on your machine · nothing auto-submitted</p>
     </div>
   </section>
 
@@ -616,6 +701,51 @@
   document.getElementById('yr').textContent = new Date().getFullYear();
   const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+  /* ===== boot intro (once per session) ===== */
+  (function(){
+    const boot=document.getElementById('boot'); if(!boot) return;
+    const done=()=>{ boot.classList.add('done'); setTimeout(()=>{ try{boot.remove();}catch(e){} },600); };
+    let seen=false; try{ seen=sessionStorage.getItem('huntr_boot')==='1'; }catch(e){}
+    if(reduce||seen){ done(); return; }
+    try{ sessionStorage.setItem('huntr_boot','1'); }catch(e){}
+    const log=document.getElementById('b-log'), bar=document.getElementById('b-bar');
+    const steps=[[8,'Initializing operator…'],[34,'Loading surface map…'],[62,'Arming class matrix…'],[90,'<b>● System online</b>'],[100,'Target ready']];
+    let i=0; (function go(){ if(i>=steps.length){ setTimeout(done,340); return; }
+      const s=steps[i++]; if(bar)bar.style.width=s[0]+'%'; if(log)log.innerHTML=s[1];
+      setTimeout(go, 300+Math.random()*170); })();
+    setTimeout(done, 3200); // safety: never trap the page
+  })();
+
+  /* ===== pipeline scrollytelling (sticky console tells one hunt) ===== */
+  (function(){
+    const steps=[].slice.call(document.querySelectorAll('.pstep2')); const body=document.getElementById('pv-body');
+    const st=document.getElementById('pv-st'), bar=document.getElementById('pv-bar');
+    if(!steps.length||!body) return;
+    body.style.transition='opacity .22s ease';
+    const VIS=[
+      {st:'PICK', w:'33%', html:'<span class="ln"><span class="k">TARGET</span>&nbsp; <span class="v">acme.api</span></span><span class="ln"><span class="k">SCOPE</span>&nbsp;&nbsp; <span class="p">web · api</span></span><span class="ln"><span class="k">MODE</span>&nbsp;&nbsp;&nbsp; <span class="v">grey-box</span></span><span class="ln"><span class="o">▸ engine selects methodology + class matrix</span></span>'},
+      {st:'HUNT', w:'66%', html:'<span class="ln"><span class="g">■</span> <span class="o">target acquired · surface mapped</span></span><span class="ln"><span class="o">→ 94 endpoints · 7 hosts</span></span><span class="ln"><span class="p">$</span> testing — cors · idor · sqli · xss · authz</span><span class="ln"><span class="w">◆</span> AI directing targeted tests…</span><span class="ln"><span class="p">$</span> validating — dropping noise</span>'},
+      {st:'SEND', w:'100%', html:'<span class="ln"><span class="g">✓</span> 3 validated · 11 false-positive dropped</span><div class="pv-card"><span class="sev">CRIT</span> SQLi — /items?id · CVSS 7.5 · confirmed</div><span class="ln"><span class="w">$</span> report drafted — reproduction + impact</span><span class="ln"><span class="o">▸ you review &amp; submit — never auto-sent</span></span>'}
+    ];
+    let cur=-1;
+    function set(n){ if(n===cur) return; cur=n;
+      steps.forEach((s,k)=>s.classList.toggle('active',k===n));
+      const v=VIS[n]; if(st)st.textContent=v.st; if(bar)bar.style.width=v.w;
+      body.style.opacity=0; setTimeout(()=>{ body.innerHTML=v.html; body.style.opacity=1; },150);
+    }
+    set(0);
+    const io=new IntersectionObserver(es=>es.forEach(e=>{ if(e.isIntersecting) set(+e.target.dataset.step); }),
+      {rootMargin:'-45% 0px -45% 0px', threshold:0});
+    steps.forEach(s=>io.observe(s));
+  })();
+
+  /* ===== product frame parallax ===== */
+  (function(){
+    if(reduce||typeof gsap==='undefined'||typeof ScrollTrigger==='undefined') return;
+    const f=document.getElementById('pframe'); if(!f) return;
+    gsap.fromTo(f,{rotateX:16},{rotateX:3, ease:'none', scrollTrigger:{trigger:'#product', start:'top 85%', end:'top 20%', scrub:true}});
+  })();
+
   /* ===== LIVE HUNT CANVAS — the signature moment ===== */
   (function(){
     const stage=document.getElementById('hunt-stage'), cv=document.getElementById('hunt-canvas');
@@ -701,7 +831,7 @@
   /* ===== scroll reveal (GSAP ScrollTrigger) ===== */
   (function(){ if(reduce||typeof gsap==='undefined'||typeof ScrollTrigger==='undefined') return;
     gsap.registerPlugin(ScrollTrigger);
-    [['#how .kick, #how h2, #how .sec-sub'],['.pipe .pstep'],['#why .kick, #why h2, #why .sec-sub'],['.grid4 .cell'],
+    [['#how .kick, #how h2, #how .sec-sub'],['#product .kick, #product h2, #product .sec-sub'],['#product .pshot'],['#why .kick, #why h2, #why .sec-sub'],['.grid4 .cell'],
      ['#compare .kick, #compare h2, #compare .sec-sub'],['.cmp .cmp-col'],['#trust .trust-box'],
      ['#faq .kick, #faq h2'],['.faq-item'],['#access .kick, #access h2, #access .sec-sub, #access .wl-form']
     ].forEach(([sel])=>{ const els=document.querySelectorAll(sel); if(!els.length) return;
