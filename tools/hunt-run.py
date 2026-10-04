@@ -496,6 +496,8 @@ def _cls_key(c):
     if "sqli" in c or "sql injection" in c: return "sqli"
     if "ssti" in c or "template inj" in c: return "ssti"
     if "ssrf" in c or "server-side request" in c: return "ssrf"
+    if "command inj" in c or "cmdi" in c or "rce" in c or "code exec" in c: return "rce"
+    if "xxe" in c: return "xxe"
     if "xss" in c: return "xss"
     if "idor" in c: return "idor"
     if "auth" in c: return "authz"
@@ -919,10 +921,11 @@ def _finding_edges(f, fi, start):
     M = {
         "sqli":     [(start, "SQLi " + s, "db-read", "proven", "c", fi), ("db-read", "dump PII tables", "pii-read", "unproven", "h", -1)],
         "ssti":     [(start, "SSTI " + s, "rce", "proven", "c", fi)],
+        "rce":      [(start, "command/code exec " + s, "rce", "proven", "c", fi)],
+        "xxe":      [(start, "XXE " + s, "full-db-read", "proven", "c", fi), ("full-db-read", "SSRF via external entity", "cloud-metadata", "unproven", "h", -1)],
         "ssrf":     [(start, "SSRF " + s, "cloud-metadata", "proven", "h", fi), ("cloud-metadata", "IMDS creds → role", "cloud-role", "unproven", "c", -1)],
         "idor":     [(start, "IDOR " + s, "other-user-data", "proven", "h", fi), ("other-user-data", "read secret / reset token", "account-takeover", "unproven", "c", -1)],
         "authz":    [(start, "auth-bypass " + s, "admin-access", "proven", "h", fi), ("admin-access", "privileged action", "account-takeover", "unproven", "c", -1)],
-        "ssrf":     [(start, "SSRF " + s, "cloud-metadata", "proven", "h", fi), ("cloud-metadata", "IMDS creds → role", "cloud-role", "unproven", "c", -1)],
         "xss":      [(start, "XSS " + s, "js-exec", "proven", "m", fi), ("js-exec", "steal session", "account-takeover", "unproven", "c", -1)],
         "redirect": [(start, "open-redirect " + s, "oauth-code", "unproven", "m", fi), ("oauth-code", "steal code → token", "account-takeover", "unproven", "c", -1)],
         "cors":     [(start, "CORS null+creds " + s, "cross-origin-read", "proven", "m", fi), ("cross-origin-read", "+XSS → session theft", "account-takeover", "unproven", "c", -1)],
