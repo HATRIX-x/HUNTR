@@ -768,10 +768,11 @@ def phase_ai_judge():
     if drop:
         STATE["findings"] = [f for k, f in enumerate(STATE["findings"]) if k not in drop]
         STATE["stats"]["findings"] = len(STATE["findings"])
-    for ch in (d.get("chains") or []):
-        if ch and ch not in STATE["chains"]:
-            STATE["chains"].append(ch)
-    STATE["stats"]["chains"] = len(STATE["chains"])
+    # NOTE: the judge's free-text chain hints are intentionally NOT written to STATE["chains"] —
+    # that field holds structured chains owned by phase_chain (dashboard calls ch.steps). Keep them as a note.
+    jc = [c for c in (d.get("chains") or []) if c]
+    if jc:
+        STATE["chain_hints"] = jc
     log("warn" if drop else "ok", "✓ AI judge: " + str(kept) + " kept (" + str(conf) + " confirmed) · " + str(len(drop)) + " false-positive(s) dropped")
     flush(); stage("AI-judge", 98)
 
@@ -919,9 +920,10 @@ def phase_chain():
     """Chain-to-Impact: capability graph from validated findings → proven multi-step chains +
     the single highest-leverage missing edge, reported at escalated impact. (The competitor moat.)"""
     stage("Chaining", 96)
+    STATE["chains"] = []   # this phase OWNS the field: always leave it a list of structured chains (the dashboard calls .steps)
     finds = STATE["findings"]
     if not finds:
-        return
+        STATE["stats"]["chains"] = 0; return
     authed = bool((_creds().get("session_token") or "").strip())
     start = "userA" if authed else "anon"
     starts = {"anon"} | ({"userA", "userB"} if authed else set())
@@ -930,7 +932,7 @@ def phase_chain():
         for (frm, prim, to, status, imp, link) in _finding_edges(f, fi, start):
             edges.append({"frm": frm, "prim": prim, "to": to, "status": status, "impact": imp, "fi": link})
     if not edges:
-        return
+        STATE["stats"]["chains"] = 0; return
     try:  # persist edges for capability-graph.py audit
         rows = ["# frm\tprim\tto\tstatus\timpact"] + ["\t".join([e["frm"], e["prim"], e["to"], e["status"], e["impact"] or "-"]) for e in edges]
         (HUNT_DIR / "capabilities.tsv").write_text("\n".join(rows) + "\n")
@@ -1044,8 +1046,9 @@ def phase_methodology():
     if (HERE / "capability-graph.py").exists() and caps.exists():
         log("cmd", "$ capability-graph — reachable impact via proven edges")
         out, err, rc = sh([sys.executable, str(HERE / "capability-graph.py"), "--file", str(caps)], timeout=60)
+        # these are free-text audit lines; the structured STATE["chains"] is owned by phase_chain (runs later).
         chains = [l.rstrip() for l in (out or "").splitlines() if ("->" in l or "→" in l) and len(l.strip()) > 3]
-        STATE["chains"] = chains[:20]; STATE["stats"]["chains"] = len(STATE["chains"])
+        STATE["chain_audit"] = chains[:20]
         if chains:
             log("warn", "⛓ " + str(len(chains)) + " proven chain path(s) — escalated impact")
 
