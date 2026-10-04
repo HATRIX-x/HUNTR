@@ -173,6 +173,24 @@ def has(binname):
     return which(binname) is not None
 
 
+def probe_host(host, timeout=8):
+    """Directly probe a single host (https then http). Returns (status|None, title)."""
+    import urllib.request, urllib.error
+    for scheme in ("https://", "http://"):
+        try:
+            req = urllib.request.Request(scheme + host, method="GET",
+                                         headers={"User-Agent": "Mozilla/5.0 HUNTR"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                body = r.read(4096).decode("utf-8", "ignore")
+                m = re.search(r"<title[^>]*>(.*?)</title>", body, re.I | re.S)
+                return (getattr(r, "status", 200) or 200), (m.group(1).strip()[:60] if m else "")
+        except urllib.error.HTTPError as e:
+            return e.code, ""
+        except Exception:
+            continue
+    return None, ""
+
+
 def phase_scope():
     stage("Scope", 6)
     ap = apex(TARGET)
@@ -214,6 +232,24 @@ def phase_recon():
         log("warn", "→ subfinder not installed — recon limited to the named host")
         hosts = [{"host": re.sub(r'^\*\.', '', TARGET), "status": 200}]
 
+    # --- FIX #1: always include the literal target host, probed directly, never silently dropped
+    lithost = re.sub(r'^\*\.', '', TARGET).split('/')[0].strip()
+    if lithost and not any(h.get("host") == lithost for h in hosts):
+        hosts.insert(0, {"host": lithost, "status": None})
+    lit = next((h for h in hosts if h.get("host") == lithost), None)
+    if lit is not None and not lit.get("status"):
+        st, title = probe_host(lithost)
+        lit["status"] = st
+        if title:
+            lit["title"] = title
+    if lit is not None and lit.get("status"):
+        hosts = [lit] + [h for h in hosts if h is not lit]   # target first
+        log("ok", "✓ target live · " + lithost + " [" + str(lit.get("status")) + "]")
+    elif lit is not None:
+        log("warn", "⚠ target " + lithost + " is not responding (unreachable) — "
+            "hunting discovered subdomains instead; findings may not cover the intended host")
+        STATE["stats"]["target_unreachable"] = True
+
     live = [h for h in hosts if h.get("status")]
     STATE["hosts"] = hosts[:200]
     STATE["stats"]["live"] = len(live) or STATE["stats"]["live"]
@@ -229,7 +265,11 @@ def phase_recon():
 def phase_surface():
     stage("Surface", 52)
     live = [h for h in STATE["hosts"] if h.get("status")]
-    targets = (live or STATE["hosts"])[:3]
+    # --- FIX #2: crawl the literal target first, then live hosts; deeper crawl + historical URLs
+    lithost = re.sub(r'^\*\.', '', TARGET).split('/')[0].strip()
+    ordered = [h for h in STATE["hosts"] if h.get("host") == lithost] + \
+              [h for h in live if h.get("host") != lithost]
+    targets = (ordered or STATE["hosts"])[:4]
     eps = {}
     for h in targets:
         host = h.get("host")
@@ -237,22 +277,32 @@ def phase_surface():
             continue
         url = "https://" + host
         if has("katana"):
-            log("cmd", "$ katana -u " + url + " -silent -d 1")
-            out, _, _ = sh(["katana", "-u", url, "-silent", "-d", "1", "-c", "12",
-                            "-timeout", "8"], timeout=60)
+            log("cmd", "$ katana -u " + url + " -silent -d 2")
+            out, _, _ = sh(["katana", "-u", url, "-silent", "-d", "2", "-c", "15",
+                            "-jc", "-timeout", "10"], timeout=100)
             for ln in out.splitlines():
                 ln = ln.strip()
                 if ln.startswith("http"):
                     eps[ln] = host
         if has("gau"):
+            log("cmd", "$ gau " + host + "  (historical URLs)")
             out, _, _ = sh(["gau", "--threads", "5", "--subs", host], timeout=45)
-            for ln in out.splitlines()[:300]:
+            for ln in out.splitlines()[:400]:
                 ln = ln.strip()
                 if ln.startswith("http"):
                     eps[ln] = host
-        if len(eps) > 400:
+        if has("waybackurls"):
+            out, _, _ = sh(["waybackurls", host], timeout=45)
+            for ln in out.splitlines()[:400]:
+                ln = ln.strip()
+                if ln.startswith("http"):
+                    eps[ln] = host
+        if len(eps) > 1200:
             break
-    endpoints = [{"url": u, "host": hh} for u, hh in list(eps.items())[:300]]
+    # prefer parameterized URLs (the testable surface) when capping
+    items = list(eps.items())
+    items.sort(key=lambda kv: (0 if re.search(r"[?&][\w\[\]]+=", kv[0]) else 1, len(kv[0])))
+    endpoints = [{"url": u, "host": hh} for u, hh in items[:400]]
     STATE["endpoints"] = endpoints
     STATE["stats"]["endpoints"] = len(endpoints)
     flush()
@@ -390,11 +440,13 @@ def _stack():
     return ",".join(dict.fromkeys(s))
 
 
-APPLICABLE = ["cors", "redirect", "jwt", "idor", "authz", "param", "misconfig", "race"]
+APPLICABLE = ["cors", "redirect", "jwt", "idor", "authz", "param", "sqli", "xss", "misconfig", "race"]
 
 
 def _cls_key(c):
     c = (c or "").lower()
+    if "sqli" in c or "sql injection" in c: return "sqli"
+    if "xss" in c: return "xss"
     if "idor" in c: return "idor"
     if "auth" in c: return "authz"
     if "jwt" in c: return "jwt"
@@ -433,14 +485,17 @@ def build_coverage():
 
 
 STATEFUL_RE = r"(redeem|coupon|voucher|order|checkout|cart|transfer|claim|vote|invite|apply|withdraw|balance|credit|gift|refund|payout)"
-RANK = {"idor": 0, "authz": 1, "race": 2, "jwt": 3, "param": 4, "cors": 5, "redirect": 6}
+RANK = {"sqli": 0, "idor": 1, "authz": 2, "xss": 3, "race": 4, "jwt": 5, "param": 6, "cors": 7, "redirect": 8}
 
 
 def applicable_classes(ep):
     low = ep.lower()
     cl = []
+    has_param = bool(re.search(r"[?&][\w\[\]]+=", low))
     if "/api" in low or "/graphql" in low:
         cl += ["cors", "param"]
+    if has_param:                       # injectable surface (works unauth)
+        cl += ["param", "sqli", "xss"]
     if re.search(r"/\d{1,8}(?:/|\?|$)", ep) or re.search(r"[?&](id|uid|user|account|order|doc|file|key)=", low):
         cl.append("idor")
     if any(k in low for k in ("/admin", "/internal", "/debug", "/actuator", "/manage", "/private")):
@@ -449,7 +504,7 @@ def applicable_classes(ep):
         cl.append("redirect")
     if re.search(STATEFUL_RE, low):
         cl.append("race")
-    return cl
+    return list(dict.fromkeys(cl))
 
 
 def scan_cell(ep, cls, tok, tok2):
@@ -475,10 +530,18 @@ def scan_cell(ep, cls, tok, tok2):
             d = tool_json("auth-bypass.py", ["--url", ep, "--token", tok, "--json"], timeout=60)
             for f in (d or {}).get("findings", []):
                 add_finding(f.get("severity", "h"), "Auth bypass — " + (f.get("technique") or f.get("name") or "access control"), f.get("detail") or "", ep, cls="Auth bypass")
-        elif cls == "param" and tok and (HERE / "param-fuzz.py").exists():
-            d = tool_json("param-fuzz.py", ["--url", ep, "--token", tok, "--json"], timeout=120)
+        elif cls == "param" and (HERE / "param-fuzz.py").exists():
+            d = tool_json("param-fuzz.py", ["--url", ep, "--json"] + (["--token", tok] if tok else []), timeout=120)
             for f in (d or {}).get("findings", []):
                 add_finding(f.get("severity", "m"), "Hidden param — " + (f.get("param") or f.get("name") or "parameter"), f.get("detail") or "", ep, cls="Param/IDOR")
+        elif cls == "xss" and (HERE / "xss-test.py").exists():
+            d = tool_json("xss-test.py", ["--url", ep, "--json"] + (["--token", tok] if tok else []), timeout=80)
+            for f in (d or {}).get("findings", []):
+                add_finding(f.get("severity", "m"), (f.get("type") or "Reflected XSS") + " — " + (f.get("param") or "param"), f.get("detail") or f.get("payload") or "", ep, cls="XSS")
+        elif cls == "sqli" and (HERE / "sqli-test.py").exists():
+            d = tool_json("sqli-test.py", ["--url", ep, "--json"] + (["--token", tok] if tok else []), timeout=160)
+            for f in (d or {}).get("findings", []):
+                add_finding(f.get("severity", "c"), "SQL injection — " + (f.get("param") or "parameter"), f.get("detail") or "", ep, cls="SQLi")
         elif cls == "race" and (HERE / "race-fire.py").exists():
             a = ["--url", ep, "--count", "20", "--json"] + (["--token", tok] if tok else [])
             d = tool_json("race-fire.py", a, timeout=90)
@@ -500,8 +563,8 @@ def phase_adaptive(deadline, max_cells=120):
         for cls in applicable_classes(ep):
             if cls in TESTED.get(ep, set()):
                 continue
-            if cls in ("idor", "authz", "param") and not authed_ok:
-                continue  # authenticated-only classes need a session
+            if cls in ("idor", "authz") and not authed_ok:
+                continue  # these two genuinely need a session (two-identity comparison)
             work.append((RANK.get(cls, 9), ep, cls))
     # adaptive prioritization: cells whose endpoint matches an LLM lead go first
     leadeps = set((l.get("endpoint") or "").lower() for l in STATE.get("leads", []) if l.get("endpoint"))
@@ -509,7 +572,7 @@ def phase_adaptive(deadline, max_cells=120):
     total = len(work)
     stage("Hunt", 40)
     log("ok", "↻ adaptive coverage loop — " + str(total) + " untested cells queued" +
-        ("" if authed_ok else " (unauth: idor/authz/param skipped — no session)"))
+        ("" if authed_ok else " (unauth: idor/authz skipped — no session)"))
     done = 0
     for rank, ep, cls in work[:max_cells]:
         if time.time() > deadline:
@@ -550,7 +613,7 @@ def phase_ai_direct(deadline, max_rounds=3):
             break
         sys_p = ("You are a bug-bounty lead directing an automated scanner. You get the target's mapped endpoints, "
                  "the findings so far, and the UNTESTED (endpoint,class) cells. Pick the highest-ROI cells to test next "
-                 "(max 12). Reply STRICT JSON: {\"tests\":[{\"endpoint\":\"..\",\"class\":\"cors|redirect|idor|authz|param|race\"}],"
+                 "(max 12). Reply STRICT JSON: {\"tests\":[{\"endpoint\":\"..\",\"class\":\"sqli|xss|cors|redirect|idor|authz|param|race\"}],"
                  "\"done\":false,\"why\":\"one short line\"}. Set done=true when nothing left is worth testing.")
         usr = json.dumps({"target": TARGET, "mode": MODE,
                           "findings": [{"title": f["title"], "endpoint": f.get("endpoint", ""), "cls": f.get("cls", "")} for f in STATE["findings"]],
