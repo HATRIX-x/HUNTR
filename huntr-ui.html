@@ -2006,7 +2006,7 @@ function fcRenderLock(snap){
       const eps=(run.endpoints||[]).length; const pausedNow=!!sess._paused;
       host.innerHTML=`<div class="lk-live">
         <div class="lkl-head"><span class="lkl-stage">${pausedNow?'⏸ Paused':fcEsc(run.stage||'Hunting')}</span><span class="lkl-pct">${run.pct||0}%</span></div>
-        ${pausedNow?`<div style="margin:10px 0 2px;padding:10px 13px;border:1px solid rgba(231,201,131,0.4);border-radius:9px;background:rgba(231,201,131,0.08);font-size:12.5px;color:var(--fc-t1)">⏸ Hunt paused — the engine is frozen mid-scan. Press <b style="color:var(--fc-t0)">▶ Resume</b> to continue, or <b style="color:var(--fc-t0)">■ Stop</b> to end it. The surface so far is below.</div>`
+        ${pausedNow?`<div style="margin:10px 0 2px;padding:10px 13px;border:1px solid rgba(231,201,131,0.4);border-radius:9px;background:rgba(231,201,131,0.08);font-size:12.5px;color:var(--fc-t1)">${sess._rateLimited?'⏸ <b style="color:var(--fc-t0)">Account rate limit reached</b> — the hunt paused and saved its findings + coverage. Press <b style="color:var(--fc-t0)">▶ Resume</b> when your limit resets and it continues exactly where it left off (already-scanned cells are skipped).':'⏸ Hunt paused — the engine is frozen mid-scan. Press <b style="color:var(--fc-t0)">▶ Resume</b> to continue, or <b style="color:var(--fc-t0)">■ Stop</b> to end it. The surface so far is below.'}</div>`
           :`<div class="lkl-sub">The engine is working through <b style="color:var(--fc-t0)">${fcEsc(sess.scope)}</b>. Findings appear here the moment one is confirmed — this is the live surface meanwhile.</div>`}
         <div class="lkl-stats">
           <div class="lkl-stat"><div class="lkl-n">${st.subs||hosts.length||0}</div><div class="lkl-l">subdomains</div></div>
@@ -3850,13 +3850,15 @@ function pollRealHunt(id, target, opts){
       noneCount=0;
       sess._run=run;
       sess.status = (run.status==='done'||run.status==='error'||run.status==='stopped') ? 'completed' : 'active';
+      if(run.status==='paused'){ sess._paused=true; sess._rateLimited=(run.paused_reason==='rate-limit'); }
+      else if(run.status==='running'){ sess._rateLimited=false; }
       sess.logs=[ (run.logs||[]).slice() ];
       sess.findings=(run.findings||[]).map(f=>({sev:f.sev||'i',label:(f.label||'INFO'),title:f.title||f.name||'finding',detail:f.detail||'',cvss:f.cvss||'',endpoint:f.endpoint||'',steps:f.steps||'',remediation:f.remediation||'',cls:f.cls||'',dup:(typeof f.dup==='number'?f.dup:undefined),verdict:f.verdict||'',ev:(typeof f.ev==='number'?f.ev:undefined),bounty_est:f.bounty_est,reco:f.reco||'',ev_band:f.ev_band||''}));
       sess._realHosts=run.hosts||[]; sess._realEndpoints=run.endpoints||[];
       updateBadges();
       if(V.page==='dashboard'&&(V.huntId===id||!V.huntId)) renderDashboard(document.getElementById('content'));
       else if(V.page==='workbench') renderWorkbench(document.getElementById('content'));
-      if(run.status==='done'||run.status==='error'||run.status==='stopped'){ clearInterval(HPOLL.timers[id]); delete HPOLL.timers[id]; }
+      if(run.status==='done'||run.status==='error'||run.status==='stopped'||run.status==='paused'){ clearInterval(HPOLL.timers[id]); delete HPOLL.timers[id]; }
     }).catch(()=>{});
   };
   tick();

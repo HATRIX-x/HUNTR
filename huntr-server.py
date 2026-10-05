@@ -293,16 +293,23 @@ class H(BaseHTTPRequestHandler):
                     cf.unlink()
             except Exception:
                 pass
+            # persist launch opts so a rate-limit-paused hunt can be resumed with the same settings
+            opts = {"program": b.get("program", ""), "mode": b.get("mode", "grey"),
+                    "scope_types": b.get("scope_types") or ["web", "api"],
+                    "stealth": bool(b.get("stealth")), "single_host": bool(b.get("single_host")),
+                    "llm_light": bool(b.get("llm_light")), "budget_sec": int(b.get("budget_sec") or 1200)}
+            try: (hd / "launch.json").write_text(json.dumps(opts))
+            except Exception: pass
             args = [sys.executable, str(TOOLS / "hunt-run.py"), "--target", t,
-                    "--program", b.get("program", ""), "--mode", b.get("mode", "grey"),
-                    "--scope-types", ",".join(b.get("scope_types") or ["web", "api"]),
-                    "--budget-sec", str(int(b.get("budget_sec") or 1200))]
-            if b.get("stealth"):
+                    "--program", opts["program"], "--mode", opts["mode"],
+                    "--scope-types", ",".join(opts["scope_types"]),
+                    "--budget-sec", str(opts["budget_sec"])]
+            if opts["stealth"]:
                 args.append("--stealth")
             env = dict(os.environ); env["HUNT_DIR"] = str(hd)
-            if b.get("stealth"):      env["HUNT_STEALTH"] = "1"   # throttle loud scanners (WAF-safe)
-            if b.get("single_host"):  env["HUNT_SINGLE"] = "1"    # strict exact-host scope (no subdomain creep)
-            if b.get("llm_light"):    env["HUNT_LLM"] = "haiku"   # Haiku-only — minimise rate limits (no paid API key)
+            if opts["stealth"]:      env["HUNT_STEALTH"] = "1"   # throttle loud scanners (WAF-safe)
+            if opts["single_host"]:  env["HUNT_SINGLE"] = "1"    # strict exact-host scope (no subdomain creep)
+            if opts["llm_light"]:    env["HUNT_LLM"] = "haiku"   # Haiku-only — minimise rate limits (no paid API key)
             try:
                 lf = open(hd / "run.log", "a")
                 subprocess.Popen(args, stdout=lf, stderr=lf, env=env, start_new_session=True)
@@ -315,6 +322,36 @@ class H(BaseHTTPRequestHandler):
             try:
                 pid = int(pidf.read_text().strip())
             except Exception:
+                pid = None
+            def _alive(p):
+                try: os.kill(p, 0); return True
+                except Exception: return False
+            # resume of a RATE-LIMIT-PAUSED hunt: the process exited, so re-launch it with --resume
+            rf = hd / "run.json"
+            cur_status = ""
+            try: cur_status = json.loads(rf.read_text()).get("status", "")
+            except Exception: pass
+            if act == "resume" and (pid is None or not _alive(pid) or cur_status == "paused"):
+                try:
+                    opts = json.loads((hd / "launch.json").read_text())
+                except Exception:
+                    opts = {"mode": "grey", "scope_types": ["web", "api"], "budget_sec": 1200}
+                args = [sys.executable, str(TOOLS / "hunt-run.py"), "--target", tgt, "--resume",
+                        "--program", opts.get("program", ""), "--mode", opts.get("mode", "grey"),
+                        "--scope-types", ",".join(opts.get("scope_types") or ["web", "api"]),
+                        "--budget-sec", str(int(opts.get("budget_sec") or 1200))]
+                if opts.get("stealth"): args.append("--stealth")
+                env = dict(os.environ); env["HUNT_DIR"] = str(hd)
+                if opts.get("stealth"):     env["HUNT_STEALTH"] = "1"
+                if opts.get("single_host"): env["HUNT_SINGLE"] = "1"
+                if opts.get("llm_light"):   env["HUNT_LLM"] = "haiku"
+                try:
+                    lf = open(hd / "run.log", "a")
+                    subprocess.Popen(args, stdout=lf, stderr=lf, env=env, start_new_session=True)
+                    return self._send({"ok": True, "action": "resume", "relaunched": True})
+                except Exception as e:
+                    return self._send({"ok": False, "error": str(e)[:200]}, 500)
+            if pid is None:
                 return self._send({"ok": False, "error": "no running hunt"}, 404)
             import signal
             sig = {"stop": signal.SIGTERM, "pause": signal.SIGSTOP, "resume": signal.SIGCONT}.get(act)

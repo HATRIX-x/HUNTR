@@ -101,8 +101,22 @@ if os.environ.get("HUNT_LLM") == "haiku" or "--llm-light" in sys.argv:
     MODEL_STRONG = ["claude-haiku-4-5"]
 
 
+# rate-limit state: set when every model in a call returns 429 (the account's limit is reached). The
+# engine then PAUSES (not errors) so it can be resumed once the limit resets.
+_RL = {"hit": False, "retry_after": 0}
+
+class RateLimitPause(Exception):
+    pass
+
+def check_pause():
+    """Raise if the account rate limit has been reached, so main() can pause the hunt for resume."""
+    if _RL["hit"]:
+        raise RateLimitPause()
+
+
 def llm_call(models, system, user, max_tokens=1600, timeout=100):
-    """One Claude call via llm_auth (account OAuth or API key). `models` = try in order (fallback on error). Returns text or None."""
+    """One Claude call via llm_auth (account OAuth or API key). `models` = try in order (fallback on error).
+    Returns text, or None. If EVERY model returns 429 (rate limit), sets _RL['hit'] so the hunt can pause."""
     try:
         import urllib.request
         sys.path.insert(0, str(HERE))
@@ -112,6 +126,7 @@ def llm_call(models, system, user, max_tokens=1600, timeout=100):
             return None
         hdrs["content-type"] = "application/json"
         import urllib.error, time as _time
+        any_429 = False; any_other = False
         for m in (models if isinstance(models, list) else [models]):
             body = json.dumps({"model": m, "max_tokens": max_tokens, "system": system,
                                "messages": [{"role": "user", "content": user}]}).encode()
@@ -122,11 +137,19 @@ def llm_call(models, system, user, max_tokens=1600, timeout=100):
                         data = json.loads(r.read())
                     return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
                 except urllib.error.HTTPError as e:
-                    if e.code == 429 and attempt < 2:
-                        _time.sleep(2 * (attempt + 1)); continue   # backoff: 2s, 4s
-                    break   # non-retryable or exhausted → next model
+                    if e.code == 429:
+                        any_429 = True
+                        try: _RL["retry_after"] = int(e.headers.get("retry-after") or 0)
+                        except Exception: pass
+                        if attempt < 2:
+                            _time.sleep(2 * (attempt + 1)); continue   # backoff: 2s, 4s
+                        break   # exhausted for this model → next model
+                    any_other = True; break   # non-429 error → next model
                 except Exception:
-                    break   # next model
+                    any_other = True; break   # next model
+        # fell through with no success: if it was purely 429s, the account limit is reached → pause signal
+        if any_429 and not any_other:
+            _RL["hit"] = True
         return None
     except Exception:
         return None
@@ -208,6 +231,7 @@ def add_finding(sev, title, detail, endpoint, cvss="", cls="", verdict="", det=N
 
 def flush():
     STATE["updated"] = time.time()
+    STATE["tested"] = {ep: sorted(cs) for ep, cs in TESTED.items()}   # persist coverage so a paused hunt resumes
     tmp = RUN.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(STATE))
     tmp.replace(RUN)
@@ -1398,42 +1422,78 @@ def phase_fingerprint():
     log("ok", "✓ surface fingerprinted")
 
 
+def load_resume():
+    """Reload prior run.json so a paused hunt continues where it left off (findings, mapped surface,
+    captured API, and the coverage already done). Returns True if there's a usable mapped surface."""
+    try:
+        prior = json.loads(RUN.read_text())
+    except Exception:
+        return False
+    for k in ("findings", "endpoints", "hosts", "leads", "chains", "api_calls", "economics", "coverage", "invariants", "logs"):
+        if k in prior:
+            STATE[k] = prior[k]
+    for ep, cs in (prior.get("tested") or {}).items():
+        TESTED[ep] = set(cs)
+    STATE["stats"]["findings"] = len(STATE["findings"])
+    return bool(prior.get("endpoints"))
+
+
 def main():
     if not TARGET:
         STATE["status"] = "error"; STATE["stage"] = "No target"; flush()
         print("no --target"); return
     os.environ["HUNT_DIR"] = str(HUNT_DIR)  # so every engine tool shells into this workspace
+    RESUME = "--resume" in sys.argv
     try:
         (HUNT_DIR / "run.pid").write_text(str(os.getpid()))  # so the dashboard can pause/resume/stop
     except Exception:
         pass
     try:
-        log("ok", "▸ hunt started · " + TARGET + " · " + ",".join(SCOPE_TYPES) + " · " + MODE + "-box")
+        resumed = load_resume() if RESUME else False
         budget_sec = int(arg("--budget-sec", "1200") or 1200)
         deadline = time.time() + budget_sec
-        phase_scope()
-        phase_recon()
-        phase_surface()
-        phase_spa_capture()     # SPA runtime API discovery (real browser) — folds XHR/fetch into the surface
-        phase_active()          # Layer 1 — deterministic sweep (recon + scan matrix + LLM leads)
-        phase_authed()
-        phase_adaptive(deadline)
-        phase_api_test(deadline)    # SPA-first — test the captured runtime API (POST+params) for injection/IDOR
-        phase_ai_direct(deadline)   # Layer 2 — AI-directed targeted tests (Haiku)
-        phase_exploit_agent(deadline)  # Depth — LLM-driven authenticated exploitation (IDOR/BFLA/privesc/logic)
-        phase_oob(deadline)         # Blind/OOB fuzzing — nuclei DAST + interactsh (blind SSRF etc.)
-        phase_dedup()               # collapse same-root-cause duplicates before judge/chain/economics
+        if resumed:
+            _RL["hit"] = False   # clear the pause flag — the operator says the limit has reset
+            STATE["status"] = "running"; STATE.pop("paused_reason", None)
+            log("ok", "▸ RESUMING · " + TARGET + " · reusing " + str(len(STATE["endpoints"])) +
+                " endpoints · " + str(len(STATE["findings"])) + " finding(s) so far · " +
+                str(sum(len(v) for v in TESTED.values())) + " cell(s) already done")
+        else:
+            log("ok", "▸ hunt started · " + TARGET + " · " + ",".join(SCOPE_TYPES) + " · " + MODE + "-box")
+        # setup + surface mapping — skipped on resume (already mapped)
+        if not resumed:
+            phase_scope()
+            phase_recon()
+            phase_surface()
+            phase_spa_capture()     # SPA runtime API discovery (real browser) — folds XHR/fetch into the surface
+            phase_active()          # Layer 1 — deterministic sweep (recon + scan matrix + LLM leads)
+            phase_authed()
+        else:
+            log("out", "→ resume: skipping recon/surface (reusing mapped surface); continuing the hunt")
+        # hunt phases — a pause checkpoint before each LLM-heavy one so a rate limit halts cleanly
+        check_pause(); phase_adaptive(deadline)
+        check_pause(); phase_api_test(deadline)      # SPA-first — test captured runtime API for injection/IDOR
+        check_pause(); phase_ai_direct(deadline)     # Layer 2 — AI-directed (Haiku)
+        check_pause(); phase_exploit_agent(deadline) # Depth — LLM-driven authenticated exploitation
+        check_pause(); phase_oob(deadline)           # Blind/OOB fuzzing — nuclei DAST + interactsh
+        phase_dedup()
         phase_fingerprint()
-        phase_methodology(deadline)  # coverage ledger + invariants + chains + dedup (dedup bounded by budget)
-        phase_ai_judge()            # Layer 3 — strong-model validation + real repro/impact (Sonnet)
-        phase_chain()               # Chain-to-Impact — reason findings into max-impact chains (the moat)
-        phase_economics()           # Economics brain — EV-rank findings + hard dedup gate
+        check_pause(); phase_methodology(deadline)
+        check_pause(); phase_ai_judge()              # Layer 3 — strong-model validation
+        check_pause(); phase_chain()                 # Chain-to-Impact
+        phase_economics()                            # Economics brain
         STATE["status"] = "done"
         stage("Done", 100)
         nf = len(STATE["findings"]); cov = STATE["coverage"]
         log("ok", "■ hunt finished · " + str(nf) + " finding" + ("" if nf == 1 else "s") +
             " · " + str(len(STATE["leads"])) + " leads · " + str(len(STATE["chains"])) + " chains · coverage " +
             str(cov.get("breadth", 0)) + "%")
+    except RateLimitPause:
+        STATE["status"] = "paused"; STATE["paused_reason"] = "rate-limit"
+        ra = _RL.get("retry_after", 0)
+        log("warn", "⏸ PAUSED — account rate limit reached" + (" (retry ~" + str(ra) + "s)" if ra else "") +
+            " · findings + coverage saved · click Resume when the limit resets")
+        flush()
     except Exception as e:
         STATE["status"] = "error"
         import traceback
