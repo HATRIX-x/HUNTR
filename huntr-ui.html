@@ -1530,9 +1530,17 @@ function mkSess(scope,program='',mode='grey',scopeTypes=['web','api']){
 function nav(page, params={}){
   // push the screen we're leaving onto history, so Back returns to exactly where you were
   if(V && V.page && V.page!==page){ NAVHIST.push({...V}); if(NAVHIST.length>80) NAVHIST.shift(); }
-  V={page, huntId:params.huntId||V.huntId, sev:params.sev||null, fi:params.fi!=null?params.fi:null,
+  let hid = params.huntId!=null ? params.huntId : V.huntId;
+  // "Hunt" always resumes the live hunt: if nothing valid is selected, grab the newest active/running one
+  if(page==='dashboard' && !sessions.find(s=>s.id===hid)){
+    const act = sessions.find(s=>s.status==='active') || sessions[0];
+    if(act) hid = act.id;
+  }
+  let tgt = params.target!=null ? params.target : (V.target||'all');
+  if(page==='dashboard'){ const s=sessions.find(x=>x.id===hid); if(s) tgt=targetKey(s); }  // show its contacts, not filtered out
+  V={page, huntId:hid, sev:params.sev||null, fi:params.fi!=null?params.fi:null,
      agent:params.agent!=null?params.agent:V.agent, follow:params.follow!=null?params.follow:V.follow,
-     target:params.target!=null?params.target:(V.target||'all')};
+     target:tgt};
   updateNav();
   render();
 }
