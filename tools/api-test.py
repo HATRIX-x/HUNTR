@@ -14,7 +14,7 @@ Usage:
       [--cookie "a=1; b=2"] [--token "Bearer x"] [--ua "..yeswehack"] [--delay 0.4] [--allow-writes] [--json]
 Emits: {"findings":[{severity,cls,param,title,detail,endpoint,verdict}], "tested":true}
 """
-import sys, re, json, time, difflib, urllib.request, urllib.error, urllib.parse
+import sys, re, json, time, difflib, shutil, subprocess, urllib.request, urllib.error, urllib.parse
 
 def arg(n, d=None):
     return sys.argv[sys.argv.index(n) + 1] if n in sys.argv else d
@@ -60,6 +60,28 @@ def sim(a, b):
     if not a and not b: return 1.0
     return difflib.SequenceMatcher(None, a or "", b or "").ratio()
 
+def sqlmap_confirm(param):
+    """Deterministically confirm a SQLi candidate on one param with sqlmap (POST via --data). Returns
+    (confirmed_bool, dbms_str). Bounded + quiet. If sqlmap isn't installed, returns (False, '')."""
+    if not shutil.which("sqlmap"):
+        return False, ""
+    cmd = ["sqlmap", "-u", URL, "-p", param, "--batch", "--level", "1", "--risk", "1",
+           "--technique", "BEU", "--timeout", "12", "--retries", "0", "-v", "0", "--flush-session"]
+    if METHOD == "POST" and DATA:
+        cmd += ["--data", DATA]
+    if COOKIE: cmd += ["--cookie", COOKIE]
+    if TOKEN: cmd += ["--headers", "Authorization: " + (TOKEN if " " in TOKEN else "Bearer " + TOKEN)]
+    if UA: cmd += ["--user-agent", UA]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=140)
+        o = (r.stdout or "") + (r.stderr or "")
+        if re.search(r"is vulnerable|sqlmap identified the following injection|Parameter:\s*" + re.escape(param), o, re.I):
+            m = re.search(r"back-end DBMS:\s*(.+)", o)
+            return True, (m.group(1).strip()[:60] if m else "")
+    except Exception:
+        pass
+    return False, ""
+
 def params_of():
     """Return [(where, key, value, rebuild_fn)] for query + body params."""
     items = []
@@ -91,32 +113,34 @@ def main():
         if k.lower() in noise or "token" in k.lower():
             continue
         tested += 1
-        # ---- SQLi: error-based ----
+        # ---- SQLi candidate: error-based OR boolean-differential ----
+        cand, how = False, ""
         u1, d1 = rb(v + "'")
-        s1, b1 = req(u1, METHOD, d1);
+        s1, b1 = req(u1, METHOD, d1)
         if DELAY: time.sleep(DELAY)
         if SQL_ERR.search(b1) and not SQL_ERR.search(base_b):
+            cand, how = True, "error-based (single quote triggers a SQL error, baseline clean)"
+        if not cand:
+            for tp, fp in ((v + "' AND '1'='1", v + "' AND '1'='2"), (v + " AND 1=1", v + " AND 1=2")):
+                ut, dt = rb(tp); uf, df = rb(fp)
+                st, bt = req(ut, METHOD, dt)
+                if DELAY: time.sleep(DELAY)
+                sf, bf = req(uf, METHOD, df)
+                if DELAY: time.sleep(DELAY)
+                if st and sf and sim(bt, base_b) > 0.95 and sim(bf, base_b) < 0.9 and sim(bt, bf) < 0.9:
+                    cand, how = True, "boolean-based (TRUE approx baseline, FALSE diverges, sim %.2f)" % sim(bf, base_b)
+                    break
+        if cand:
+            ok, dbms = sqlmap_confirm(k)   # deterministic confirm so it survives the AI judge
+            verdict = "confirmed" if ok else "likely"
+            tail = (" sqlmap CONFIRMED" + ((" DBMS: " + dbms) if dbms else "")) if ok else " sqlmap did not confirm (lead)"
             findings.append({"severity": "c", "cls": "SQLi", "param": k,
-                             "title": "SQL injection (error-based) — " + k,
-                             "detail": "Param '%s' (%s) triggered a SQL error with a single quote; baseline clean. Endpoint: %s" % (k, where, URL),
-                             "endpoint": URL, "verdict": "confirmed"})
+                             "title": "SQL injection — " + k,
+                             "detail": "Param '%s' (%s): %s.%s Endpoint: %s" % (k, where, how, tail, URL),
+                             "endpoint": URL, "verdict": verdict})
             continue
-        # ---- SQLi: boolean-based differential ----
-        for tp, fp in ((v + "' AND '1'='1", v + "' AND '1'='2"), (v + " AND 1=1", v + " AND 1=2")):
-            ut, dt = rb(tp); uf, df = rb(fp)
-            st, bt = req(ut, METHOD, dt)
-            if DELAY: time.sleep(DELAY)
-            sf, bf = req(uf, METHOD, df)
-            if DELAY: time.sleep(DELAY)
-            # TRUE close to baseline, FALSE clearly different → boolean SQLi
-            if st and sf and sim(bt, base_b) > 0.95 and sim(bf, base_b) < 0.9 and sim(bt, bf) < 0.9:
-                findings.append({"severity": "c", "cls": "SQLi", "param": k,
-                                 "title": "SQL injection (boolean-based) — " + k,
-                                 "detail": "Param '%s' (%s): TRUE payload ~= baseline, FALSE payload diverges (resp sim %.2f) — boolean-blind SQLi. Endpoint: %s" % (k, where, sim(bf, base_b), URL),
-                                 "endpoint": URL, "verdict": "likely"})
-                break
-        # ---- IDOR: id-like param → neighbor returns a different valid object ----
-        if IDLIKE.search(k) and re.fullmatch(r"\d{1,12}", (v or "").strip()):
+        # ---- IDOR: only meaningful behind an AUTH boundary (public endpoint varying by id is not IDOR) ----
+        if (COOKIE or TOKEN) and IDLIKE.search(k) and re.fullmatch(r"\d{1,12}", (v or "").strip()):
             for nv in (str(int(v) + 1), str(int(v) - 1)):
                 un, dn = rb(nv)
                 sn, bn = req(un, METHOD, dn)
