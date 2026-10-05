@@ -770,6 +770,56 @@ def phase_ai_direct(deadline, max_rounds=3):
     log("ok", "✓ AI-directed pass complete")
 
 
+def _find_sig(f):
+    """Root-cause signature for a finding: same class + same endpoint (host+path, params ignored) +
+    same injected parameter = the SAME bug, however many tools reported it."""
+    cls = _cls_key(f.get("cls"))
+    ep = f.get("endpoint", "") or ""
+    try:
+        import urllib.parse as up
+        u = up.urlparse(ep); loc = (u.netloc + u.path).lower().rstrip("/")
+    except Exception:
+        loc = ep.lower()
+    m = re.search(r"[—:-]\s*([\w\[\]]+)\s*$", f.get("title", ""))   # param named at the end of the title
+    param = (m.group(1).lower() if m else "")
+    return (cls, loc, param)
+
+
+def phase_dedup():
+    """Collapse intra-hunt duplicates: one root-cause bug detected by several tools/vectors (reflected
+    + verified + OAST XSS on one param, or three SSTI hits on one endpoint) becomes ONE finding, keeping
+    the strongest evidence. Cuts operator noise and makes the economics/chain views reflect real bugs."""
+    finds = STATE["findings"]
+    if len(finds) < 2:
+        return
+    def _best_rank(f):   # lower = better: confirmed+undroppable, then severity, then more evidence
+        v = 0 if f.get("_det") else (1 if f.get("verdict") == "confirmed" else 2 if f.get("verdict") == "likely" else 3)
+        return (v, SEVRANK.get(f.get("sev", "i"), 9), -len(f.get("detail", "")))
+    groups = {}
+    for f in finds:
+        groups.setdefault(_find_sig(f), []).append(f)
+    merged, removed = [], 0
+    for sig, grp in groups.items():
+        if len(grp) == 1:
+            merged.append(grp[0]); continue
+        grp.sort(key=_best_rank)
+        keeper = grp[0]
+        others = grp[1:]
+        keeper["also_detected"] = len(others)
+        tools = ", ".join(sorted({(o.get("cls") or "").strip() for o in others if o.get("cls")}))[:120]
+        if tools:
+            keeper["detail"] = (keeper.get("detail", "") + " · also detected via: " + tools).strip(" ·")
+        merged.append(keeper); removed += len(others)
+    if removed:
+        # preserve original ordering by first appearance
+        order = {id(f): i for i, f in enumerate(finds)}
+        merged.sort(key=lambda f: order.get(id(f), 0))
+        STATE["findings"] = merged
+        STATE["stats"]["findings"] = len(merged)
+        log("ok", "⊚ dedup · merged " + str(removed) + " duplicate detection(s) → " + str(len(merged)) + " distinct bug(s)")
+        flush()
+
+
 def phase_oob(deadline):
     """Blind / out-of-band injection fuzzing via nuclei DAST + interactsh. Confirms SSRF and other
     blind classes (cmdi/SSTI/XXE/log4j) that produce NO reflected response — an OAST callback is the
@@ -1207,6 +1257,7 @@ def main():
         phase_adaptive(deadline)
         phase_ai_direct(deadline)   # Layer 2 — AI-directed targeted tests (Haiku)
         phase_oob(deadline)         # Blind/OOB fuzzing — nuclei DAST + interactsh (blind SSRF etc.)
+        phase_dedup()               # collapse same-root-cause duplicates before judge/chain/economics
         phase_fingerprint()
         phase_methodology(deadline)  # coverage ledger + invariants + chains + dedup (dedup bounded by budget)
         phase_ai_judge()            # Layer 3 — strong-model validation + real repro/impact (Sonnet)
