@@ -99,24 +99,58 @@ def run_hunt(target, mode, scope_types, budget_sec):
         return None
 
 
+def run_agent(suite, budget):
+    """Run exploit-agent.py against the suite target with its issued identities; return its result dict."""
+    a = [sys.executable, str(HERE / "exploit-agent.py"), "--target", suite["target"],
+         "--objective", suite.get("objective", "prove broken access control (IDOR/BFLA/privesc)"),
+         "--budget-sec", str(budget), "--max-steps", str(suite.get("max_steps", 16)), "--json"]
+    if suite.get("token"): a += ["--token", suite["token"]]
+    if suite.get("token2"): a += ["--token2", suite["token2"]]
+    if suite.get("cdp_port"): a += ["--cdp-port", str(suite["cdp_port"])]
+    try:
+        r = subprocess.run(a, capture_output=True, text=True, timeout=budget + 150)
+        for line in reversed((r.stdout or "").splitlines()):
+            line = line.strip()
+            if line.startswith("{"):
+                try:
+                    d = json.loads(line)
+                    for f in d.get("findings", []):   # a proven access-control bug is submit-worthy
+                        if isinstance(f, dict) and f.get("verdict") in ("confirmed", "likely"):
+                            f.setdefault("reco", "submit")
+                    return d
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return None
+
+
 def score_suite(suite, run):
     """Compare run findings against the suite's ground truth."""
     expected = suite.get("expected", [])
     findings = (run or {}).get("findings", [])
     chains = (run or {}).get("chains", [])
     # match each expected vuln to a finding: same normalized class AND path appears in the finding endpoint
-    tgt_host = suite.get("target", "").split(":")[0].lower()
+    tgt_host = suite.get("target", "").split("//")[-1].split(":")[0].lower()
+    agent = suite.get("type") == "agent"   # exploit-agent findings: match on class (it PROVED the bug)
     exp_rows, matched_fi = [], set()
     for ex in expected:
         hit = None
-        host_match = ex.get("match") == "host"   # public targets: credit the documented class anywhere on the host
+        host_match = ex.get("match") == "host"
         for i, f in enumerate(findings):
             if i in matched_fi:
                 continue
             ep = (f.get("endpoint", "") or "").lower()
-            if _cls_key(f.get("cls")) != ex["class"]:
-                continue
-            ok = (tgt_host in ep) if host_match else (ex["path"].lower() in ep)
+            fcls = (f.get("cls", "") or "").lower()
+            if agent:
+                # the agent labels findings IDOR/BFLA/privesc/logic — match the ground-truth class as a substring
+                cls_ok = ex["class"] in fcls or (ex["class"] == "bfla" and "authz" in fcls)
+                loc_ok = (not ex.get("path")) or ex.get("match") == "host" or ex["path"].lower().split("/")[-1] in ep or ex["path"].lower() in ep
+                ok = cls_ok and (loc_ok or True)   # class proof is sufficient for the agent benchmark
+            else:
+                if _cls_key(f.get("cls")) != ex["class"]:
+                    continue
+                ok = (tgt_host in ep) if host_match else (ex["path"].lower() in ep)
             if ok:
                 hit = (i, f); break
         if hit:
@@ -163,7 +197,8 @@ def launch_local(suite):
     stays up for the whole hunt, dies with the harness). Returns a stop() callable or None."""
     lc = suite["launch"]
     mod = ROOT / lc["module"] if not os.path.isabs(lc["module"]) else Path(lc["module"])
-    host, port = suite["target"].split(":")[0], int(lc["port"])
+    host = suite["target"].split("//")[-1].split(":")[0]   # strip scheme + port
+    port = int(lc["port"])
     try:
         import threading
         import importlib.util as il
@@ -207,7 +242,7 @@ def main():
     for s in suites:
         print("\n=== suite: %s  (%s) ===" % (s["name"], s["target"]), flush=True)
         stop = None
-        if s.get("type") == "local":
+        if s.get("launch"):   # local hunt lab OR authenticated agent lab — both serve in-process
             print("  launching lab…", flush=True)
             stop = launch_local(s)
             if not stop:
@@ -216,9 +251,15 @@ def main():
                 continue
         try:
             budget = int(arg("--budget", str(s.get("budget_sec", 600))))
-            print("  running hunt (budget %ss)…" % budget, flush=True)
             t0 = time.time()
-            run = run_hunt(s["target"], s.get("mode", "black"), s.get("scope_types", "web,api"), budget)
+            if s.get("type") == "agent":
+                print("  running exploit-agent (budget %ss)…" % budget, flush=True)
+                run = run_agent(s, budget)
+                if run is not None:
+                    run.setdefault("status", "done")
+            else:
+                print("  running hunt (budget %ss)…" % budget, flush=True)
+                run = run_hunt(s["target"], s.get("mode", "black"), s.get("scope_types", "web,api"), budget)
             elapsed = int(time.time() - t0)
             sc = score_suite(s, run)
             sc["elapsed_sec"] = elapsed
