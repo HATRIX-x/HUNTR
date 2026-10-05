@@ -94,6 +94,11 @@ SEVLABEL = {"c": "CRITICAL", "h": "HIGH", "m": "MEDIUM", "l": "LOW", "i": "INFO"
 #   CHEAP  = Layer-2 directed loop (high-frequency cell selection) — Haiku by design.
 MODEL_STRONG = ["claude-opus-4-8", "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5"]
 MODEL_CHEAP = ["claude-haiku-4-5"]
+# Light-LLM mode (HUNT_LLM=haiku / --llm-light): route ALL phases to Haiku. Haiku has far higher
+# subscription rate limits than Opus/Sonnet, so this makes rate-limiting rare when no paid API key is
+# available — at a small cost to judge/chain depth. Deterministic tool findings are unaffected.
+if os.environ.get("HUNT_LLM") == "haiku" or "--llm-light" in sys.argv:
+    MODEL_STRONG = ["claude-haiku-4-5"]
 
 
 def llm_call(models, system, user, max_tokens=1600, timeout=100):
@@ -428,7 +433,7 @@ def phase_spa_capture():
     c = _creds()
     cookie = (c.get("cookie") or "").strip()
     tok = (c.get("session_token") or "").strip()
-    if MODE == "black" or not (cookie or tok):
+    if MODE == "black":   # grey/white: capture the SPA's runtime API (auth used if a session is present)
         return
     lithost = re.sub(r'^\*\.', '', TARGET).split('/')[0].strip()
     sch = next((h.get("scheme") for h in STATE["hosts"] if h.get("host") == lithost and h.get("scheme")), None) or "https"

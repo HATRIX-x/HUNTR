@@ -302,6 +302,7 @@ class H(BaseHTTPRequestHandler):
             env = dict(os.environ); env["HUNT_DIR"] = str(hd)
             if b.get("stealth"):      env["HUNT_STEALTH"] = "1"   # throttle loud scanners (WAF-safe)
             if b.get("single_host"):  env["HUNT_SINGLE"] = "1"    # strict exact-host scope (no subdomain creep)
+            if b.get("llm_light"):    env["HUNT_LLM"] = "haiku"   # Haiku-only — minimise rate limits (no paid API key)
             try:
                 lf = open(hd / "run.log", "a")
                 subprocess.Popen(args, stdout=lf, stderr=lf, env=env, start_new_session=True)
