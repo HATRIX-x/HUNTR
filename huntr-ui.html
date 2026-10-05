@@ -3768,6 +3768,40 @@ function parseProgram(){
       + ` · target → <b style="color:var(--white)">${tgt.value||'?'}</b>`
     : `<span style="color:var(--amber)">No scope section spotted — type the target below.</span>`;
   window._pasteScope={allow:a, deny:[...deny], rewards:rew, text:t};
+  // hand the paste to the AI to organize properly (debounced) — classifies assets + out-of-scope
+  clearTimeout(window._aiTimer);
+  if(window.__HUNTR_LIVE && t.trim().length>100){ window._aiTimer=setTimeout(()=>aiOrganize(t), 900); }
+}
+
+/* AI organizes the pasted program page into a clean, classified scope and fills the hunt with ALL
+   in-scope assets; out-of-scope → deny list so the hunt sticks to scope. */
+function aiOrganize(text){
+  const info=document.getElementById('mi-parsed'); if(!info) return;
+  const prev=info.innerHTML;
+  info.innerHTML='<span style="color:var(--accent)">✦ AI organizing the scope…</span>';
+  fetch('/api/scope/parse',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})})
+   .then(r=>r.json()).then(d=>{
+     const sc=d&&d.scope;
+     if(!sc||!Array.isArray(sc.in_scope)||!sc.in_scope.length){ info.innerHTML=prev; return; }
+     const all=sc.in_scope.map(a=>a.asset);
+     const src=sc.in_scope.filter(a=>a.type==='source');
+     const mob=sc.in_scope.filter(a=>a.type==='mobile');
+     const tgt=document.getElementById('mi-target'); if(tgt){ tgt.value=all.join(', '); tgt.dataset.edited='1'; }
+     const types=new Set(['web']);
+     if(sc.in_scope.some(a=>a.type==='api')) types.add('api');
+     if(src.length) types.add('source');
+     if(mob.length) types.add('mobile');
+     window._scopeTypes=[...types]; try{ syncScopeUI(); }catch(e){}
+     if(sc.ua_required){ const uaEl=document.getElementById('mi-ua'); if(uaEl&&!uaEl.value) uaEl.value=sc.ua_required; }
+     window._aiScope={in_scope:sc.in_scope, out_of_scope:sc.out_of_scope||[], ua:sc.ua_required||'', rewards:sc.rewards||'', notes:sc.notes||''};
+     info.innerHTML=`<span style="color:var(--green)">✦ AI organized · ${all.length} in-scope asset${all.length>1?'s':''}</span>`
+       +(src.length?` · <b>${src.length}</b> source repo${src.length>1?'s':''}`:'')
+       +((sc.out_of_scope&&sc.out_of_scope.length)?` · ${sc.out_of_scope.length} out-of-scope (denied)`:'')
+       +(sc.ua_required?` · UA: <b style="color:var(--gold)">${fcEsc(sc.ua_required)}</b>`:'')
+       +(sc.rewards?` · ${fcEsc(sc.rewards)}`:'')
+       +`<br><span style="color:var(--text3);font-size:11px">${all.slice(0,8).map(fcEsc).join(' · ')}${all.length>8?' …':''}</span>`
+       +(sc.notes?`<br><span style="color:var(--text3);font-size:11px">⚑ ${fcEsc(sc.notes)}</span>`:'');
+   }).catch(()=>{ info.innerHTML=prev; });
 }
 
 function startHunt(){
@@ -3789,6 +3823,10 @@ function startHunt(){
   const sgEl=document.getElementById('mi-single'); sess.singleHost=!!(sgEl&&sgEl.checked);
   const llEl=document.getElementById('mi-llmlight'); sess.llmLight=!!(llEl&&llEl.checked);
   if(window._pasteScope){ sess.scopeText=window._pasteScope.text; sess.scopeAllow=window._pasteScope.allow; sess.scopeDeny=window._pasteScope.deny; sess.rewards=window._pasteScope.rewards; }
+  if(window._aiScope){ // AI-organized scope wins: out-of-scope → deny, UA from program
+    sess.scopeDeny=window._aiScope.out_of_scope||sess.scopeDeny;
+    if(window._aiScope.ua && !sess.ua) sess.ua=window._aiScope.ua;
+    sess.rewards=window._aiScope.rewards||sess.rewards; }
   sessions.unshift(sess);
   V.huntId=sess.id; V.target=targetKey(sess);
   closeModal();
@@ -3804,7 +3842,7 @@ function startHunt(){
   const stR=document.getElementById('mi-stealth'); if(stR) stR.checked=false;
   const sgR=document.getElementById('mi-single'); if(sgR) sgR.checked=false;
   const llR=document.getElementById('mi-llmlight'); if(llR) llR.checked=false;
-  window._pasteScope=null;
+  window._pasteScope=null; window._aiScope=null; clearTimeout(window._aiTimer);
   FC.lockId=null;
   nav('dashboard');
   if(window.__HUNTR_LIVE){ startRealHunt(sess); }   // REAL engine-driven hunt
@@ -3817,7 +3855,7 @@ function startRealHunt(sess){
   sess._run={status:'running', stage:'Boot', pct:0, logs:[{t:'ok',v:'▸ contacting engine…'}], hosts:[], endpoints:[], findings:[]};
   sess.status='active'; sess.logs=[sess._run.logs];
   fetch('/api/hunt/start',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({target:sess.scope, program:sess.program||'', mode:sess.mode||'grey', scope_types:sess.scopeTypes||['web','api'], session_token:sess.sessionToken||'', token2:sess.token2||'', cookie:sess.cookie||'', ua:sess.ua||'', stealth:!!sess.stealth, single_host:!!sess.singleHost, llm_light:!!sess.llmLight, budget_sec:sess.budgetSec||1200})
+    body:JSON.stringify({target:sess.scope, program:sess.program||'', mode:sess.mode||'grey', scope_types:sess.scopeTypes||['web','api'], session_token:sess.sessionToken||'', token2:sess.token2||'', cookie:sess.cookie||'', ua:sess.ua||'', stealth:!!sess.stealth, single_host:!!sess.singleHost, llm_light:!!sess.llmLight, budget_sec:sess.budgetSec||1200, scope_deny:sess.scopeDeny||[]})
   }).then(r=>r.json()).then(d=>{
     if(!d||!d.ok){ sess._run.status='error'; sess._run.logs.push({t:'warn',v:'✗ engine refused: '+((d&&d.error)||'unknown')}); if(V.page==='dashboard')renderDashboard(document.getElementById('content')); return; }
     pollRealHunt(sess.id, sess.scope, {fresh:true});

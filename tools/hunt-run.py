@@ -362,6 +362,19 @@ def phase_recon():
                 if title: h["title"] = title
             except Exception:
                 pass
+    # STICK TO SCOPE: drop any discovered host that matches scope.deny (out-of-scope)
+    try:
+        import fnmatch
+        denyf = HUNT_DIR / "scope.deny"
+        deny_pats = [l.strip() for l in denyf.read_text().splitlines() if l.strip() and not l.startswith("#")] if denyf.exists() else []
+        if deny_pats:
+            before = len(hosts)
+            hosts = [h for h in hosts if not any(fnmatch.fnmatch(h["host"], p) or h["host"] == p or h["host"].endswith("." + p.lstrip("*.")) for p in deny_pats)]
+            dropped = before - len(hosts)
+            if dropped:
+                log("out", "→ scope: dropped " + str(dropped) + " out-of-scope host(s) per deny list")
+    except Exception:
+        pass
     live = [h for h in hosts if h.get("status")]
     # put the live user-provided hosts first so the crawler hits them
     asset_hosts = {_asset_host(a)[0] for a in WEB_ASSETS}

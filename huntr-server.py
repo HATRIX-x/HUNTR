@@ -298,7 +298,17 @@ class H(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         b = self._body()
         t = b.get("target")
-        if u.path == "/api/hunt/start":  # POST {target, program?, mode?, scope_types?, session_token?, token2?, cookie?, ua?, stealth?, single_host?, budget_sec?} — start a REAL hunt
+        if u.path == "/api/scope/parse":  # POST {text} — AI-organize a pasted program page into a clean scope
+            text = b.get("text") or ""
+            if not text.strip():
+                return self._send({"ok": False, "error": "no text"}, 400)
+            r = run("scope-parse.py", ["--json"], stdin=text, timeout=100)
+            try:
+                parsed = json.loads((r.get("out") or "").strip().splitlines()[-1])
+            except Exception:
+                parsed = {"in_scope": [], "out_of_scope": [], "error": "parse failed"}
+            return self._send({"ok": True, "scope": parsed})
+        if u.path == "/api/hunt/start":  # POST {target, program?, mode?, scope_types?, session_token?, token2?, cookie?, ua?, stealth?, single_host?, budget_sec?, scope_deny?} — start a REAL hunt
             if not t:
                 return self._send({"ok": False, "error": "no target"}, 400)
             hd = hunt_dir(t)
@@ -318,6 +328,16 @@ class H(BaseHTTPRequestHandler):
                     cf.unlink()
             except Exception:
                 pass
+            # out-of-scope list → scope.deny (deny wins in scope-guard, so the hunt sticks to scope)
+            deny = b.get("scope_deny") or []
+            if isinstance(deny, list) and deny:
+                try:
+                    lines = {d.strip() for d in deny if isinstance(d, str) and d.strip()
+                             and "all " not in d.lower()}   # drop vague "all domains not listed" phrasing
+                    if lines:
+                        (hd / "scope.deny").write_text("\n".join(sorted(lines)) + "\n")
+                except Exception:
+                    pass
             # persist launch opts so a rate-limit-paused hunt can be resumed with the same settings
             opts = {"program": b.get("program", ""), "mode": b.get("mode", "grey"),
                     "scope_types": b.get("scope_types") or ["web", "api"],
