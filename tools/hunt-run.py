@@ -56,7 +56,13 @@ def _single_host(target):
     return False
 
 
-TARGET = (arg("--target") or "").strip()
+RAW_TARGET = (arg("--target") or "").strip()
+# a scope can list MULTIPLE assets ("a.com, *.b.com, rpc.c.net, github.com/org/repo"). Split them so each
+# is hunted, instead of treating the whole comma-string as one (broken) hostname.
+_assets = [a.strip().rstrip("/") for a in re.split(r"[,\s]+", RAW_TARGET) if a.strip()]
+SOURCE_ASSETS = [a for a in _assets if re.search(r"(github\.com|gitlab\.com|bitbucket\.org)/\S+/\S+", a, re.I)]
+WEB_ASSETS = [a for a in _assets if a not in SOURCE_ASSETS] or _assets
+TARGET = (WEB_ASSETS[0] if WEB_ASSETS else (_assets[0] if _assets else "")).strip()  # primary (apex/naming)
 PROGRAM = arg("--program", "")
 MODE = arg("--mode", "grey")
 # stealth: throttle + lower concurrency + propagate the program UA so loud scanners don't get IP-blocked
@@ -283,90 +289,108 @@ def probe_host(host, timeout=8):
     return None, "", "https"
 
 
+def _asset_host(a):
+    """(host, is_wildcard) from an asset string like '*.b.com', 'https://x/y', 'rpc.c.net'."""
+    h = re.sub(r"^https?://", "", (a or "").strip()).split("/")[0].strip().lower()
+    wild = h.startswith("*.")
+    return re.sub(r"^\*\.", "", h), wild
+
+
 def phase_scope():
     stage("Scope", 6)
-    ap = apex(TARGET)
     allow = HUNT_DIR / "scope.allow"
     lines = set()
-    if (allow).exists():
+    if allow.exists():
         lines = {l.strip() for l in allow.read_text().splitlines() if l.strip()}
-    lines.add(TARGET)
-    lines.add(ap)
-    lines.add("*." + ap)
-    allow.write_text("\n".join(sorted(lines)) + "\n")
-    log("cmd", "$ scope-guard --init  (" + TARGET + ")")
-    log("ok", "✓ scope locked · " + ap + " + subdomains · mode: " + MODE + "-box")
+    for a in WEB_ASSETS:                      # every in-scope web/api asset
+        host, wild = _asset_host(a)
+        if not host:
+            continue
+        lines.add(host)
+        if wild:
+            lines.add("*." + host)
+    for a in SOURCE_ASSETS:                    # source repo hosts stay in scope too
+        lines.add(_asset_host(a)[0])
+    allow.write_text("\n".join(sorted(x for x in lines if x)) + "\n")
+    log("cmd", "$ scope-guard --init  (" + str(len(WEB_ASSETS)) + " web + " + str(len(SOURCE_ASSETS)) + " source asset(s))")
+    log("ok", "✓ scope locked · " + str(len([a for a in WEB_ASSETS if _asset_host(a)[1]])) + " wildcard + " +
+        str(len([a for a in WEB_ASSETS if not _asset_host(a)[1]])) + " exact host(s) · mode: " + MODE + "-box")
 
 
 def phase_recon():
-    ap = apex(TARGET)
     stage("Recon", 18)
-    log("cmd", "$ subfinder -d " + ap + " -silent | httpx -silent -title -sc")
-    hosts = []
-    single = _single_host(TARGET)
-    if single:
-        # IP / localhost / host:port — no subdomains to find; go straight to the literal host
-        log("out", "→ single-host target (" + apex(TARGET) + ") — skipping subdomain enumeration")
-    # prefer the engine's own recon tool (handles subfinder+resolve+probe)
-    tool = HERE / "subdomain-enum.py"
-    if (not single) and tool.exists():
-        out, err, _ = sh([sys.executable, str(tool), "--domain", ap, "--json"], timeout=300)
-        try:
-            d = json.loads(out.strip().splitlines()[-1])
-            hosts = d.get("results", [])
-            STATE["stats"]["subs"] = d.get("total_found", len(hosts))
-            STATE["stats"]["live"] = d.get("live", 0)
-        except Exception:
-            log("warn", "→ recon parse issue: " + (err or out)[:120])
-    elif (not single) and has("subfinder"):
-        out, _, _ = sh(["subfinder", "-d", ap, "-silent"], timeout=180)
-        subs = [s.strip() for s in out.splitlines() if s.strip()]
-        STATE["stats"]["subs"] = len(subs)
-        for s in subs[:60]:
-            hosts.append({"host": s, "status": None})
-    else:
-        if not single:
-            log("warn", "→ subfinder not installed — recon limited to the named host")
-        hosts = [{"host": re.sub(r'^\*\.', '', TARGET).split('/')[0], "status": None}]
-
-    # --- FIX #1: always include the literal target host, probed directly, never silently dropped
-    lithost = re.sub(r'^\*\.', '', TARGET).split('/')[0].strip()
-    if lithost and not any(h.get("host") == lithost for h in hosts):
-        hosts.insert(0, {"host": lithost, "status": None})
-    lit = next((h for h in hosts if h.get("host") == lithost), None)
-    if lit is not None and not lit.get("status"):
-        st, title, sch = probe_host(lithost)
-        lit["status"] = st; lit["scheme"] = sch
-        if title:
-            lit["title"] = title
-    if lit is not None and lit.get("status"):
-        hosts = [lit] + [h for h in hosts if h is not lit]   # target first
-        log("ok", "✓ target live · " + lithost + " [" + str(lit.get("status")) + "]")
-    elif lit is not None:
-        log("warn", "⚠ target " + lithost + " is not responding (unreachable) — "
-            "hunting discovered subdomains instead; findings may not cover the intended host")
-        STATE["stats"]["target_unreachable"] = True
-
+    forced_single = os.environ.get("HUNT_SINGLE") == "1"
+    hosts = []; seen = set(); subs_total = 0
+    def add(host, status=None):
+        host = (host or "").strip().lower().split("/")[0]
+        if host and host not in seen:
+            seen.add(host); hosts.append({"host": host, "status": status})
+    log("cmd", "$ recon · " + str(len(WEB_ASSETS)) + " web asset(s)")
+    for asset in WEB_ASSETS:
+        host, wild = _asset_host(asset)
+        if not host:
+            continue
+        ap = apex(host)
+        do_enum = wild and not forced_single and not _single_host(host)
+        if do_enum:
+            tool = HERE / "subdomain-enum.py"
+            if tool.exists():
+                out, err, _ = sh([sys.executable, str(tool), "--domain", ap, "--json"], timeout=240)
+                try:
+                    d = json.loads(out.strip().splitlines()[-1])
+                    for r in d.get("results", []):
+                        add(r.get("host"), r.get("status"))
+                    subs_total += d.get("total_found", 0)
+                    log("out", "→ " + ap + ": " + str(d.get("total_found", 0)) + " subdomains")
+                except Exception:
+                    log("warn", "→ recon parse issue for " + ap)
+            elif has("subfinder"):
+                out, _, _ = sh(["subfinder", "-d", ap, "-silent"], timeout=150)
+                for s in out.splitlines()[:60]:
+                    if s.strip(): add(s.strip())
+            add(host)   # the apex itself
+        else:
+            add(ap if wild else host)   # exact host (or apex of a wildcard in single-host mode)
+            log("out", "→ " + (ap if wild else host) + " (exact host — no enumeration)")
+    # probe every host that has no status yet (bounded)
+    probed = 0
+    for h in hosts:
+        if h.get("status") is None and probed < 50:
+            probed += 1
+            try:
+                st, title, sch = probe_host(h["host"]); h["status"] = st; h["scheme"] = sch
+                if title: h["title"] = title
+            except Exception:
+                pass
     live = [h for h in hosts if h.get("status")]
+    # put the live user-provided hosts first so the crawler hits them
+    asset_hosts = {_asset_host(a)[0] for a in WEB_ASSETS}
+    hosts.sort(key=lambda h: (0 if h["host"] in asset_hosts and h.get("status") else 1 if h.get("status") else 2))
     STATE["hosts"] = hosts[:200]
-    STATE["stats"]["live"] = len(live) or STATE["stats"]["live"]
+    STATE["stats"]["subs"] = subs_total or len(hosts)
+    STATE["stats"]["live"] = len(live)
+    if SOURCE_ASSETS:
+        STATE["source_assets"] = SOURCE_ASSETS
+        log("warn", "◆ " + str(len(SOURCE_ASSETS)) + " source repo(s) in scope (GitHub) — source review is a separate pass, not run in this web/api hunt")
+    if not live:
+        log("warn", "⚠ no live hosts among the assets — check the targets are reachable")
     flush()
     for h in (live[:25] or hosts[:25]):
         tag = (str(h.get("status")) + " " if h.get("status") else "") + (h.get("title") or "")
         log("out", "→ " + h.get("host", "?") + ("  [" + tag.strip() + "]" if tag.strip() else ""))
-    log("ok", "✓ " + str(STATE["stats"]["subs"]) + " subdomains · " +
-        str(len(live)) + " live")
+    log("ok", "✓ " + str(len(hosts)) + " host(s) from " + str(len(WEB_ASSETS)) + " asset(s) · " + str(len(live)) + " live")
     stage("Recon", 45)
 
 
 def phase_surface():
     stage("Surface", 52)
     live = [h for h in STATE["hosts"] if h.get("status")]
-    # --- FIX #2: crawl the literal target first, then live hosts; deeper crawl + historical URLs
-    lithost = re.sub(r'^\*\.', '', TARGET).split('/')[0].strip()
-    ordered = [h for h in STATE["hosts"] if h.get("host") == lithost] + \
-              [h for h in live if h.get("host") != lithost]
-    targets = (ordered or STATE["hosts"])[:4]
+    # crawl the user's explicit asset hosts first, then other live hosts; deeper crawl + historical URLs
+    asset_hosts = {_asset_host(a)[0] for a in WEB_ASSETS}
+    primary = [h for h in live if h.get("host") in asset_hosts]
+    others = [h for h in live if h.get("host") not in asset_hosts]
+    cap = max(4, min(len(primary) + 2, 8))   # make room for all explicit assets
+    targets = (primary + others or STATE["hosts"])[:cap]
     eps = {}
     for h in targets:
         host = h.get("host")
@@ -671,8 +695,16 @@ STATEFUL_RE = r"(redeem|coupon|voucher|order|checkout|cart|transfer|claim|vote|i
 RANK = {"ssti": 0, "sqli": 0, "idor": 1, "ssrf": 1, "authz": 2, "xss": 3, "race": 4, "jwt": 5, "param": 6, "cors": 7, "redirect": 8}
 
 
+STATIC_EXT = re.compile(r"\.(js|mjs|css|map|png|jpe?g|gif|svg|ico|webp|avif|bmp|woff2?|ttf|eot|otf|"
+                        r"mp4|webm|mp3|wav|pdf|zip|gz|tar|wasm|json|xml|txt|md)(\?|$)", re.I)
+
 def applicable_classes(ep):
     low = ep.lower()
+    # static assets (JS/CSS/images/fonts/media) have no server-side logic — never injection-test them,
+    # even with a cache-busting param like ?dpl=… . This stops the hunt wasting its budget on /_next/static.
+    path = re.sub(r"\?.*$", "", low)
+    if STATIC_EXT.search(low) or "/_next/static/" in low or "/static/chunks/" in low or "/assets/" in path:
+        return []
     cl = []
     has_param = bool(re.search(r"[?&][\w\[\]]+=", low))
     if "/api" in low or "/graphql" in low:
@@ -758,12 +790,15 @@ def scan_cell(ep, cls, tok, tok2):
     return ran
 
 
-def phase_adaptive(deadline, max_cells=120):
+def phase_adaptive(deadline, max_cells=200):
     """Coverage-to-100% loop: cover EVERY applicable (endpoint × class) cell, ranked by ROI and
-    boosted by the LLM leads, until the ledger is drained or the budget/time is hit."""
+    boosted by the LLM leads, until the ledger is drained or the budget/time is hit. Classes are
+    INTERLEAVED so a budget cap doesn't spend everything on one class (sqli/ssti) and starve the rest."""
     c = _creds(); tok = (c.get("session_token") or "").strip(); tok2 = (c.get("token2") or "").strip()
     authed_ok = (MODE != "black") and bool(tok)
-    work = []
+    leadeps = set((l.get("endpoint") or "").lower() for l in STATE.get("leads", []) if l.get("endpoint"))
+    from collections import defaultdict
+    bycls = defaultdict(list)
     for e in STATE["endpoints"]:
         ep = e["url"]
         for cls in applicable_classes(ep):
@@ -771,10 +806,17 @@ def phase_adaptive(deadline, max_cells=120):
                 continue
             if cls in ("idor", "authz") and not authed_ok:
                 continue  # these two genuinely need a session (two-identity comparison)
-            work.append((RANK.get(cls, 9), ep, cls))
-    # adaptive prioritization: cells whose endpoint matches an LLM lead go first
-    leadeps = set((l.get("endpoint") or "").lower() for l in STATE.get("leads", []) if l.get("endpoint"))
-    work.sort(key=lambda w: (0 if any(le and le in w[1].lower() for le in leadeps) else 1, w[0], w[1]))
+            bycls[cls].append(ep)
+    # order each class's endpoints: LLM-lead matches first
+    for cls in bycls:
+        bycls[cls].sort(key=lambda ep: 0 if any(le and le in ep.lower() for le in leadeps) else 1)
+    # round-robin across classes (by ROI rank) so every class gets coverage within the cap
+    work = []
+    order = sorted(bycls.keys(), key=lambda c: RANK.get(c, 9))
+    while any(bycls[c] for c in order):
+        for cls in order:
+            if bycls[cls]:
+                work.append((RANK.get(cls, 9), bycls[cls].pop(0), cls))
     total = len(work)
     stage("Hunt", 40)
     log("ok", "↻ adaptive coverage loop — " + str(total) + " untested cells queued" +
