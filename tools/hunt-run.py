@@ -788,6 +788,54 @@ def _find_sig(f):
     return (cls, loc, params)
 
 
+def phase_exploit_agent(deadline):
+    """Depth layer: an LLM-driven, AUTHENTICATED exploitation agent (exploit-agent.py) that drives a live
+    session in a loop to prove the high-value access-control bugs that live behind login — IDOR/BOLA,
+    BFLA, privilege escalation, business-logic. Runs only with a session (token or a real-Chrome CDP
+    port); skipped for pure black-box recon. Agent findings are LLM-adjudicated → verdict as returned
+    (not deterministic), so the judge/economics still weigh them."""
+    if not (HERE / "exploit-agent.py").exists():
+        return
+    c = _creds()
+    tok = (c.get("session_token") or "").strip()
+    tok2 = (c.get("token2") or "").strip()
+    cdp = str(c.get("cdp_port") or "").strip()
+    if MODE == "black" or not (tok or cdp):
+        return
+    remaining = int(deadline - time.time())
+    if remaining < 90:
+        log("warn", "⏱ skipped exploit-agent — budget too low (" + str(remaining) + "s)")
+        return
+    sl = max(90, min(remaining - 30, 300))
+    live = [h["host"] for h in STATE["hosts"] if h.get("status")]
+    sch = next((h.get("scheme") for h in STATE["hosts"] if h.get("status") and h.get("scheme")), "https")
+    base = (sch + "://" + live[0]) if live else (sch + "://" + apex(TARGET))
+    obj = "prove broken access control on the authenticated surface: cross-account IDOR/BOLA, BFLA on privileged routes, privilege escalation, and multi-step business-logic abuse"
+    stage("Exploit-agent", 90)
+    log("ok", "◆ exploit-agent · LLM-driven authenticated session · " + ("real-Chrome CDP" if cdp else "token" + (" ×2 identities" if tok2 else "")) + " · " + str(sl) + "s")
+    a = ["--target", base, "--objective", obj, "--budget-sec", str(sl), "--max-steps", "18", "--json"]
+    if cdp:
+        a += ["--cdp-port", cdp]
+    if tok:
+        a += ["--token", tok]
+    if tok2:
+        a += ["--token2", tok2]
+    d = tool_json("exploit-agent.py", a, timeout=sl + 40)
+    if not isinstance(d, dict):
+        log("warn", "→ exploit-agent produced no result (session/LLM unavailable)")
+        return
+    n = 0
+    for f in d.get("findings", []):
+        if not isinstance(f, dict):
+            continue
+        add_finding(f.get("severity", "h"), f.get("title") or "Broken access control",
+                    f.get("detail") or "", f.get("endpoint") or base, cls=f.get("cls", "authz"),
+                    verdict=f.get("verdict", "likely"), det=False)   # LLM-adjudicated → judge can still weigh
+        n += 1
+    log("ok" if n else "out", "✓ exploit-agent · " + str(d.get("steps", 0)) + " step(s) · " + str(n) + " access-control finding(s)")
+    flush()
+
+
 def phase_dedup():
     """Collapse intra-hunt duplicates: one root-cause bug detected by several tools/vectors (reflected
     + verified + OAST XSS on one param, or three SSTI hits on one endpoint) becomes ONE finding, keeping
@@ -1259,6 +1307,7 @@ def main():
         phase_authed()
         phase_adaptive(deadline)
         phase_ai_direct(deadline)   # Layer 2 — AI-directed targeted tests (Haiku)
+        phase_exploit_agent(deadline)  # Depth — LLM-driven authenticated exploitation (IDOR/BFLA/privesc/logic)
         phase_oob(deadline)         # Blind/OOB fuzzing — nuclei DAST + interactsh (blind SSRF etc.)
         phase_dedup()               # collapse same-root-cause duplicates before judge/chain/economics
         phase_fingerprint()
