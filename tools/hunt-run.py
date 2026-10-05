@@ -40,7 +40,11 @@ def apex(host):
 
 def _single_host(target):
     """A bare IP, localhost, or host:port target can't be subdomain-enumerated and has no public
-    archive history — skip subfinder/gau/waybackurls for it (they'd waste minutes on nothing)."""
+    archive history — skip subfinder/gau/waybackurls for it (they'd waste minutes on nothing).
+    HUNT_SINGLE=1 forces this for a strict exact-host scope (e.g. a program scoped to named hosts,
+    not *.domain) so recon never wanders off-scope."""
+    if os.environ.get("HUNT_SINGLE") == "1":
+        return True
     h = re.sub(r"^https?://", "", (target or "").strip().lower()).split("/")[0]
     hostonly = h.split(":")[0]
     if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", hostonly):      # IPv4
@@ -800,7 +804,9 @@ def phase_exploit_agent(deadline):
     tok = (c.get("session_token") or "").strip()
     tok2 = (c.get("token2") or "").strip()
     cdp = str(c.get("cdp_port") or "").strip()
-    if MODE == "black" or not (tok or cdp):
+    cookie = (c.get("cookie") or "").strip()
+    ua = (c.get("ua") or "").strip()
+    if MODE == "black" or not (tok or cdp or cookie):
         return
     remaining = int(deadline - time.time())
     if remaining < 90:
@@ -812,7 +818,8 @@ def phase_exploit_agent(deadline):
     base = (sch + "://" + live[0]) if live else (sch + "://" + apex(TARGET))
     obj = "prove broken access control on the authenticated surface: cross-account IDOR/BOLA, BFLA on privileged routes, privilege escalation, and multi-step business-logic abuse"
     stage("Exploit-agent", 90)
-    log("ok", "◆ exploit-agent · LLM-driven authenticated session · " + ("real-Chrome CDP" if cdp else "token" + (" ×2 identities" if tok2 else "")) + " · " + str(sl) + "s")
+    sess_kind = "real-Chrome CDP" if cdp else ("cookie" if cookie else "token") + (" ×2 identities" if tok2 else "")
+    log("ok", "◆ exploit-agent · LLM-driven authenticated session · " + sess_kind + " · " + str(sl) + "s")
     a = ["--target", base, "--objective", obj, "--budget-sec", str(sl), "--max-steps", "18", "--json"]
     if cdp:
         a += ["--cdp-port", cdp]
@@ -820,6 +827,10 @@ def phase_exploit_agent(deadline):
         a += ["--token", tok]
     if tok2:
         a += ["--token2", tok2]
+    if cookie:
+        a += ["--cookie", cookie]
+    if ua:
+        a += ["--ua", ua]
     d = tool_json("exploit-agent.py", a, timeout=sl + 40)
     if not isinstance(d, dict):
         log("warn", "→ exploit-agent produced no result (session/LLM unavailable)")
