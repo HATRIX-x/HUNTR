@@ -105,6 +105,12 @@ class H(BaseHTTPRequestHandler):
             ui = TOOLS / "huntr-ui.html"
             if ui.exists():
                 html = ui.read_text()
+                # the server IS the real engine → enable live mode so entering a scope runs the
+                # actual hunt (not the offline demo pipeline)
+                live = '<script>window.__HUNTR_LIVE=true;</script>'
+                if "window.__HUNTR_LIVE=true" not in html:
+                    html = (html.replace("</head>", live + "\n</head>", 1) if "</head>" in html
+                            else live + html)
                 tag = '<script src="/huntr-bridge.js"></script>'
                 if (TOOLS / "huntr-bridge.js").exists() and tag not in html:
                     html = html.replace("</body>", tag + "\n</body>", 1) if "</body>" in html else html + tag
