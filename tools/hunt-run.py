@@ -414,6 +414,50 @@ def phase_surface():
     stage("Surface", 82)
 
 
+def phase_spa_capture():
+    """SPA surface discovery: katana only sees linked HTML, so a single-page app's REAL API (the XHR/
+    fetch calls its JS fires at runtime, often POST with params) is invisible to the crawler. With a
+    session, drive a real browser (browser-capture) to record those calls and fold them into the
+    surface — so the scanners and the exploit-agent test the endpoints that actually matter."""
+    if not (HERE / "browser-capture.py").exists():
+        return
+    c = _creds()
+    cookie = (c.get("cookie") or "").strip()
+    tok = (c.get("session_token") or "").strip()
+    if MODE == "black" or not (cookie or tok):
+        return
+    lithost = re.sub(r'^\*\.', '', TARGET).split('/')[0].strip()
+    sch = next((h.get("scheme") for h in STATE["hosts"] if h.get("host") == lithost and h.get("scheme")), None) or "https"
+    url = sch + "://" + lithost + "/"
+    ua = (c.get("ua") or "").strip()
+    stage("SPA-capture", 84)
+    log("ok", "◆ SPA capture · driving real browser to record the app's runtime API calls…")
+    a = ["--url", url, "--cookie", cookie, "--hosts", apex(TARGET), "--secs", "16"]
+    if ua:
+        a += ["--ua", ua]
+    d = tool_json("browser-capture.py", a, timeout=120)
+    calls = (d or {}).get("calls", []) if isinstance(d, dict) else []
+    if not calls:
+        log("out", "→ SPA capture · no runtime API calls recorded" + ((" (" + str((d or {}).get("error", ""))[:60] + ")") if isinstance(d, dict) and d.get("error") else ""))
+        return
+    STATE["api_calls"] = calls          # the real endpoints+params, for the exploit-agent
+    # fold any GET calls that carry params into the testable endpoint surface
+    existing = {e["url"] for e in STATE["endpoints"]}
+    added = 0
+    for cl in calls:
+        u = cl.get("url", "")
+        if cl.get("method") == "GET" and re.search(r"[?&][\w\[\]]+=", u) and u not in existing:
+            STATE["endpoints"].append({"url": u, "host": apex(TARGET)}); existing.add(u); added += 1
+    STATE["stats"]["endpoints"] = len(STATE["endpoints"])
+    methods = {}
+    for cl in calls:
+        methods[cl.get("method", "?")] = methods.get(cl.get("method", "?"), 0) + 1
+    log("ok", "✓ SPA capture · " + str(len(calls)) + " runtime API call(s) [" +
+        ", ".join(k + ":" + str(v) for k, v in methods.items()) + "] · " + str(added) + " GET added to surface · " +
+        str(len(calls) - added) + " POST/other → exploit-agent")
+    flush()
+
+
 def phase_active():
     """Real class-scanning across the mapped surface (best-effort; each tool guarded)."""
     stage("Exploit", 60)
@@ -831,6 +875,13 @@ def phase_exploit_agent(deadline):
         a += ["--cookie", cookie]
     if ua:
         a += ["--ua", ua]
+    if STATE.get("api_calls"):   # feed the SPA's real runtime endpoints+params to the agent
+        try:
+            sf = HUNT_DIR / "api_surface.json"
+            sf.write_text(json.dumps({"calls": STATE["api_calls"]}))
+            a += ["--surface-file", str(sf)]
+        except Exception:
+            pass
     d = tool_json("exploit-agent.py", a, timeout=sl + 40)
     if not isinstance(d, dict):
         log("warn", "→ exploit-agent produced no result (session/LLM unavailable)")
@@ -1314,6 +1365,7 @@ def main():
         phase_scope()
         phase_recon()
         phase_surface()
+        phase_spa_capture()     # SPA runtime API discovery (real browser) — folds XHR/fetch into the surface
         phase_active()          # Layer 1 — deterministic sweep (recon + scan matrix + LLM leads)
         phase_authed()
         phase_adaptive(deadline)
