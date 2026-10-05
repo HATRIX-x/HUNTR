@@ -59,6 +59,9 @@ def _single_host(target):
 TARGET = (arg("--target") or "").strip()
 PROGRAM = arg("--program", "")
 MODE = arg("--mode", "grey")
+# stealth: throttle + lower concurrency + propagate the program UA so loud scanners don't get IP-blocked
+# on WAF-protected real targets. On by env HUNT_STEALTH=1 or --stealth.
+STEALTH = os.environ.get("HUNT_STEALTH") == "1" or "--stealth" in sys.argv
 SCOPE_TYPES = [s for s in (arg("--scope-types", "web,api") or "").split(",") if s]
 HUNT_DIR = Path(os.environ.get("HUNT_DIR") or arg("--hunt-dir")
                 or (Path.home() / ".huntr" / "targets" / safe(TARGET) / ".hunt"))
@@ -359,9 +362,10 @@ def phase_surface():
             except Exception:
                 pass
         if has("katana"):
-            log("cmd", "$ katana -u " + url + " -silent -d 2")
-            out, _, _ = sh(["katana", "-u", url, "-silent", "-d", "2", "-c", "15",
-                            "-jc", "-timeout", "10"], timeout=100)
+            log("cmd", "$ katana -u " + url + " -silent -d 2" + (" (stealth -rl 15)" if STEALTH else ""))
+            kcmd = ["katana", "-u", url, "-silent", "-d", "2", "-c", "5" if STEALTH else "15",
+                    "-jc", "-timeout", "10"] + (["-rl", "15"] if STEALTH else [])
+            out, _, _ = sh(kcmd, timeout=110)
             for ln in out.splitlines():
                 ln = ln.strip()
                 if ln.startswith("http"):
@@ -488,7 +492,7 @@ def phase_active():
         args = ["--json", "--severity", "critical,high,medium"]
         for h, sch in live_entries:
             args += ["--target", sch + "://" + h]   # http-only hosts were silently skipped before
-        args += ["--rate", "150"]
+        args += ["--rate", "20" if STEALTH else "150"]   # stealth: throttle to stay under WAF/rate-limit
         d = tool_json("nuclei-run.py", args, timeout=240)
         for e in STATE["endpoints"]:
             mark_tested(e["url"], "misconfig")
@@ -834,6 +838,46 @@ def _find_sig(f):
         m = re.search(r"[—:-]\s*([\w\[\]]+)\s*$", f.get("title", ""))
         params = (m.group(1).lower(),) if m else ()
     return (cls, loc, params)
+
+
+def phase_api_test(deadline):
+    """SPA-first testing: run api-test on the REAL API calls captured at runtime (phase_spa_capture) —
+    POST + body params, auth-aware — for injection + IDOR. This is the surface that actually matters on
+    a modern app, which katana-crawling never reaches."""
+    calls = STATE.get("api_calls") or []
+    if not calls or not (HERE / "api-test.py").exists():
+        return
+    c = _creds()
+    cookie = (c.get("cookie") or "").strip(); tok = (c.get("session_token") or "").strip(); ua = (c.get("ua") or "").strip()
+    delay = "0.5" if STEALTH else "0"
+    stage("API-test", 86)
+    # dedup by (method, path, sorted param names) so we test each distinct call once
+    seen, uniq = set(), []
+    for cl in calls:
+        pu = re.sub(r"\?.*$", "", cl.get("path", ""))
+        pk = tuple(sorted(re.findall(r"(\w+)=", (cl.get("url", "") + "&" + (cl.get("req_body") or "")))))
+        key = (cl.get("method"), pu, pk)
+        if key in seen:
+            continue
+        seen.add(key); uniq.append(cl)
+    log("ok", "◆ API-test · " + str(len(uniq)) + " distinct runtime call(s) · injection + IDOR" + (" · stealth" if STEALTH else ""))
+    n = 0
+    for cl in uniq[:30]:
+        if time.time() > deadline:
+            log("warn", "⏱ budget reached — API-test stopped"); break
+        a = ["--url", cl.get("url", ""), "--method", cl.get("method", "GET"), "--ua", ua or "Mozilla/5.0 HUNTR", "--delay", delay]
+        if cl.get("req_body"): a += ["--data", cl["req_body"]]
+        if cookie: a += ["--cookie", cookie]
+        if tok: a += ["--token", tok]
+        d = tool_json("api-test.py", a, timeout=90)
+        for f in (d or {}).get("findings", []):
+            add_finding(f.get("severity", "h"), f.get("title") or (f.get("cls", "API") + " issue"),
+                        f.get("detail") or "", f.get("endpoint") or cl.get("url", ""),
+                        cls=f.get("cls", "API"), verdict=f.get("verdict", "likely"),
+                        det=(f.get("verdict") == "confirmed"))
+            n += 1
+    log("ok" if n else "out", "✓ API-test · " + str(n) + " finding(s) on the runtime API surface")
+    flush()
 
 
 def phase_exploit_agent(deadline):
@@ -1369,6 +1413,7 @@ def main():
         phase_active()          # Layer 1 — deterministic sweep (recon + scan matrix + LLM leads)
         phase_authed()
         phase_adaptive(deadline)
+        phase_api_test(deadline)    # SPA-first — test the captured runtime API (POST+params) for injection/IDOR
         phase_ai_direct(deadline)   # Layer 2 — AI-directed targeted tests (Haiku)
         phase_exploit_agent(deadline)  # Depth — LLM-driven authenticated exploitation (IDOR/BFLA/privesc/logic)
         phase_oob(deadline)         # Blind/OOB fuzzing — nuclei DAST + interactsh (blind SSRF etc.)
