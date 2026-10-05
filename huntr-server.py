@@ -136,8 +136,19 @@ class H(BaseHTTPRequestHandler):
                     hd = d / ".hunt"
                     if hd.exists():
                         fc = len(list((hd / "findings").glob("F*.md"))) if (hd / "findings").exists() else 0
-                        out.append({"target": d.name, "findings": fc,
-                                    "scope": (hd / "scope.allow").exists()})
+                        rec = {"target": d.name, "findings": fc, "scope": (hd / "scope.allow").exists()}
+                        rf = hd / "run.json"
+                        if rf.exists():
+                            try:
+                                r = json.loads(rf.read_text())
+                                rec["status"] = r.get("status")          # running/paused/done/error/stopped
+                                rec["pct"] = r.get("pct", 0)
+                                rec["stage"] = r.get("stage", "")
+                                rec["nfind"] = len(r.get("findings", []))
+                                rec["updated"] = r.get("updated", 0)
+                            except Exception:
+                                pass
+                        out.append(rec)
             return self._send({"targets": out})
         if u.path == "/api/next":
             return self._send(run("hunt-next.py", ["--stack", q.get("stack", "generic"), "--json"], t))

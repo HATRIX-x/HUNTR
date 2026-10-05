@@ -4220,10 +4220,31 @@ function renderPrograms(el){
 /* ══════════════════════════════════════════════
    BOOT
 ══════════════════════════════════════════════ */
+/* reattach to hunts still running server-side (survives reload / closing the tab — the engine keeps
+   hunting until you Pause or Stop). */
+function bootReattach(){
+  if(!window.__HUNTR_LIVE) return;
+  fetch('/api/targets').then(r=>r.ok?r.json():null).then(d=>{
+    if(!d||!d.targets) return;
+    const live=d.targets.filter(t=>t.target&&(t.status==='running'||t.status==='paused'));
+    let first=null;
+    live.forEach(t=>{
+      if(sessions.find(s=>s.scope===t.target)) return;
+      const s=mkSess(t.target,'','grey',['web','api']); s.status='active';
+      s._run={status:t.status, stage:t.stage||'Reattaching…', pct:t.pct||0, logs:[], hosts:[], endpoints:[], findings:[], leads:[]};
+      if(t.status==='paused'){ s._paused=true; }
+      sessions.unshift(s); if(!first) first=s;
+      pollRealHunt(s.id, t.target, {fresh:false});
+    });
+    if(first && !V.huntId){ V.huntId=first.id; V.target=targetKey(first); }
+    if(live.length && V.page==='dashboard') renderDashboard(document.getElementById('content'));
+  }).catch(()=>{});
+}
 (function(){
   // No demo seed — the dashboard shows only real hunts. "New Hunt" runs the real engine.
   nav('dashboard');
   updateBadges();
+  bootReattach();   // resume view of any hunt still running on the server
 })();
 </script>
 </body></html>
