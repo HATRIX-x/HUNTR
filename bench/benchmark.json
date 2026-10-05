@@ -1,0 +1,35 @@
+{
+  "name": "HUNTR core benchmark v1",
+  "description": "Known-vulnerable targets with exact ground truth. Local labs have planted bugs (ground truth certain); public targets are authorized Acunetix test sites.",
+  "suites": [
+    {
+      "name": "local-lab",
+      "type": "local",
+      "launch": {"module": "bench/labs.py", "port": 8980, "health": "/"},
+      "target": "127.0.0.1:8980",
+      "mode": "black",
+      "scope_types": "web,api",
+      "budget_sec": 600,
+      "expected": [
+        {"class": "sqli",     "path": "/product", "param": "id",   "sev": "c"},
+        {"class": "xss",      "path": "/search",  "param": "q",    "sev": "m"},
+        {"class": "redirect", "path": "/go",      "param": "url",  "sev": "m"},
+        {"class": "ssti",     "path": "/greet",   "param": "name", "sev": "c"},
+        {"class": "ssrf",     "path": "/fetch",   "param": "url",  "sev": "h"}
+      ]
+    },
+    {
+      "name": "acunetix-aspnet",
+      "type": "public",
+      "target": "testaspnet.vulnweb.com",
+      "mode": "black",
+      "scope_types": "web,api",
+      "budget_sec": 600,
+      "enabled": false,
+      "note": "Set enabled=true to include. Public authorized Acunetix site; ground truth is a documented subset, not exhaustive.",
+      "expected": [
+        {"class": "sqli", "path": "/Comments.aspx", "param": "id", "sev": "c"}
+      ]
+    }
+  ]
+}

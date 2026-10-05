@@ -1,0 +1,19 @@
+<!doctype html><meta charset=utf-8><title>HUNTR Benchmark</title>
+<style>body{font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;background:#0A0B0D;color:#E7E9EC;margin:0;padding:28px}
+h1{font-size:20px;margin:0 0 4px}.sub{color:#8A9099;margin-bottom:20px}
+.kpis{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:22px}
+.kpi{background:#14161A;border:1px solid #232730;border-radius:8px;padding:14px 18px;min-width:150px}
+.kpi .n{font-size:26px;font-weight:700;color:#4ADE80}.kpi .l{color:#8A9099;font-size:12px;text-transform:uppercase;letter-spacing:.05em}
+table{width:100%;border-collapse:collapse}td{border-top:1px solid #232730;padding:9px 10px;vertical-align:top}
+.big{font-size:18px;font-weight:700;color:#A78BFA}.t{color:#8A9099;font-size:12px}
+.det{padding-top:0}.det div{display:inline-block;margin:2px 10px 2px 0;font-size:12px}
+.ok{color:#4ADE80}.miss{color:#F87171}</style>
+<h1>HUNTR Benchmark Scorecard</h1><div class=sub>HUNTR core benchmark v1</div>
+<div class=kpis>
+<div class=kpi><div class=n>1.0</div><div class=l>overall recall</div></div>
+<div class=kpi><div class=n>1.0</div><div class=l>EV-recall</div></div>
+<div class=kpi><div class=n>5/5</div><div class=l>vulns found</div></div>
+<div class=kpi><div class=n>3.2x</div><div class=l>noise ratio</div></div>
+</div>
+<table><tr><td>suite</td><td>recall</td><td>found</td><td>ev-recall</td><td>noise</td><td>chains</td><td>status</td></tr>
+<tr><td><b>local-lab</b><br><span class=t>127.0.0.1:8980</span></td><td class=big>1.0</td><td>5/5</td><td>1.0</td><td>3.2</td><td>3</td><td>done</td></tr><tr><td colspan=7 class=det><div class='ok'>✓ sqli /product → submit</div><div class='ok'>✓ xss /search → submit</div><div class='ok'>✓ redirect /go → submit</div><div class='ok'>✓ ssti /greet → submit</div><div class='ok'>✓ ssrf /fetch → submit</div></td></tr></table>

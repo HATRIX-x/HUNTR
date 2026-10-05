@@ -33,8 +33,23 @@ def safe(t):
 def apex(host):
     h = re.sub(r"^\*\.", "", (host or "").strip().lower()).strip("/")
     h = re.sub(r"^https?://", "", h).split("/")[0]
+    h = h.split(":")[0]                              # drop any :port before apex math
     parts = [p for p in h.split(".") if p]
     return ".".join(parts[-2:]) if len(parts) >= 2 else h
+
+
+def _single_host(target):
+    """A bare IP, localhost, or host:port target can't be subdomain-enumerated and has no public
+    archive history — skip subfinder/gau/waybackurls for it (they'd waste minutes on nothing)."""
+    h = re.sub(r"^https?://", "", (target or "").strip().lower()).split("/")[0]
+    hostonly = h.split(":")[0]
+    if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", hostonly):      # IPv4
+        return True
+    if hostonly in ("localhost",) or hostonly.endswith(".local"):
+        return True
+    if ":" in h:                                            # explicit port ⇒ a specific host, not a domain to enumerate
+        return True
+    return False
 
 
 TARGET = (arg("--target") or "").strip()
@@ -252,9 +267,13 @@ def phase_recon():
     stage("Recon", 18)
     log("cmd", "$ subfinder -d " + ap + " -silent | httpx -silent -title -sc")
     hosts = []
+    single = _single_host(TARGET)
+    if single:
+        # IP / localhost / host:port — no subdomains to find; go straight to the literal host
+        log("out", "→ single-host target (" + apex(TARGET) + ") — skipping subdomain enumeration")
     # prefer the engine's own recon tool (handles subfinder+resolve+probe)
     tool = HERE / "subdomain-enum.py"
-    if tool.exists():
+    if (not single) and tool.exists():
         out, err, _ = sh([sys.executable, str(tool), "--domain", ap, "--json"], timeout=300)
         try:
             d = json.loads(out.strip().splitlines()[-1])
@@ -263,15 +282,16 @@ def phase_recon():
             STATE["stats"]["live"] = d.get("live", 0)
         except Exception:
             log("warn", "→ recon parse issue: " + (err or out)[:120])
-    elif has("subfinder"):
+    elif (not single) and has("subfinder"):
         out, _, _ = sh(["subfinder", "-d", ap, "-silent"], timeout=180)
         subs = [s.strip() for s in out.splitlines() if s.strip()]
         STATE["stats"]["subs"] = len(subs)
         for s in subs[:60]:
             hosts.append({"host": s, "status": None})
     else:
-        log("warn", "→ subfinder not installed — recon limited to the named host")
-        hosts = [{"host": re.sub(r'^\*\.', '', TARGET), "status": 200}]
+        if not single:
+            log("warn", "→ subfinder not installed — recon limited to the named host")
+        hosts = [{"host": re.sub(r'^\*\.', '', TARGET).split('/')[0], "status": None}]
 
     # --- FIX #1: always include the literal target host, probed directly, never silently dropped
     lithost = re.sub(r'^\*\.', '', TARGET).split('/')[0].strip()
@@ -342,19 +362,21 @@ def phase_surface():
                 ln = ln.strip()
                 if ln.startswith("http"):
                     eps[ln] = host
-        if has("gau"):
-            log("cmd", "$ gau " + host + "  (historical URLs)")
-            out, _, _ = sh(["gau", "--threads", "5", "--subs", host], timeout=45)
-            for ln in out.splitlines()[:400]:
-                ln = ln.strip()
-                if ln.startswith("http"):
-                    eps[ln] = host
-        if has("waybackurls"):
-            out, _, _ = sh(["waybackurls", host], timeout=45)
-            for ln in out.splitlines()[:400]:
-                ln = ln.strip()
-                if ln.startswith("http"):
-                    eps[ln] = host
+        # historical-URL services only make sense for public hosts (localhost/IP have no archive)
+        if not _single_host(host):
+            if has("gau"):
+                log("cmd", "$ gau " + host + "  (historical URLs)")
+                out, _, _ = sh(["gau", "--threads", "5", "--subs", host], timeout=45)
+                for ln in out.splitlines()[:400]:
+                    ln = ln.strip()
+                    if ln.startswith("http"):
+                        eps[ln] = host
+            if has("waybackurls"):
+                out, _, _ = sh(["waybackurls", host], timeout=45)
+                for ln in out.splitlines()[:400]:
+                    ln = ln.strip()
+                    if ln.startswith("http"):
+                        eps[ln] = host
         if len(eps) > 1200:
             break
     # prefer parameterized URLs (the testable surface) when capping
@@ -722,13 +744,17 @@ def phase_ai_direct(deadline, max_rounds=3):
                           "findings": [{"title": f["title"], "endpoint": f.get("endpoint", ""), "cls": f.get("cls", "")} for f in STATE["findings"]],
                           "untested": untested[:60]})
         d = llm_json(MODEL_CHEAP, sys_p, usr, max_tokens=1200, timeout=70)
-        tests = (d or {}).get("tests") or []
+        if not isinstance(d, dict):
+            d = {}
+        tests = d.get("tests") or []
         if d and d.get("why"):
             log("cmd", "AI round " + str(rnd + 1) + ": " + str(d.get("why"))[:90])
         ran = 0
         for t in tests[:12]:
             if time.time() > deadline:
                 break
+            if not isinstance(t, dict):
+                continue
             ep = t.get("endpoint", ""); cls = (t.get("class") or "").lower()
             if not ep or cls not in ("sqli", "xss", "ssti", "ssrf", "cors", "redirect", "idor", "authz", "param", "race"):
                 continue   # allow the injection classes the prompt advertises (were silently dropped before)
@@ -798,11 +824,13 @@ def phase_ai_judge():
              "\"chains\":[\"short multi-step chain across findings if any\"]}. Never invent evidence; if the evidence "
              "doesn't support the finding set verdict=false_positive and drop=true.")
     d = llm_json(MODEL_STRONG, sys_p, json.dumps({"target": TARGET, "findings": items}), max_tokens=3200, timeout=150)
-    if not d:
+    if not isinstance(d, dict):   # model may return a bare array / malformed JSON — don't crash the hunt
         log("warn", "→ AI judge unavailable (rate-limited/offline) — findings left as-is")
         stage("AI-judge", 98); return
     drop = set(); kept = 0; conf = 0
     for j in (d.get("judgments") or []):
+        if not isinstance(j, dict):
+            continue
         i = j.get("i")
         if not isinstance(i, int) or i < 0 or i >= len(STATE["findings"]):
             continue
@@ -1021,7 +1049,9 @@ def phase_chain():
                 "runs to confirm the missing edge\",\"cvss\":\"x.x\",\"impact\":\"one line\"}]}. plausible=false if the escalation "
                 "does not realistically follow. The step must be read-only / safe — never a destructive write.")
         d = llm_json(MODEL_STRONG, sysp, json.dumps({"target": TARGET, "chains": items}), max_tokens=1600, timeout=140)
-        for p in ((d or {}).get("plans") or []):
+        if not isinstance(d, dict):
+            d = {}
+        for p in (d.get("plans") or []):
             try: plan[int(p.get("i"))] = p
             except Exception: pass
 
@@ -1190,6 +1220,10 @@ def main():
             str(cov.get("breadth", 0)) + "%")
     except Exception as e:
         STATE["status"] = "error"
+        import traceback
+        tb = traceback.format_exc()
+        STATE["error_trace"] = tb[-1200:]            # persisted for diagnosis
+        sys.stderr.write(tb)                          # also to run.log
         log("warn", "✗ runner error: " + str(e)[:200])
         flush()
 
