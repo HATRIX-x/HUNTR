@@ -771,18 +771,21 @@ def phase_ai_direct(deadline, max_rounds=3):
 
 
 def _find_sig(f):
-    """Root-cause signature for a finding: same class + same endpoint (host+path, params ignored) +
-    same injected parameter = the SAME bug, however many tools reported it."""
+    """Root-cause signature for a finding: same class + same endpoint (host+path) + same injected
+    parameter name(s) = the SAME bug, however many tools reported it. Param names come from the URL
+    query (reliable) — not the title, whose wording varies by tool."""
     cls = _cls_key(f.get("cls"))
     ep = f.get("endpoint", "") or ""
     try:
         import urllib.parse as up
         u = up.urlparse(ep); loc = (u.netloc + u.path).lower().rstrip("/")
+        params = tuple(sorted(k.lower() for k, _ in up.parse_qsl(u.query)))
     except Exception:
-        loc = ep.lower()
-    m = re.search(r"[—:-]\s*([\w\[\]]+)\s*$", f.get("title", ""))   # param named at the end of the title
-    param = (m.group(1).lower() if m else "")
-    return (cls, loc, param)
+        loc = ep.lower(); params = ()
+    if not params:   # no query param (e.g. invariant/misconfig) → fall back to a title param if present
+        m = re.search(r"[—:-]\s*([\w\[\]]+)\s*$", f.get("title", ""))
+        params = (m.group(1).lower(),) if m else ()
+    return (cls, loc, params)
 
 
 def phase_dedup():
