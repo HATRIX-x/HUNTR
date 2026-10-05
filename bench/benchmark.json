@@ -24,11 +24,11 @@
       "target": "testaspnet.vulnweb.com",
       "mode": "black",
       "scope_types": "web,api",
-      "budget_sec": 600,
-      "enabled": false,
-      "note": "Set enabled=true to include. Public authorized Acunetix site; ground truth is a documented subset, not exhaustive.",
+      "budget_sec": 500,
+      "enabled": true,
+      "note": "Public authorized Acunetix site; testaspnet has documented SQLi on multiple endpoints (Comments.aspx, ReadNews.aspx, ...), so the SQLi expectation is credited on a host-level match rather than one exact path.",
       "expected": [
-        {"class": "sqli", "path": "/Comments.aspx", "param": "id", "sev": "c"}
+        {"class": "sqli", "path": "/ (any — ReadNews/Comments/...)", "param": "id", "sev": "c", "match": "host"}
       ]
     }
   ]

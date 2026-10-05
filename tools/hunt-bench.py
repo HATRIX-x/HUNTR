@@ -105,13 +105,19 @@ def score_suite(suite, run):
     findings = (run or {}).get("findings", [])
     chains = (run or {}).get("chains", [])
     # match each expected vuln to a finding: same normalized class AND path appears in the finding endpoint
+    tgt_host = suite.get("target", "").split(":")[0].lower()
     exp_rows, matched_fi = [], set()
     for ex in expected:
         hit = None
+        host_match = ex.get("match") == "host"   # public targets: credit the documented class anywhere on the host
         for i, f in enumerate(findings):
             if i in matched_fi:
                 continue
-            if _cls_key(f.get("cls")) == ex["class"] and ex["path"].lower() in (f.get("endpoint", "") or "").lower():
+            ep = (f.get("endpoint", "") or "").lower()
+            if _cls_key(f.get("cls")) != ex["class"]:
+                continue
+            ok = (tgt_host in ep) if host_match else (ex["path"].lower() in ep)
+            if ok:
                 hit = (i, f); break
         if hit:
             matched_fi.add(hit[0])
