@@ -273,17 +273,20 @@ class H(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         b = self._body()
         t = b.get("target")
-        if u.path == "/api/hunt/start":  # POST {target, program?, mode?, scope_types?, session_token?, token2?} — start a REAL hunt
+        if u.path == "/api/hunt/start":  # POST {target, program?, mode?, scope_types?, session_token?, token2?, cookie?, ua?, stealth?, single_host?, budget_sec?} — start a REAL hunt
             if not t:
                 return self._send({"ok": False, "error": "no target"}, 400)
             hd = hunt_dir(t)
-            # credentials go to a 0600 file (never argv — keeps tokens out of `ps`)
+            # credentials go to a 0600 file (never argv — keeps tokens/cookies out of `ps`)
             st = (b.get("session_token") or "").strip()
             t2 = (b.get("token2") or "").strip()
+            ck = (b.get("cookie") or "").strip()      # cookie-session auth (web apps that don't use bearer)
+            ua = (b.get("ua") or "").strip()          # program-required UA suffix (e.g. yeswehack)
             cf = hd / "creds.json"
             try:
-                if st or t2:
-                    cf.write_text(json.dumps({"session_token": st, "token2": t2}))
+                creds = {k: v for k, v in (("session_token", st), ("token2", t2), ("cookie", ck), ("ua", ua)) if v}
+                if creds:
+                    cf.write_text(json.dumps(creds))
                     try: os.chmod(cf, 0o600)
                     except Exception: pass
                 elif cf.exists():
@@ -292,8 +295,13 @@ class H(BaseHTTPRequestHandler):
                 pass
             args = [sys.executable, str(TOOLS / "hunt-run.py"), "--target", t,
                     "--program", b.get("program", ""), "--mode", b.get("mode", "grey"),
-                    "--scope-types", ",".join(b.get("scope_types") or ["web", "api"])]
+                    "--scope-types", ",".join(b.get("scope_types") or ["web", "api"]),
+                    "--budget-sec", str(int(b.get("budget_sec") or 1200))]
+            if b.get("stealth"):
+                args.append("--stealth")
             env = dict(os.environ); env["HUNT_DIR"] = str(hd)
+            if b.get("stealth"):      env["HUNT_STEALTH"] = "1"   # throttle loud scanners (WAF-safe)
+            if b.get("single_host"):  env["HUNT_SINGLE"] = "1"    # strict exact-host scope (no subdomain creep)
             try:
                 lf = open(hd / "run.log", "a")
                 subprocess.Popen(args, stdout=lf, stderr=lf, env=env, start_new_session=True)

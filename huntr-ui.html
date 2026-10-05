@@ -3788,7 +3788,7 @@ function startRealHunt(sess){
   sess._run={status:'running', stage:'Boot', pct:0, logs:[{t:'ok',v:'▸ contacting engine…'}], hosts:[], endpoints:[], findings:[]};
   sess.status='active'; sess.logs=[sess._run.logs];
   fetch('/api/hunt/start',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({target:sess.scope, program:sess.program||'', mode:sess.mode||'grey', scope_types:sess.scopeTypes||['web','api'], session_token:sess.sessionToken||'', token2:sess.token2||''})
+    body:JSON.stringify({target:sess.scope, program:sess.program||'', mode:sess.mode||'grey', scope_types:sess.scopeTypes||['web','api'], session_token:sess.sessionToken||'', token2:sess.token2||'', cookie:sess.cookie||'', ua:sess.ua||'', stealth:!!sess.stealth, single_host:!!sess.singleHost, budget_sec:sess.budgetSec||1200})
   }).then(r=>r.json()).then(d=>{
     if(!d||!d.ok){ sess._run.status='error'; sess._run.logs.push({t:'warn',v:'✗ engine refused: '+((d&&d.error)||'unknown')}); if(V.page==='dashboard')renderDashboard(document.getElementById('content')); return; }
     pollRealHunt(sess.id, sess.scope, {fresh:true});
