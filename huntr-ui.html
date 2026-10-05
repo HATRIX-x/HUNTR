@@ -1434,6 +1434,20 @@ body::before{opacity:.26;}  /* soften blueprint grid so glass + ambient read */
       <div class="form-hint">DevTools ▸ Network ▸ any /api request ▸ copy the Authorization value. Stored locally only (0600 file on your machine), never sent to the cloud.</div>
       <input class="form-input" id="mi-cred2" type="text" placeholder="Second low-priv account token (optional — enables cross-account IDOR)" autocomplete="off" style="margin-top:8px">
     </div>
+    <div class="form-field" id="mi-cookie-field" style="display:none">
+      <label class="form-label">Cookie session <span style="color:var(--text3)">(web apps that use cookies, not a bearer token)</span></label>
+      <input class="form-input" id="mi-cookie" type="text" placeholder="session_key=…; session_token=…" autocomplete="off">
+      <input class="form-input" id="mi-ua" type="text" placeholder="Custom User-Agent (optional — e.g. a program-required 'yeswehack' suffix)" autocomplete="off" style="margin-top:8px">
+      <div class="form-hint">Stored locally only (0600 file), never sent to the cloud. Drives the SPA-capture + exploit-agent authenticated paths.</div>
+    </div>
+    <div class="form-field">
+      <label class="form-label" style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="mi-stealth" style="width:auto"> Stealth
+        <span style="color:var(--text3);font-weight:400">— throttle scanners to avoid WAF / IP blocks on real targets</span></label>
+      <label class="form-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:8px">
+        <input type="checkbox" id="mi-single" style="width:auto"> Strict single-host scope
+        <span style="color:var(--text3);font-weight:400">— exact host only, no subdomain enumeration</span></label>
+    </div>
     <div class="modal-actions">
       <button class="btn-ghost" onclick="closeModal()">Cancel</button>
       <button class="btn-primary" onclick="startHunt()">▸ Start hunt</button>
@@ -3647,6 +3661,8 @@ function updateSrcField(){
   if(sf) sf.style.display = (window._boxMode==='white'||set.has('source')) ? '' : 'none';
   const cf=document.getElementById('mi-cred-field');
   if(cf) cf.style.display = (window._boxMode && window._boxMode!=='black') ? '' : 'none';
+  const ckf=document.getElementById('mi-cookie-field');
+  if(ckf) ckf.style.display = (window._boxMode && window._boxMode!=='black') ? '' : 'none';
 }
 function setBox(mode){
   window._boxMode=mode;
@@ -3763,7 +3779,11 @@ function startHunt(){
   if(mode==='white'||scopeTypes.includes('source')){ const sv=document.getElementById('mi-src'); sess.sourcePath=(sv&&sv.value.trim())||''; }
   if(scopeTypes.includes('mobile')){ const av=document.getElementById('mi-apk'); sess.apkPath=(av&&av.value.trim())||''; }
   if(mode!=='black'){ const cv=document.getElementById('mi-cred'); const c2=document.getElementById('mi-cred2');
-    sess.sessionToken=(cv&&cv.value.trim())||''; sess.token2=(c2&&c2.value.trim())||''; }
+    sess.sessionToken=(cv&&cv.value.trim())||''; sess.token2=(c2&&c2.value.trim())||'';
+    const ck=document.getElementById('mi-cookie'); const uaEl=document.getElementById('mi-ua');
+    sess.cookie=(ck&&ck.value.trim())||''; sess.ua=(uaEl&&uaEl.value.trim())||''; }
+  const stEl=document.getElementById('mi-stealth'); sess.stealth=!!(stEl&&stEl.checked);
+  const sgEl=document.getElementById('mi-single'); sess.singleHost=!!(sgEl&&sgEl.checked);
   if(window._pasteScope){ sess.scopeText=window._pasteScope.text; sess.scopeAllow=window._pasteScope.allow; sess.scopeDeny=window._pasteScope.deny; sess.rewards=window._pasteScope.rewards; }
   sessions.unshift(sess);
   V.huntId=sess.id; V.target=targetKey(sess);
@@ -3775,6 +3795,10 @@ function startHunt(){
   const av=document.getElementById('mi-apk'); if(av) av.value='';
   const cv=document.getElementById('mi-cred'); if(cv) cv.value='';
   const c2=document.getElementById('mi-cred2'); if(c2) c2.value='';
+  const ck=document.getElementById('mi-cookie'); if(ck) ck.value='';
+  const uaEl=document.getElementById('mi-ua'); if(uaEl) uaEl.value='';
+  const stEl=document.getElementById('mi-stealth'); if(stEl) stEl.checked=false;
+  const sgEl=document.getElementById('mi-single'); if(sgEl) sgEl.checked=false;
   window._pasteScope=null;
   FC.lockId=null;
   nav('dashboard');
