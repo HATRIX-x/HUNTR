@@ -109,8 +109,16 @@ class H(BaseHTTPRequestHandler):
                 # actual hunt (not the offline demo pipeline)
                 live = '<script>window.__HUNTR_LIVE=true;</script>'
                 if "window.__HUNTR_LIVE=true" not in html:
-                    html = (html.replace("</head>", live + "\n</head>", 1) if "</head>" in html
-                            else live + html)
+                    # inject INSIDE <head> (after the opening tag) so the doctype stays first — injecting
+                    # before <!doctype> forces quirks mode and breaks the layout
+                    if "<head>" in html:
+                        html = html.replace("<head>", "<head>" + live, 1)
+                    elif "</head>" in html:
+                        html = html.replace("</head>", live + "</head>", 1)
+                    elif "<body>" in html:
+                        html = html.replace("<body>", "<body>" + live, 1)
+                    else:
+                        html = html + live   # last resort: after everything (never before doctype)
                 tag = '<script src="/huntr-bridge.js"></script>'
                 if (TOOLS / "huntr-bridge.js").exists() and tag not in html:
                     html = html.replace("</body>", tag + "\n</body>", 1) if "</body>" in html else html + tag
