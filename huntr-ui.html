@@ -80,6 +80,7 @@ body{overflow:hidden;font-family:var(--sans);font-size:13px;background:var(--bg)
 .bc-sep{color:var(--text3);opacity:.5;}
 .bc-cur{color:var(--text);}
 .tb-right{margin-left:auto;display:flex;align-items:center;gap:10px;flex-shrink:0;}
+.tb-kbd{font-family:var(--mono);font-size:10px;padding:3px 8px;color:var(--text3);background:var(--glass);border:1px solid var(--border2);border-radius:var(--r-sm);margin-right:4px;}
 .ws-switch{position:relative;flex-shrink:0;}
 .tb-back{display:flex;align-items:center;gap:6px;flex-shrink:0;padding:7px 12px;margin-right:4px;border-radius:var(--r-sm);
   cursor:pointer;background:var(--glass);border:1px solid var(--border2);color:var(--text2);
@@ -159,12 +160,15 @@ body{overflow:hidden;font-family:var(--sans);font-size:13px;background:var(--bg)
   .sr-items{flex-direction:row;gap:3px;}
   .bn-item{padding:9px 14px;border-radius:0;}
   .bn-label{max-width:0;opacity:0;margin-left:0;}
-  .siderail:hover .bn-label{max-width:0;opacity:0;margin-left:0;}
+  .siderail:focus-within .bn-label,.siderail:hover .bn-label{max-width:0;opacity:0;margin-left:0;}
   .bn-item.on .bn-label{max-width:110px;opacity:1;margin-left:8px;}
   .bn-badge{top:2px;left:auto;right:6px;transform:none;}
-  .siderail:hover .bn-badge{top:2px;right:6px;transform:none;}
+  .siderail:focus-within .bn-badge,.siderail:hover .bn-badge{top:2px;right:6px;transform:none;}
   .sr-group,.sr-div{display:none!important;}
-  .content{padding:22px 18px 120px;}}
+  .content{padding:22px 18px 120px;}
+  .siderail.touch-open .bn-label{max-width:110px;opacity:1;margin-left:8px;}
+  .siderail.touch-open .bn-badge{top:50%;right:10px;transform:translateY(-50%);}
+}
 .card-head{padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;}
 .card-head-label{font-size:10px;letter-spacing:.5px;color:var(--text3);font-family:var(--sans);font-weight:600;text-transform:uppercase;}
 .view-title{font-family:var(--sans);font-size:22px;font-weight:800;color:var(--white);letter-spacing:-0.025em;margin-bottom:4px;}
@@ -196,6 +200,10 @@ body{overflow:hidden;font-family:var(--sans);font-size:13px;background:var(--bg)
 .empty-state{padding:56px;text-align:center;color:var(--text3);font-size:12px;line-height:2.2;font-family:var(--mono);}
 .empty-cta{color:var(--accent);cursor:pointer;}
 .empty-cta:hover{text-decoration:underline;text-underline-offset:3px;}
+/* loading & error states */
+.loading-spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;margin-right:8px;vertical-align:middle;}
+.error-banner{padding:12px 16px;background:rgba(251,113,133,0.12);border:1px solid rgba(251,113,133,0.35);border-radius:var(--r);color:var(--sev-c);font-family:var(--mono);font-size:11px;margin-bottom:16px;display:flex;align-items:center;gap:10px;}
+.error-banner .err-dismiss{cursor:pointer;color:var(--text3);margin-left:auto;}
 .sev-tag{font-size:9px;letter-spacing:.6px;padding:2px 7px;flex-shrink:0;font-family:var(--mono);border-radius:0;border:1px solid;text-transform:uppercase;}
 .sev-c{background:var(--sev-cg);color:var(--sev-c);border-color:rgba(230,25,25,0.35);}
 .sev-h{background:var(--sev-hg);color:var(--sev-h);border-color:rgba(234,234,234,0.2);}
@@ -316,6 +324,8 @@ body{overflow:hidden;font-family:var(--sans);font-size:13px;background:var(--bg)
 .judge-card .jc-title{font-size:11px;color:var(--white);font-family:var(--mono);line-height:1.4;margin-bottom:8px;}
 .judge-card .jc-foot{display:flex;align-items:center;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--text2);}
 .judge-empty{padding:18px 10px;text-align:center;color:var(--text3);font-size:10px;font-family:var(--mono);}
+.jc-veto{display:inline-block;margin-top:5px;padding:2px 6px;border-radius:0;font-family:var(--mono);font-size:9px;letter-spacing:.5px;font-weight:700;text-transform:uppercase;background:rgba(251,191,36,0.15);border:1px solid rgba(251,191,36,0.45);color:#FBBF24;}
+.judge-card.vetoed{border-color:rgba(251,191,36,0.5)!important;background:rgba(251,191,36,0.06);}
 .scribe-row{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border);cursor:pointer;transition:background .12s;}
 .scribe-row:last-child{border-bottom:none;}
 .scribe-row:hover{background:rgba(230,25,25,0.04);}
@@ -1003,7 +1013,13 @@ textarea.form-input{min-height:104px;resize:vertical;line-height:1.6;}
 #fc-root .q-empty b{color:var(--fc-acc);cursor:pointer;}
 
 /* CENTER — lock + feed */
-#fc-center{display:grid;grid-template-rows:minmax(0,1fr) 236px;background:var(--bg);overflow:hidden;}
+/* Feed row height is draggable (--fc-feed-h, default 236px, min 120 / max 70vh) and persists. */
+#fc-center{display:grid;grid-template-rows:minmax(0,1fr) var(--fc-feed-h,236px);background:var(--bg);overflow:hidden;}
+#fc-feed-resize{flex-shrink:0;height:6px;margin-bottom:-6px;cursor:ns-resize;position:relative;z-index:6;}
+#fc-feed-resize::after{content:'';position:absolute;left:0;right:0;top:2px;height:2px;background:transparent;transition:background .12s;}
+#fc-feed-resize:hover::after{background:var(--fc-acc);}
+#fc-root .fd-toggle{flex-shrink:0;margin-left:6px;font-size:8.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--fc-t2);cursor:pointer;user-select:none;padding:2px 7px;border-radius:3px;border:1px solid var(--fc-line2);background:transparent;font-family:var(--mono);transition:color .12s,background .12s;}
+#fc-root .fd-toggle:hover{color:var(--fc-acc);background:rgba(167,139,250,.06);}
 #fc-lock{display:flex;flex-direction:column;overflow:hidden;position:relative;background:radial-gradient(130% 100% at 50% 0%,var(--fc-bg3),var(--bg));}
 #fc-lock::after{content:'';position:absolute;inset:0;pointer-events:none;opacity:.5;
   background:linear-gradient(90deg,transparent calc(50% - .5px),rgba(167,139,250,.05) 50%,transparent calc(50% + .5px)),linear-gradient(0deg,transparent calc(50% - .5px),rgba(167,139,250,.035) 50%,transparent calc(50% + .5px));}
@@ -1067,8 +1083,11 @@ textarea.form-input{min-height:104px;resize:vertical;line-height:1.6;}
 #fc-root .fd-cov{display:flex;align-items:center;gap:8px;font-size:8.5px;color:var(--fc-t2);}
 #fc-root .covbar{width:60px;height:2px;background:var(--fc-t3);border-radius:1px;overflow:hidden;}
 #fc-root .covbar i{display:block;height:100%;background:var(--fc-acc);}
-#fc-fbody{flex:1;overflow-y:auto;padding:8px 0;display:flex;flex-direction:column;justify-content:flex-end;position:relative;z-index:1;}
-#fc-flines{display:flex;flex-direction:column;}
+#fc-fbody{flex:1;overflow-y:auto;overflow-x:hidden;padding:8px 0;display:flex;flex-direction:column;position:relative;z-index:1;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;}
+/* bottom-anchor WITHOUT justify-content:flex-end — a flex-end scroll container clips its
+   overflow above the start edge (unreachable), so older log lines could never be scrolled to.
+   margin-top:auto pins short feeds to the bottom and collapses to 0 once content overflows. */
+#fc-flines{display:flex;flex-direction:column;margin-top:auto;flex-shrink:0;}
 #fc-root .fl{padding:0 16px;font-size:10.5px;line-height:1.7;color:var(--fc-t1);animation:fc-fin .14s ease;}
 #fc-root .fl.p{color:var(--fc-t0);}
 #fc-root .fl.ok{color:var(--fc-low);}
@@ -1356,6 +1375,7 @@ body::before{opacity:.26;}  /* soften blueprint grid so glass + ambient read */
       <div class="tb-div"></div>
       <div class="breadcrumb" id="bc"></div>
       <div class="tb-right" id="tb-right">
+        <span class="tb-kbd" title="Open command palette">⌘K</span>
         <button class="btn-primary" onclick="openModal()">+ New Hunt</button>
         <div class="avatar">H</div>
       </div>
@@ -1371,7 +1391,7 @@ body::before{opacity:.26;}  /* soften blueprint grid so glass + ambient read */
     <div class="form-field">
       <label class="form-label">Paste program page <span style="color:var(--text3)">(overview + scope)</span></label>
       <textarea class="form-input" id="mi-paste" rows="6" placeholder="Paste here: In scope / Out of scope / Rewards / Rules…  (exactly like you'd drop into a chat)" oninput="parseProgram()"></textarea>
-      <div class="form-hint" id="mi-parsed">We'll pull the target &amp; scope from this — or fill the target field below.</div>
+      <div class="form-hint" id="mi-parsed">We'll pull the target & scope from this — or fill the target field below.</div>
     </div>
     <div class="form-field">
       <label class="form-label">Target</label>
@@ -1383,7 +1403,7 @@ body::before{opacity:.26;}  /* soften blueprint grid so glass + ambient read */
       <input class="form-input" id="mi-program" type="text" placeholder="Program name · platform" autocomplete="off">
     </div>
     <div class="form-field">
-      <label class="form-label">Scope type <span style="color:var(--text3)">(what's in scope — pick any; the engine picks the methodology, skills &amp; tools)</span></label>
+      <label class="form-label">1. What's in scope? <span style="color:var(--text3)">(pick all that apply)</span></label>
       <div class="bx-seg sc-seg" id="mi-scope">
         <div class="bx-opt on" data-scope="web" onclick="setScope('web')">
           <div class="bx-name"><span class="bx-dot" style="background:var(--accent)"></span>WEB APP</div>
@@ -1408,28 +1428,28 @@ body::before{opacity:.26;}  /* soften blueprint grid so glass + ambient read */
       <input class="form-input" id="mi-apk" type="text" placeholder="/home/you/downloads/app.apk" autocomplete="off">
     </div>
     <div class="form-field">
-      <label class="form-label">Hunt type <span style="color:var(--text3)">(sets how much access the engine expects)</span></label>
+      <label class="form-label">2. Hunt type <span style="color:var(--text3)">(how much access the engine has)</span></label>
       <div class="bx-seg" id="mi-box">
         <div class="bx-opt" data-box="black" onclick="setBox('black')">
           <div class="bx-name"><span class="bx-dot" style="background:var(--text3)"></span>BLACK BOX</div>
-          <div class="bx-desc">No credentials</div>
+          <div class="bx-desc">No credentials — public surface only</div>
         </div>
         <div class="bx-opt on" data-box="grey" onclick="setBox('grey')">
           <div class="bx-name"><span class="bx-dot" style="background:var(--gold)"></span>GREY BOX</div>
-          <div class="bx-desc">One account</div>
+          <div class="bx-desc">One authenticated account</div>
         </div>
         <div class="bx-opt" data-box="white" onclick="setBox('white')">
           <div class="bx-name"><span class="bx-dot" style="background:var(--accent)"></span>WHITE BOX</div>
-          <div class="bx-desc">Full access + source</div>
+          <div class="bx-desc">Full access + source code</div>
         </div>
       </div>
     </div>
     <div class="form-field" id="mi-src-field" style="display:none">
-      <label class="form-label">Source location <span style="color:var(--text3)">(optional — repo path or URL)</span></label>
+      <label class="form-label">Source location <span style="color:var(--text3)">(white box with source scope)</span></label>
       <input class="form-input" id="mi-src" type="text" placeholder="/home/you/code/acme  —  or  github.com/acme/api" autocomplete="off">
     </div>
     <div class="form-field" id="mi-cred-field" style="display:none">
-      <label class="form-label">Session <span style="color:var(--text3)">(grey/white box — the engine tests the authenticated surface: IDOR, access control, JWT)</span></label>
+      <label class="form-label">Session token <span style="color:var(--text3)">(grey/white box — enables IDOR, access control, JWT tests)</span></label>
       <input class="form-input" id="mi-cred" type="text" placeholder="Authorization: Bearer eyJ…  (or a session cookie)" autocomplete="off">
       <div class="form-hint">DevTools ▸ Network ▸ any /api request ▸ copy the Authorization value. Stored locally only (0600 file on your machine), never sent to the cloud.</div>
       <input class="form-input" id="mi-cred2" type="text" placeholder="Second low-priv account token (optional — enables cross-account IDOR)" autocomplete="off" style="margin-top:8px">
@@ -1440,25 +1460,28 @@ body::before{opacity:.26;}  /* soften blueprint grid so glass + ambient read */
       <input class="form-input" id="mi-ua" type="text" placeholder="Custom User-Agent (optional — e.g. a program-required 'yeswehack' suffix)" autocomplete="off" style="margin-top:8px">
       <div class="form-hint">Stored locally only (0600 file), never sent to the cloud. Drives the SPA-capture + exploit-agent authenticated paths.</div>
     </div>
-    <div class="form-field">
-      <label class="form-label" style="display:flex;align-items:center;gap:8px;cursor:pointer">
-        <input type="checkbox" id="mi-stealth" style="width:auto"> Stealth
-        <span style="color:var(--text3);font-weight:400">— throttle scanners to avoid WAF / IP blocks on real targets</span></label>
-      <label class="form-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:8px">
-        <input type="checkbox" id="mi-single" style="width:auto"> Strict single-host scope
-        <span style="color:var(--text3);font-weight:400">— exact host only, no subdomain enumeration</span></label>
-      <label class="form-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:8px">
-        <input type="checkbox" id="mi-llmlight" style="width:auto"> Light LLM (Haiku)
-        <span style="color:var(--text3);font-weight:400">— route AI to Haiku to minimise rate limits</span></label>
+    <div class="form-field" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border2)">
+      <label class="form-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--text2);font-size:12px">
+        <input type="checkbox" id="mi-advanced" style="width:auto" onchange="toggleAdvanced(this.checked)"> Advanced options
+      </label>
+      <div id="mi-advanced-fields" style="display:none;margin-top:12px">
+        <label class="form-label" style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="mi-stealth" style="width:auto"> Stealth
+          <span style="color:var(--text3);font-weight:400">— throttle scanners to avoid WAF / IP blocks on real targets</span></label>
+        <label class="form-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:8px">
+          <input type="checkbox" id="mi-single" style="width:auto"> Strict single-host scope
+          <span style="color:var(--text3);font-weight:400">— exact host only, no subdomain enumeration</span></label>
+        <label class="form-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:8px">
+          <input type="checkbox" id="mi-llmlight" style="width:auto"> Light LLM (Haiku)
+          <span style="color:var(--text3);font-weight:400">— route AI to Haiku to minimise rate limits</span></label>
+      </div>
     </div>
     <div class="modal-actions">
       <button class="btn-ghost" onclick="closeModal()">Cancel</button>
       <button class="btn-primary" onclick="startHunt()">▸ Start hunt</button>
     </div>
   </div>
-</div>
-
-<div class="cmdk-ov" id="cmdk">
+</div><div class="cmdk-ov" id="cmdk">
   <div class="cmdk-panel">
     <div class="cmdk-in-wrap">
       <span class="cmdk-caret">▸</span>
@@ -1510,6 +1533,34 @@ function allFindingsFlat(){
   const src=activeSessions();
   return src.flatMap((s,si)=>s.findings.map((f,fi)=>({...f,scope:s.scope,program:s.program,huntId:s.id,
     globalIdx:src.slice(0,si).reduce((a,ss)=>a+ss.findings.length,0)+fi})));
+}
+
+/* ── Loading/Error helpers for async API calls ── */
+function showLoading(el, msg='Loading…'){
+  if(el) el.innerHTML = `<div class="loading-spinner"></div>${msg}`;
+}
+function showError(el, msg){
+  if(el) el.innerHTML = `<div class="error-banner">${msg}<span class="err-dismiss" onclick="this.parentElement.remove()">✕</span></div>`;
+}
+/* escape untrusted text before it goes anywhere near innerHTML */
+function esc(s){
+  return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function showEmpty(el, msg, ctaLabel=null, ctaAction=null){
+  if(!el) return;
+  const cta = ctaLabel && ctaAction ? `<br><span class="empty-cta" onclick="${ctaAction}">${ctaLabel}</span>` : '';
+  el.innerHTML = `<div class="empty-state">${msg}${cta}</div>`;
+}
+async function safeFetch(url, options={}){
+  const start = performance.now();
+  try{
+    const r = await fetch(url, options);
+    const latency = Math.round(performance.now() - start);
+    if(!r.ok) throw new Error(`HTTP ${r.status}`);
+    return {data: await r.json(), latency};
+  }catch(e){
+    return {error: e.message, latency: Math.round(performance.now() - start)};
+  }
 }
 
 function mkSess(scope,program='',mode='grey',scopeTypes=['web','api']){
@@ -1596,6 +1647,17 @@ function toggleWsMenu(e){
 }
 function closeWsMenu(){const m=document.getElementById('ws-menu'); if(m)m.hidden=true;}
 document.addEventListener('click',()=>closeWsMenu());
+// Siderail touch support for mobile — only expand from a dedicated tap on the brand or
+// dead space, never from a nav item (that would fight the item's own navigation)
+const siderail = document.querySelector('.siderail');
+if(siderail){
+  siderail.addEventListener('click',e=>{
+    const t=e.target;
+    if(t.closest('.bn-item,.sr-more-item,.sr-div,.sr-brand')) return;  // let the item handle it
+    siderail.classList.toggle('touch-open');
+  });
+  document.addEventListener('click',e=>{ if(!siderail.contains(e.target)) siderail.classList.remove('touch-open'); });
+}
 
 function setBadge(id, n){
   const el=document.getElementById(id);
@@ -2087,10 +2149,30 @@ function fcOpenReport(sid,fi){
   const s=sessions.find(x=>x.id===sid); if(!s||!s.findings[fi])return;
   V.huntId=sid; nav('report-view',{huntId:sid, sev:s.findings[fi].sev, fi:fi});
 }
+// Toast notification system
+function showToast(msg, type='ok'){
+  const container = document.getElementById('toast-container') || (()=>{
+    const c = document.createElement('div');
+    c.id = 'toast-container';
+    c.style.cssText = 'position:fixed;bottom:24px;right:24px;z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none';
+    document.body.appendChild(c);
+    return c;
+  })();
+  const toast = document.createElement('div');
+  toast.style.cssText = 'padding:12px 18px;border-radius:var(--r);font-family:var(--sans);font-size:13px;font-weight:500;color:var(--white);background:var(--glass2);border:1px solid var(--glass-border);box-shadow:var(--shadow);backdrop-filter:blur(16px);transform:translateX(120%);transition:transform .3s cubic-bezier(.34,1.15,.64,1)';
+  if(type==='ok') toast.style.borderLeft = '3px solid var(--green)';
+  else if(type==='err') toast.style.borderLeft = '3px solid var(--red)';
+  else if(type==='warn') toast.style.borderLeft = '3px solid var(--amber)';
+  toast.textContent = msg;
+  container.appendChild(toast);
+  requestAnimationFrame(()=>{ toast.style.transform = 'translateX(0)'; });
+  setTimeout(()=>{ toast.style.transform = 'translateX(120%)'; setTimeout(()=>toast.remove(), 300); }, 3000);
+}
+
 function fcCopyReport(sid,fi,btn){
   const s=sessions.find(x=>x.id===sid); if(!s||!s.findings[fi])return;
   const f=s.findings[fi];
-  try{ navigator.clipboard.writeText(buildMD(s,f)); }catch(e){}
+  try{ navigator.clipboard.writeText(buildMD(s,f)); showToast('Report copied to clipboard'); }catch(e){ showToast('Copy failed', 'err'); }
   if(btn){ const o=btn.textContent; btn.textContent='Copied ✓'; setTimeout(()=>{btn.textContent=o;},1200); }
 }
 
@@ -2354,9 +2436,12 @@ function fcRenderFeed(){
   const covReal = (s && s._run && s._run.coverage) ? s._run.coverage : null;
   const cov = covReal ? (covReal.depth||0) : (s ? coverageFor(s).dpct : 0);
   host.innerHTML=`
+    <div id="fc-feed-resize" title="Drag to resize · double-click to reset"></div>
     <div class="fd-hdr"><span class="fd-ret">${fcRet()}</span><span class="fd-label">Live scan feed</span>
+      <span class="fd-toggle" id="fd-size" title="Toggle compact / large">▤ size</span>
       <span class="fd-cov"><span>depth ${cov}%</span><span class="covbar"><i style="width:${cov}%"></i></span></span></div>
     <div id="fc-fbody"><div id="fc-flines"></div></div>`;
+  fcApplyFeedSize(); fcBindFeedResize();
   const seed=Math.max(0,FC.feedLines.length-(isReal?60:14));
   for(let i=seed;i<FC.feedLines.length;i++) fcPushLine(FC.feedLines[i]);
   // Only the scripted demo (no real _run) streams cyclically to look alive.
@@ -2368,6 +2453,49 @@ function fcRenderFeed(){
       FC.feedIdx++;
     },1500);
   }
+}
+
+/* ── Live scan feed sizing: drag handle, compact/large toggle, persisted height ── */
+const FC_FEED_MIN = 120, FC_FEED_DEFAULT = 236, FC_FEED_LARGE = 520;
+
+function fcFeedSizePx(){
+  const v = parseInt(localStorage.getItem('huntr.feedH') || '', 10);
+  if(!Number.isFinite(v) || v < FC_FEED_MIN) return FC_FEED_DEFAULT;
+  return Math.min(v, Math.max(FC_FEED_MIN, Math.round(innerHeight * 0.7)));
+}
+function fcApplyFeedSize(){
+  const c = document.getElementById('fc-center'); if(!c) return;
+  c.style.setProperty('--fc-feed-h', fcFeedSizePx() + 'px');
+  const b = document.getElementById('fc-fbody'); if(b) b.scrollTop = b.scrollHeight;
+}
+function fcBindFeedResize(){
+  const h = document.getElementById('fc-feed-resize'); if(!h || h.dataset.bound) return;
+  h.dataset.bound = '1';
+  let dragging = false;
+  const onMove = e => {
+    if(!dragging) return;
+    e.preventDefault();
+    const y = (e.touches ? e.touches[0].clientY : e.clientY);
+    const r = document.getElementById('fc-center').getBoundingClientRect();
+    const max = Math.max(FC_FEED_MIN, Math.round(r.height * 0.7));
+    const px = Math.max(FC_FEED_MIN, Math.min(max, Math.round(r.bottom - y)));
+    localStorage.setItem('huntr.feedH', String(px));
+    fcApplyFeedSize();
+  };
+  const stop = () => { if(!dragging) return; dragging = false; document.body.style.userSelect = ''; };
+  h.addEventListener('mousedown', e => { dragging = true; document.body.style.userSelect = 'none'; onMove(e); });
+  h.addEventListener('touchstart', e => { dragging = true; onMove(e); }, {passive:false});
+  addEventListener('mousemove', onMove); addEventListener('touchmove', onMove, {passive:false});
+  addEventListener('mouseup', stop); addEventListener('touchend', stop);
+  h.addEventListener('dblclick', () => { localStorage.removeItem('huntr.feedH'); fcApplyFeedSize(); });
+
+  const t = document.getElementById('fd-size');
+  if(t) t.addEventListener('click', () => {
+    const cur = fcFeedSizePx();
+    const next = cur >= FC_FEED_LARGE ? FC_FEED_DEFAULT : FC_FEED_LARGE;
+    localStorage.setItem('huntr.feedH', String(next));
+    fcApplyFeedSize();
+  });
 }
 
 function fcSetReadouts(){
@@ -2796,7 +2924,7 @@ function wsJUDGE(sess){
   return `<div class="ws" style="--wsc:${ag.accent}">${wsHead(sess,6)}
     <div class="ws-body">
       <div class="judge-cols">
-        ${cols.map(([k,lbl,c])=>{const items=sess.findings.filter(f=>f.sev===k);return `<div class="judge-col"><div class="judge-col-h" style="color:${c}"><span>${lbl}</span><span>${items.length}</span></div>${items.length?items.map(f=>`<div class="judge-card" style="border-color:${c}55" onclick="nav('report-view',{huntId:'${sess.id}',sev:'${k}',fi:${sess.findings.indexOf(f)}})"><div class="jc-title">${f.title}</div><div class="jc-foot"><span>CVSS ${f.cvss}</span><span style="color:${c}">${pRating(f.cvss)}</span></div></div>`).join(''):`<div class="judge-empty">none</div>`}</div>`;}).join('')}
+        ${cols.map(([k,lbl,c])=>{const items=sess.findings.filter(f=>f.sev===k);return `<div class="judge-col"><div class="judge-col-h" style="color:${c}"><span>${lbl}</span><span>${items.length}</span></div>${items.length?items.map(f=>`<div class="judge-card${f.judge_disputed?' vetoed':''}" style="border-color:${f.judge_disputed?'rgba(251,191,36,0.5)':c+'55'}" onclick="nav('report-view',{huntId:'${sess.id}',sev:'${k}',fi:${sess.findings.indexOf(f)}})"><div class="jc-title">${f.title}</div>${f.judge_disputed?`<div class="jc-veto">⚠ veto overruled${f._det?' · tool-confirmed':''}</div>`:''}<div class="jc-foot"><span>CVSS ${f.cvss}</span><span style="color:${c}">${pRating(f.cvss)}</span></div></div>`).join(''):`<div class="judge-empty">none</div>`}</div>`;}).join('')}
       </div>
     </div></div>`;
 }
@@ -3337,10 +3465,11 @@ function renderChains(el){
         <div class="chain-flow">
           ${ch.steps.map((s,i)=>`
             ${i>0?`<span class="chain-arr ${s.st==='blocked'?'x':''}">→</span>`:''}
-            <div class="chain-step ${s.st}${s.fi!=null&&s.fi>=0?' link':''}" ${s.fi!=null&&s.fi>=0?`onclick="nav('report-view',{huntId:'${sess.id}',sev:'${sess.findings[s.fi].sev}',fi:${s.fi}})"`:''} title="${s.note||s.st}">
+            <div class="chain-step ${s.st}${s.fi!=null&&s.fi>=0?' link':''}" ${s.fi!=null&&s.fi>=0?`onclick="nav('report-view',{huntId:'${sess.id}',sev:'${sess.findings[s.fi].sev}',fi:${s.fi}})"`:''}>
               <span class="cs-ico">${s.st==='done'?'✓':s.st==='blocked'?'✕':'●'}</span>
               <span class="cs-t">${s.t}</span>
               ${s.note?`<span class="cs-note">${s.note}</span>`:''}
+              ${s.st==='blocked' && s.note?`<div class="chain-blocked-reason" style="margin-top:4px;padding:6px 10px;background:rgba(251,113,133,0.12);border:1px solid rgba(251,113,133,0.35);border-radius:var(--r-sm);font-family:var(--mono);font-size:10px;color:var(--sev-c)"><b>Blocked:</b> ${s.note}</div>`:''}
             </div>`).join('')}
         </div>
       </div>`;
@@ -3419,7 +3548,7 @@ function renderCoverage(el){
     </div>
     <div class="section-label">Ledger matrix</div>
     <div class="cov-matrix glass-card">
-      <table class="cov-table">
+      <table class="cov-table" tabindex="0" onkeydown="covKeyNav(event, ${cov.classes.length}, ${cov.items.length})">
         <thead><tr><th class="cov-item">Surface item</th>${cov.classes.map(c=>`<th>${c}</th>`).join('')}</tr></thead>
         <tbody>${rows}</tbody>
       </table>
@@ -3439,6 +3568,36 @@ function renderCoverage(el){
         </div>`;
       }).join('')}
     </div>`;
+}
+
+// Keyboard navigation for coverage matrix
+function covKeyNav(e, numCols, numRows){
+  const table = e.target.closest('table');
+  if(!table) return;
+  const focused = table.querySelector('td:focus, th:focus');
+  if(!focused) return;
+  const cellIndex = Array.from(focused.parentNode.children).indexOf(focused);
+  const rowIndex = Array.from(focused.parentNode.parentNode.children).indexOf(focused.parentNode);
+  let newRow = rowIndex, newCol = cellIndex;
+  
+  switch(e.key){
+    case 'ArrowUp': newRow = Math.max(0, rowIndex - 1); e.preventDefault(); break;
+    case 'ArrowDown': newRow = Math.min(numRows, rowIndex + 1); e.preventDefault(); break;
+    case 'ArrowLeft': newCol = Math.max(0, cellIndex - 1); e.preventDefault(); break;
+    case 'ArrowRight': newCol = Math.min(numCols, cellIndex + 1); e.preventDefault(); break;
+    case 'Enter':
+    case ' ':
+      if(focused.onclick){ focused.click(); e.preventDefault(); }
+      break;
+  }
+  
+  if(newRow !== rowIndex || newCol !== cellIndex){
+    const targetRow = table.tBodies[0]?.rows[newRow] || table.tHead?.rows[0];
+    if(targetRow){
+      const targetCell = targetRow.cells[newCol];
+      if(targetCell) targetCell.focus();
+    }
+  }
 }
 
 /* ── Cloud config helpers ── */
@@ -3680,6 +3839,10 @@ function setBox(mode){
   document.querySelectorAll('#mi-box .bx-opt').forEach(el=>el.classList.toggle('on', el.dataset.box===mode));
   updateSrcField();
 }
+function toggleAdvanced(show){
+  const adv=document.getElementById('mi-advanced-fields');
+  if(adv) adv.style.display = show ? '' : 'none';
+}
 document.getElementById('modal').addEventListener('click',e=>{if(e.target===document.getElementById('modal'))closeModal();});
 document.getElementById('mi-target').addEventListener('keydown',e=>{if(e.key==='Enter')startHunt();});
 
@@ -3754,7 +3917,7 @@ function parseProgram(){
   const info=document.getElementById('mi-parsed');
   const tgt=document.getElementById('mi-target');
   const t=(document.getElementById('mi-paste').value||'');
-  if(!t.trim()){ info.innerHTML="We'll pull the target &amp; scope from this — or fill the target field below."; window._pasteScope=null; return; }
+  if(!t.trim()){ info.innerHTML="We'll pull the target & scope from this — or fill the target field below."; window._pasteScope=null; return; }
   let mode='in'; const allow=new Set(), deny=new Set();
   for(const raw of t.split('\n')){
     const l=raw.trim(); if(!l) continue; const low=l.toLowerCase();
@@ -3769,13 +3932,43 @@ function parseProgram(){
   const rew=(t.match(/(critical|high|medium|low)[^\n$€£]{0,30}?[$€£]\s?[\d,]+(?:\s?[-–]\s?[$€£]?\s?[\d,]+)?/ig)||[]).slice(0,3);
   const pick=a.find(h=>h.startsWith('api.'))||a.find(h=>!h.startsWith('*.'))||a[0]||'';
   if(pick && tgt.dataset.edited!=='1') tgt.value=pick.replace(/^\*\./,'');
+  
+  // Render host chips (data-attr + delegated click — never interpolate into inline JS)
+  const chipStyle='font-family:var(--mono);font-size:11px;padding:3px 8px;border-radius:var(--r-sm)';
+  const allowStyle=chipStyle+';background:var(--accent2);border:1px solid var(--accent3);color:var(--accent);cursor:pointer';
+  const denyStyle=chipStyle+';background:rgba(251,113,133,0.12);border:1px solid rgba(251,113,133,0.35);color:var(--sev-c);text-decoration:line-through';
+  const moreStyle=chipStyle+';background:var(--glass);border:1px solid var(--border2);color:var(--text3)';
+  let chipsHtml = '';
+  if(a.length){
+    chipsHtml = '<div class="host-chips" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px">'
+      + a.slice(0,10).map(h=>'<span class="host-chip" data-chip-target="'+esc(h)+'" style="'+allowStyle+'" title="Click to set as target">'+esc(h)+'</span>').join('')
+      + (a.length>10?'<span class="host-chip" style="'+moreStyle+'">'+(a.length-10)+' more</span>':'')
+      + '</div>';
+  }
+  if(deny.size){
+    chipsHtml += '<div class="host-chips" style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px">'
+      + [...deny].slice(0,5).map(h=>'<span class="host-chip" style="'+denyStyle+'">'+esc(h)+'</span>').join('')
+      + (deny.size>5?'<span class="host-chip" style="'+moreStyle+'">'+(deny.size-5)+' more denied</span>':'')
+      + '</div>';
+  }
+  
   info.innerHTML = a.length
-    ? `<span style="color:var(--green)">✓ ${a.length} in-scope host${a.length>1?'s':''}</span>`
-      + (deny.size?` · ${deny.size} out-of-scope`:'')
-      + (rew.length?` · rewards: ${rew[0].replace(/\s+/g,' ')}`:'')
-      + ` · target → <b style="color:var(--white)">${tgt.value||'?'}</b>`
-    : `<span style="color:var(--amber)">No scope section spotted — type the target below.</span>`;
+    ? '<span style="color:var(--green)">✓ ' + a.length + ' in-scope host' + (a.length>1?'s':'') + '</span>'
+      + (deny.size?' · ' + deny.size + ' out-of-scope':'')
+      + (rew.length?' · rewards: ' + rew[0].replace(/\s+/g,' ') :'')
+      + ' · target → <b style="color:var(--white)">' + (tgt.value||'?') + '</b>' + chipsHtml
+    : '<span style="color:var(--amber)">No scope section spotted — type the target below.</span>';
   window._pasteScope={allow:a, deny:[...deny], rewards:rew, text:t};
+  // delegated click for the scope host chips (chips are data-attr, never inline JS)
+  if(!window.__chipClickBound){
+    window.__chipClickBound=true;
+    document.addEventListener('click',e=>{
+      const chip=e.target.closest && e.target.closest('[data-chip-target]');
+      if(!chip) return;
+      const f=document.getElementById('mi-target');
+      if(f){ f.value=chip.dataset.chipTarget.replace(/^\*\./,''); f.dataset.edited='1'; f.dispatchEvent(new Event('input',{bubbles:true})); }
+    });
+  }
   // hand the paste to the AI to organize properly (debounced) — classifies assets + out-of-scope
   clearTimeout(window._aiTimer);
   if(window.__HUNTR_LIVE && t.trim().length>100){ window._aiTimer=setTimeout(()=>aiOrganize(t), 900); }
@@ -3899,7 +4092,7 @@ function pollRealHunt(id, target, opts){
       if(run.status==='paused'){ sess._paused=true; sess._rateLimited=(run.paused_reason==='rate-limit'); }
       else if(run.status==='running'){ sess._rateLimited=false; }
       sess.logs=[ (run.logs||[]).slice() ];
-      sess.findings=(run.findings||[]).map(f=>({sev:f.sev||'i',label:(f.label||'INFO'),title:f.title||f.name||'finding',detail:f.detail||'',cvss:f.cvss||'',endpoint:f.endpoint||'',steps:f.steps||'',remediation:f.remediation||'',cls:f.cls||'',dup:(typeof f.dup==='number'?f.dup:undefined),verdict:f.verdict||'',ev:(typeof f.ev==='number'?f.ev:undefined),bounty_est:f.bounty_est,reco:f.reco||'',ev_band:f.ev_band||''}));
+      sess.findings=(run.findings||[]).map(f=>({sev:f.sev||'i',label:(f.label||'INFO'),title:f.title||f.name||'finding',detail:f.detail||'',cvss:f.cvss||'',endpoint:f.endpoint||'',steps:f.steps||'',remediation:f.remediation||'',cls:f.cls||'',dup:(typeof f.dup==='number'?f.dup:undefined),verdict:f.verdict||'',ev:(typeof f.ev==='number'?f.ev:undefined),bounty_est:f.bounty_est,reco:f.reco||'',ev_band:f.ev_band||'',_det:!!f._det,judge_disputed:!!f.judge_disputed}));
       sess._realHosts=run.hosts||[]; sess._realEndpoints=run.endpoints||[];
       updateBadges();
       if(V.page==='dashboard'&&(V.huntId===id||!V.huntId)) renderDashboard(document.getElementById('content'));
@@ -4009,7 +4202,7 @@ function startRailTimer(i, id){
 /* ══════════════════════════════════════════════
    WORKBENCH (3-pane) — surface tree · repeater · co-pilot
 ══════════════════════════════════════════════ */
-const WB={ep:null, tab:'work', filter:'all', rpid:'session', mode:'tree', collapsed:{}};
+const WB={ep:null, tab:'work', filter:(()=>{try{return localStorage.getItem('huntr-wb-filter')||'all';}catch(e){return 'all';}})(), rpid:'session', mode:'tree', collapsed:{}};
 function toggleHost(h){WB.collapsed[h]=!WB.collapsed[h]; renderWorkbench(document.getElementById('content'));}
 function toggleAllHosts(){
   const t=surfaceTree(); const hosts=Object.keys(t);
@@ -4065,7 +4258,7 @@ function surfaceTree(){
   return hosts;
 }
 function selectEp(huntId,label){WB.ep={huntId,label}; WB.tab='work'; WB.mode='tree'; renderWorkbench(document.getElementById('content'));}
-function wbFilter(f){WB.filter=f; renderWorkbench(document.getElementById('content'));}
+function wbFilter(f){WB.filter=f; try{localStorage.setItem('huntr-wb-filter', f);}catch(e){} renderWorkbench(document.getElementById('content'));}
 function wbMode(m){WB.mode=m; renderWorkbench(document.getElementById('content'));}
 function epTab(t){WB.tab=t; renderWorkbench(document.getElementById('content'));}
 
@@ -4098,7 +4291,7 @@ function renderWorkbench(el){
       </div>`;
     });
   });
-  if(!rows)rows=`<div class="pk-empty">NO SURFACE YET<div class="pe-sub">Run a hunt and the engine maps every host, endpoint and parameter here.</div></div>`;
+  if(!rows)rows=`<div class="pk-empty">NO SURFACE YET<div class="pe-sub">Run a hunt and the engine maps every host, endpoint and parameter here.<br><span class="empty-cta" onclick="openModal()">Acquire a target →</span></div></div>`;
   el.innerHTML=`<div id="sm-root">
     <div class="sm-head">
       <div class="sm-h1"><span class="sm-step">MAP</span> Surface</div>
@@ -4139,6 +4332,12 @@ function endpointPane(){
 function reqText(n,host,idn){return `GET ${n.label} HTTP/1.1\nHost: ${host}\nAuthorization: Bearer &lt;${idn}&gt;\nAccept: application/json\n`;}
 function repeaterPane(n,host,find){
   const ids=huntIdentities(n.huntId);
+  // Load request history from localStorage
+  const histKey = 'huntr-req-hist-' + n.huntId + '-' + n.label.replace(/[^a-z0-9]/gi,'_');
+  let history = [];
+  try{ history = JSON.parse(localStorage.getItem(histKey) || '[]'); }catch(e){}
+  const histOpts = history.slice(-10).reverse().map((h,i)=>`<option value="${i}">${h.method} ${h.path} (${h.ts})</option>`).join('');
+  
   return `<div class="rp">
     <div class="rp-bar">
       <select class="rp-idsel" id="rp-id" onchange="WB.rpid=this.value">${ids.map(i=>`<option ${i===WB.rpid?'selected':''}>${i}</option>`).join('')}</select>
@@ -4147,9 +4346,46 @@ function repeaterPane(n,host,find){
       <span style="flex:1"></span>
       ${find?`<button class="btn-ghost" onclick="nav('report-view',{huntId:'${n.huntId}',sev:'${find.sev}',fi:${sessions.find(x=>x.id===n.huntId).findings.indexOf(find)}})">View finding ▸</button>`:''}
     </div>
-    <textarea class="rp-req" id="rp-req" spellcheck="false">${reqText(n,host,WB.rpid).replace(/&lt;/g,'<').replace(/&gt;/g,'>')}</textarea>
+    <div class="rp-hist-bar" style="display:flex;gap:8px;align-items:center;margin-bottom:8px;padding:8px 0;border-bottom:1px solid var(--border2)">
+      <label style="font-family:var(--mono);font-size:11px;color:var(--text3)">History:</label>
+      <select class="rp-hist-sel" id="rp-hist" onchange="rpLoadHist(this.value)" style="flex:1;background:#0c0818;border:1px solid var(--border2);border-radius:8px;color:var(--white);font-family:var(--mono);font-size:12px;padding:6px 10px"><option value="">— select from history —</option>${histOpts}</select>
+      <button class="btn-ghost" onclick="rpClearHist()" style="font-size:11px;padding:4px 10px" title="Clear history">Clear</button>
+    </div>
+    <textarea class="rp-req" id="rp-req" spellcheck="false">${reqText(n,host,WB.rpid).replace(/</g,'<').replace(/>/g,'>')}</textarea>
     <div id="rp-out"><div class="rp-hint">▸ <b>Send</b> as ${WB.rpid}, or <b>Diff 2 identities</b> to check access control on this endpoint.${find?' This endpoint already has a confirmed finding.':''}</div></div>
   </div>`;
+}
+
+// Persist request to history
+function rpSaveHist(method, path, host){
+  const f = nodeFor(); if(!f) return;
+  const histKey = 'huntr-req-hist-' + f.n.huntId + '-' + f.n.label.replace(/[^a-z0-9]/gi,'_');
+  let history = [];
+  try{ history = JSON.parse(localStorage.getItem(histKey) || '[]'); }catch(e){}
+  history.push({method, path, host, ts: new Date().toISOString().slice(11,19)});
+  if(history.length > 20) history.shift();
+  try{ localStorage.setItem(histKey, JSON.stringify(history)); }catch(e){}
+}
+
+// Load request from history
+function rpLoadHist(idx){
+  const f = nodeFor(); if(!f) return;
+  const histKey = 'huntr-req-hist-' + f.n.huntId + '-' + f.n.label.replace(/[^a-z0-9]/gi,'_');
+  let history = [];
+  try{ history = JSON.parse(localStorage.getItem(histKey) || '[]'); }catch(e){}
+  const h = history[history.length - 1 - parseInt(idx)];
+  if(h && document.getElementById('rp-req')){
+    document.getElementById('rp-req').value = h.method + ' ' + h.path + ' HTTP/1.1\nHost: ' + h.host + '\nAuthorization: Bearer <' + WB.rpid + '>\nAccept: application/json\n';
+  }
+}
+
+// Clear history
+function rpClearHist(){
+  const f = nodeFor(); if(!f) return;
+  const histKey = 'huntr-req-hist-' + f.n.huntId + '-' + f.n.label.replace(/[^a-z0-9]/gi,'_');
+  try{ localStorage.removeItem(histKey); }catch(e){}
+  document.getElementById('rp-hist').innerHTML = '<option value="">— select from history —</option>';
+  showToast('Request history cleared');
 }
 function simResp(n,find,idn){
   // simulated response for the demo — derived from finding state + identity
