@@ -16,7 +16,7 @@ Usage:
               [--scope-types web,api] [--hunt-dir /path/.hunt]
 Env: HUNT_DIR overrides --hunt-dir (the server sets it).
 """
-import sys, os, re, json, time, subprocess, tempfile
+import sys, os, re, json, time, subprocess, tempfile, threading
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -131,6 +131,8 @@ if os.environ.get("HUNT_LLM") == "haiku" or "--llm-light" in sys.argv:
 # rate-limit state: set when the provider returns 429 (rate limit reached).
 _RL = {"hit": False, "retry_after": 0}
 _LLM_LAST_ERR = {"e": ""}
+# multi-agent STATE lock: prevents concurrent agents from corrupting findings/leads
+_STATE_LOCK = threading.Lock()
 
 
 class RateLimitPause(Exception):
@@ -1569,6 +1571,178 @@ def phase_memory_recall():
     flush()
 
 
+def _start_background_scanners():
+    """Improvement #4 — fire nuclei + subfinder in background threads before the agent loop.
+
+    Results land in HUNT_DIR/nuclei_bg.txt and HUNT_DIR/subs_bg.txt.
+    Claude can read them any time with bash("cat ~/.huntr/targets/.../nuclei_bg.txt").
+    This means heavy scanners run in parallel with Claude's reasoning — not after."""
+    domain = apex(TARGET)
+
+    def _nuclei():
+        if not has("nuclei"):
+            return
+        out_f = str(HUNT_DIR / "nuclei_bg.txt")
+        hosts = [e["url"] for e in STATE.get("endpoints", [])[:20]] or ["https://" + domain]
+        input_f = str(HUNT_DIR / "nuclei_targets.txt")
+        Path(input_f).write_text("\n".join(hosts) + "\n")
+        sh(["nuclei", "-l", input_f, "-severity", "critical,high,medium",
+            "-silent", "-timeout", "8", "-o", out_f], timeout=300)
+
+    def _subfinder():
+        if not has("subfinder"):
+            return
+        sh(["subfinder", "-d", domain, "-silent",
+            "-o", str(HUNT_DIR / "subs_bg.txt")], timeout=120)
+
+    def _gau():
+        if not has("gau"):
+            return
+        out, _, _ = sh(["gau", "--subs", domain], timeout=90)
+        if out:
+            (HUNT_DIR / "gau_bg.txt").write_text(out)
+
+    for fn in (_nuclei, _subfinder, _gau):
+        threading.Thread(target=fn, daemon=True).start()
+    log("ok", "◉ background: nuclei + subfinder + gau started (results in HUNT_DIR/)")
+
+
+def _query_hunt_corpus():
+    """Improvement #3 — pull past technique wins for this tech stack from hunt-corpus.
+
+    Returns a compact string Claude gets in its initial context:
+    'On Next.js+Supabase targets: found anon key in JS chunks, enumerated tables via
+    error oracle, admin edge function returned 405 on GET → test POST.'
+    Returns '' when corpus tool unavailable or no relevant history."""
+    cor = HERE / "hunt-corpus.py"
+    if not cor.exists():
+        return ""
+    stack = _stack()
+    host = "https://" + apex(TARGET)
+    try:
+        out, _, rc = sh(
+            [sys.executable, str(cor), "--recall", "--stack", stack,
+             "--host", host, "--limit", "8", "--json"],
+            timeout=30,
+        )
+        if not out:
+            return ""
+        data = json.loads(out.strip().splitlines()[-1])
+        items = data if isinstance(data, list) else data.get("items", [])
+        if not items:
+            return ""
+        lines = []
+        for it in items[:8]:
+            tech = it.get("technique") or it.get("title") or ""
+            paid = it.get("paid") or it.get("bounty") or ""
+            ep   = it.get("endpoint") or it.get("url") or ""
+            if tech:
+                lines.append(f"- {tech}" + (f" [{ep}]" if ep else "") + (f" → {paid}" if paid else ""))
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
+def _auto_chain_trigger():
+    """Improvement #5 — after a new finding is recorded, auto-run chain-builder.
+
+    Fires in a daemon thread so it doesn't block the agent loop.
+    Results are appended to STATE['leads'] so the agent sees them in the next round."""
+    cb = HERE / "chain-builder.py"
+    if not cb.exists() or len(STATE["findings"]) < 2:
+        return
+    def _run():
+        try:
+            f_arg = json.dumps(STATE["findings"][-10:])
+            tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+            tmp.write(f_arg); tmp.close()
+            out, _, rc = sh(
+                [sys.executable, str(cb), "--findings", tmp.name, "--json"],
+                timeout=60,
+            )
+            try: os.unlink(tmp.name)
+            except Exception: pass
+            if not out:
+                return
+            for line in out.strip().splitlines():
+                if not line.startswith("{"):
+                    continue
+                ch = json.loads(line)
+                chain_desc = ch.get("chain") or ch.get("title") or ""
+                if chain_desc:
+                    with _STATE_LOCK:
+                        STATE.setdefault("leads", []).append({
+                            "lead": "AUTO-CHAIN: " + chain_desc[:300],
+                            "endpoint": ch.get("endpoint", ""),
+                            "source": "chain-builder",
+                        })
+                        STATE["leads"] = STATE["leads"][-60:]
+                    log("ok", "⛓ auto-chain: " + chain_desc[:120])
+        except Exception:
+            pass
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _save_conversation_checkpoint(messages):
+    """Improvement #7 — persist the tool-use conversation to disk.
+
+    Saved to HUNT_DIR/lead_conversation.json on every tool round.
+    On resume, prior leads and lead_log are already in STATE (loaded from run.json),
+    and the agent's initial digest includes them — so context carries over even after
+    the process is killed and restarted."""
+    try:
+        ckpt = HUNT_DIR / "lead_conversation.json"
+        # keep only last 40 messages to avoid huge files
+        trimmed = messages[-40:] if len(messages) > 40 else messages
+        ckpt.write_text(json.dumps(trimmed, default=str, ensure_ascii=False))
+    except Exception:
+        pass
+
+
+def _graphify_clusters(n=2):
+    """Improvement #2 — split endpoints into n clusters using graphify communities.
+
+    Returns list of endpoint-URL lists, one per cluster. Falls back to
+    round-robin split when no graph is available."""
+    graph_json = HUNT_DIR / "graphify-out" / "graph.json"
+    eps = [e["url"] for e in STATE.get("endpoints", [])]
+    if not eps:
+        return [eps]
+    if not graph_json.exists():
+        # round-robin fallback
+        clusters = [[] for _ in range(n)]
+        for i, u in enumerate(eps):
+            clusters[i % n].append(u)
+        return [c for c in clusters if c]
+    try:
+        g = json.loads(graph_json.read_text())
+        nodes = {nd["id"]: nd for nd in g.get("nodes", [])}
+        # group nodes by community
+        from collections import defaultdict
+        by_comm = defaultdict(list)
+        for nd in g.get("nodes", []):
+            comm = nd.get("community", 0)
+            url  = nd.get("label", "") or nd.get("id", "")
+            if url.startswith("http") and url in eps:
+                by_comm[comm].append(url)
+        # merge small communities into n buckets by size
+        sorted_comms = sorted(by_comm.values(), key=len, reverse=True)
+        clusters = [[] for _ in range(n)]
+        for i, comm_eps in enumerate(sorted_comms):
+            clusters[i % n].extend(comm_eps)
+        # anything not in graph: append to smallest cluster
+        covered = set(u for c in clusters for u in c)
+        leftovers = [u for u in eps if u not in covered]
+        for i, u in enumerate(leftovers):
+            clusters[i % n].append(u)
+        return [c for c in clusters if c]
+    except Exception:
+        clusters = [[] for _ in range(n)]
+        for i, u in enumerate(eps):
+            clusters[i % n].append(u)
+        return [c for c in clusters if c]
+
+
 def _hunt_tools(authed):
     """Tool definitions for the agentic lead loop. Claude gets a real shell + HTTP + scanner."""
     return [
@@ -1679,8 +1853,9 @@ def _make_tool_executor(tok, tok2, authed, step_counter):
             log("cmd", "$ " + cmd[:120])
             out, err, rc = sh(["bash", "-c", cmd], timeout=timeout)
             combined = (out + err).strip()
-            if len(combined) > 12000:
-                combined = combined[:6000] + "\n…[truncated]…\n" + combined[-2000:]
+            # improvement #6: large outputs summarized by Haiku before Sonnet sees them
+            if len(combined) > 3500:
+                combined = llm_client.summarize_if_large(combined, threshold=3500, label="bash:" + cmd[:40])
             flush()
             return combined or f"(exit {rc}, no output)"
 
@@ -1690,13 +1865,14 @@ def _make_tool_executor(tok, tok2, authed, step_counter):
                 return '{"error":"missing url"}'
             res = _lead_fetch(url, method=str(inp.get("method","GET")),
                               body=inp.get("body"), headers=inp.get("headers") or {})
-            # register newly discovered endpoints
+            # register newly discovered endpoints (lock for multi-agent safety)
             if res.get("ok") and res.get("status") not in (404, None):
                 u = res.get("url") or url
-                if u and not any(u == e["url"] for e in STATE["endpoints"]):
-                    from urllib.parse import urlparse as _up
-                    STATE["endpoints"].append({"url": u, "host": _up(u).netloc})
-                    STATE["stats"]["endpoints"] = len(STATE["endpoints"])
+                with _STATE_LOCK:
+                    if u and not any(u == e["url"] for e in STATE["endpoints"]):
+                        from urllib.parse import urlparse as _up
+                        STATE["endpoints"].append({"url": u, "host": _up(u).netloc})
+                        STATE["stats"]["endpoints"] = len(STATE["endpoints"])
                 _note_gated(u, res.get("status"), step)
             log("cmd", "$ " + inp.get("method","GET").upper() + " " + url[:90] +
                 " → " + str(res.get("status") or res.get("err",""))[:60])
@@ -1734,18 +1910,20 @@ def _make_tool_executor(tok, tok2, authed, step_counter):
                 return '{"error":"evidence too thin — describe exactly what you observed"}'
             sev_map = {"critical":"c","high":"h","medium":"m","low":"l","info":"i"}
             sev = sev_map.get(str(inp.get("severity","medium")).lower(), "m")
-            add_finding(sev, title, evidence, url,
-                        cvss=str(inp.get("cvss","")),
-                        cls=str(inp.get("cls","")),
-                        verdict="agent", det=False)
-            # store repro in finding
-            for f in STATE["findings"]:
-                if f.get("title") == title and not f.get("steps"):
-                    f["steps"] = str(inp.get("reproduction",""))[:1000]
+            with _STATE_LOCK:
+                add_finding(sev, title, evidence, url,
+                            cvss=str(inp.get("cvss","")),
+                            cls=str(inp.get("cls","")),
+                            verdict="agent", det=False)
+                for f in STATE["findings"]:
+                    if f.get("title") == title and not f.get("steps"):
+                        f["steps"] = str(inp.get("reproduction",""))[:1000]
             log("ok", "★ finding recorded: [" + sev.upper() + "] " + title[:100])
             flush()
+            # improvement #5: auto-trigger chain-builder in background
+            _auto_chain_trigger()
             return json.dumps({"ok": True, "recorded": title,
-                               "note": "run scan_endpoint on it for tool-grade proof if not already done"})
+                               "note": "chain-builder running in background; check leads for chain opportunities"})
 
         elif name == "done":
             summary = str(inp.get("summary","")).strip()
@@ -1789,13 +1967,37 @@ def phase_llm_lead(deadline, share=0.70, max_steps=120):
     STATE.setdefault("leads", [])
     stage("LLM-led", 86)
 
-    # Detect whether we have Claude tool-use capability
+    # improvement #4: start background scanners immediately
+    _start_background_scanners()
+
     _use_tool_loop = (MODEL_LEAD.get("provider") == "anthropic")
 
-    if _use_tool_loop:
-        _phase_llm_lead_tool_use(lead_deadline, tok, tok2, authed, max_steps)
-    else:
+    if not _use_tool_loop:
         _phase_llm_lead_json(lead_deadline, tok, tok2, authed, max_steps)
+    else:
+        n_eps = len(STATE.get("endpoints", []))
+        # improvement #2: dual-agent for larger surfaces (≥8 endpoints)
+        if n_eps >= 8:
+            clusters = _graphify_clusters(n=2)
+            if len(clusters) >= 2:
+                steps_each = max(40, max_steps // 2)
+                log("ok", f"◆ dual-agent mode · {len(clusters[0])} + {len(clusters[1])} endpoints")
+                # stagger start by 12s to avoid concurrent OAuth rate-limit burst
+                def _run_deep():
+                    time.sleep(12)
+                    _phase_llm_lead_tool_use(
+                        lead_deadline, tok, tok2, authed, steps_each,
+                        surface_filter=set(clusters[1]), agent_label="DEEP")
+                t = threading.Thread(target=_run_deep, daemon=True)
+                t.start()
+                _phase_llm_lead_tool_use(
+                    lead_deadline, tok, tok2, authed, steps_each,
+                    surface_filter=set(clusters[0]), agent_label="BROAD")
+                t.join(timeout=max(0, lead_deadline - time.time()))
+            else:
+                _phase_llm_lead_tool_use(lead_deadline, tok, tok2, authed, max_steps)
+        else:
+            _phase_llm_lead_tool_use(lead_deadline, tok, tok2, authed, max_steps)
 
     log("ok", "✓ LLM-led · " + str(len(STATE.get("lead_log",[]))) + " action(s) · " +
         str(len(STATE["findings"])) + " finding(s) so far")
@@ -1803,37 +2005,61 @@ def phase_llm_lead(deadline, share=0.70, max_steps=120):
     stage("LLM-led", 94)
 
 
-def _phase_llm_lead_tool_use(lead_deadline, tok, tok2, authed, max_steps):
-    """Real tool-use agentic loop — Claude has bash, http, scanner, finding tools."""
-    log("ok", "◆ tool-use agent loop · Claude has bash + HTTP + scanner access")
+def _phase_llm_lead_tool_use(lead_deadline, tok, tok2, authed, max_steps,
+                              surface_filter=None, agent_label=""):
+    """Real tool-use agentic loop — Claude has bash, http, scanner, finding tools.
+
+    surface_filter: optional URL list this agent owns (improvement #2 multi-agent mode).
+    agent_label: short label e.g. 'BROAD' or 'DEEP' for logging."""
+    label = f"[{agent_label}] " if agent_label else ""
+    log("ok", f"◆ {label}tool-use agent · bash + HTTP + scanner + corpus memory")
+
+    # improvement #3: seed corpus memory before the loop
+    corpus_context = _query_hunt_corpus()
+
+    # improvement #7: inject prior leads from previous sessions
+    prior_leads = STATE.get("leads", [])[-20:]
+    prior_lead_text = ""
+    if prior_leads:
+        prior_lead_text = "\n\n## Leads from Prior Session\n" + "\n".join(
+            f"- {l.get('lead','')} [{l.get('endpoint','')}]" for l in prior_leads
+        )
 
     digest = _lead_digest()
+    if surface_filter:
+        digest["endpoints"] = [e for e in digest.get("endpoints", [])
+                               if e.get("url") in surface_filter]
+        digest["untested_cells"] = [c for c in digest.get("untested_cells", [])
+                                    if c.get("ep") in surface_filter]
+
     scope_summary = ", ".join(sorted(set(
         e.get("host", "") for e in STATE["endpoints"]
     )))[:400]
-    creds_hint = ""
-    if tok:
-        creds_hint = f"\nAuthenticated: YES (session token available). Use it in Authorization/Cookie headers."
-    else:
-        creds_hint = "\nAuthenticated: NO — black-box mode. Focus on unauthenticated surface."
+    creds_hint = (
+        "\nAuthenticated: YES (session token available). Use it in Authorization/Cookie headers."
+        if tok else
+        "\nAuthenticated: NO — black-box mode. Focus on unauthenticated surface."
+    )
+    surface_note = (
+        f"\nYour surface slice: {len(surface_filter)} endpoints (multi-agent mode — stay on your slice)."
+        if surface_filter else ""
+    )
 
     sys_p = (
-        f"You are an elite bug bounty hunter. Your target is: {TARGET}\n"
-        f"In-scope hosts: {scope_summary}{creds_hint}\n\n"
-        "You have real shell access via the bash tool. Use it exactly as you would in a terminal:\n"
-        "  - curl, python3, subfinder, httpx, katana, waybackurls, gau, nuclei, sqlmap, dalfox, ffuf, jq\n"
-        "  - Read JS files to extract API endpoints, keys, and business logic\n"
-        "  - Enumerate subdomains, discover hidden routes, test auth flows\n"
-        "  - Chain discoveries: see a Supabase URL → test tables; find a JWT → test alg:none; "
-        "find an upload endpoint → test path traversal\n\n"
+        f"You are an elite bug bounty hunter. Target: {TARGET}\n"
+        f"In-scope hosts: {scope_summary}{creds_hint}{surface_note}\n\n"
+        "You have a real shell via bash. Use it like a terminal:\n"
+        "  curl, python3, subfinder, httpx, katana, nuclei, sqlmap, dalfox, ffuf, jq, gau, waybackurls\n"
+        "  Read JS chunks for API keys, Supabase URLs, payment flows, admin routes\n"
+        "  Enumerate tables via Supabase error oracle; test JWTs (alg:none, weak secret)\n"
+        f"  Background scanners already running — check: bash('cat {HUNT_DIR}/nuclei_bg.txt')\n\n"
         "METHODOLOGY:\n"
-        "1. Map the full surface first (subdomains, JS analysis, endpoint enumeration)\n"
-        "2. Identify interesting targets (auth, payments, admin, upload, API keys in JS)\n"
-        "3. Attack with precision: hypothesis → test → verify → record_finding\n"
-        "4. Only call record_finding when you have OBSERVED evidence (response body, tool output)\n"
-        "5. Run scan_endpoint to get tool-grade proof before submitting\n\n"
-        "You also have playbook sections from our skill library for the current surface — use them.\n"
-        "Think step by step. Be creative. Go deep. This is a real hunt."
+        "1. JS analysis first — grep _next/static/chunks for keys, fetch() calls, auth patterns\n"
+        "2. Enumerate: subdomains, hidden routes, edge functions, GraphQL introspection\n"
+        "3. Attack: hypothesis → bash/http_request → verify → scan_endpoint → record_finding\n"
+        "4. Chain: CORS+XSS=ATO, IDOR+info=data breach, open-redirect+OAuth=token hijack\n"
+        "5. record_finding ONLY with OBSERVED evidence (response body, tool output, scanner proof)\n\n"
+        "Skill playbook and past wins on similar targets are below — apply matching technique FIRST."
     )
 
     skill_data = _skill_pick({
@@ -1847,28 +2073,37 @@ def _phase_llm_lead_tool_use(lead_deadline, tok, tok2, authed, max_steps):
         playbook_text = "\n\n## Skill Playbook\n" + "\n---\n".join(
             f"### {s['skill']} — {s['heading']}\n{s['gist']}" for s in skill_data
         )
+    corpus_text = ("\n\n## Past Wins on Similar Targets\n" + corpus_context) if corpus_context else ""
 
     initial_user = (
         "## Hunt State\n" +
-        json.dumps(digest, default=str, indent=2)[:6000] +
+        json.dumps(digest, default=str, indent=2)[:5000] +
+        corpus_text +
         playbook_text +
-        "\n\nBegin the hunt. Map the surface, discover vulnerabilities, and report findings."
+        prior_lead_text +
+        "\n\nBegin the hunt. Map surface → identify targets → attack → record findings."
     )
 
     step_counter = [0]
+    messages_snapshot = [[]]
+
     executor = _make_tool_executor(tok, tok2, authed, step_counter)
 
     def on_tool_call(name, inp, result):
         step = step_counter[0]
-        STATE["stage"] = f"agent·{name}·{step}"
-        STATE["pct"] = min(93, 86 + int(step / max(1, max_steps) * 7))
-        STATE.setdefault("lead_log", []).append({
-            "step": step, "act": name,
-            "ok": not result.startswith("ERROR") and not result.startswith('{"error"'),
-            "detail": result[:100]
-        })
-        STATE["lead_log"] = STATE["lead_log"][-120:]
-        # respect budget
+        with _STATE_LOCK:
+            STATE["stage"] = f"{label}agent·{name}·{step}"
+            STATE["pct"] = min(93, 86 + int(step / max(1, max_steps) * 7))
+            STATE.setdefault("lead_log", []).append({
+                "step": step, "act": name,
+                "ok": not str(result).startswith("ERROR") and not str(result).startswith('{"error"'),
+                "detail": str(result)[:100],
+                "agent": agent_label or "main",
+            })
+            STATE["lead_log"] = STATE["lead_log"][-120:]
+        # improvement #7: checkpoint conversation every 10 tool calls
+        if step % 10 == 0:
+            _save_conversation_checkpoint(messages_snapshot[0])
         if time.time() > lead_deadline:
             raise TimeoutError("lead budget exceeded")
 
@@ -1887,26 +2122,29 @@ def _phase_llm_lead_tool_use(lead_deadline, tok, tok2, authed, max_steps):
             max_tool_rounds=max_steps,
         )
     except TimeoutError:
-        log("warn", "⏱ tool-use agent budget reached")
+        log("warn", f"⏱ {label}tool-use agent budget reached")
         return
     except Exception as _e:
-        log("warn", "→ tool-use agent error: " + str(_e)[:200])
+        log("warn", f"→ {label}tool-use agent error: " + str(_e)[:200])
         return
 
     if err and not tool_log:
-        log("warn", "→ tool-use agent failed: " + str(err)[:200] +
+        log("warn", f"→ {label}tool-use agent failed: " + str(err)[:200] +
             " — falling back to JSON-action loop")
-        _phase_llm_lead_json(lead_deadline, tok, tok2, authed, max_steps)
+        if not agent_label:  # only fallback on the main agent, not sub-agents
+            _phase_llm_lead_json(lead_deadline, tok, tok2, authed, max_steps)
         return
 
     if err:
-        log("warn", "→ tool-use agent ended with: " + str(err)[:120])
+        log("warn", f"→ {label}agent ended: " + str(err)[:120])
 
-    STATE["lead_results"].append({
-        "action": "tool_loop_complete",
-        "tool_calls": len(tool_log),
-        "findings_added": sum(1 for t in tool_log if t["name"] == "record_finding"),
-    })
+    with _STATE_LOCK:
+        STATE["lead_results"].append({
+            "action": "tool_loop_complete",
+            "agent": agent_label or "main",
+            "tool_calls": len(tool_log),
+            "findings_added": sum(1 for t in tool_log if t["name"] == "record_finding"),
+        })
 
 
 def _phase_llm_lead_json(lead_deadline, tok, tok2, authed, max_steps):

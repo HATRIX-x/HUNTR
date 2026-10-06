@@ -21,6 +21,9 @@ import os
 import json
 import ssl
 import sys
+import re
+import concurrent.futures
+import threading
 from pathlib import Path
 from urllib.request import Request, build_opener, HTTPSHandler, HTTPHandler
 from urllib.error import HTTPError
@@ -352,6 +355,48 @@ def _anthropic_raw_request(payload, timeout=120):
         return None, f"{type(ex).__name__}: {ex}"
 
 
+def summarize_if_large(text, threshold=3500, label="tool output"):
+    """Improvement #6 — Haiku pass on large tool outputs before feeding to Sonnet.
+
+    Spends ~$0.002 of Haiku to compress 12K tokens of raw scanner/bash output
+    down to ~800 tokens of signal. Net saving: ~11K Sonnet tokens per large call.
+    Falls back to hard truncation when Haiku is unavailable."""
+    if not text or len(text) <= threshold:
+        return text
+    auth = _anthropic_auth_headers()
+    if not auth:
+        return text[:threshold] + f"\n…[truncated: {len(text)} chars total]"
+    payload = {
+        "model": "claude-haiku-4-5-20251001",
+        "system": (
+            "You are a security tool output parser. "
+            "Extract ONLY security-relevant signal: credentials, endpoints, "
+            "vulnerability indicators, error messages, interesting headers, "
+            "and anomalies. Drop noise. Be concise. Plain text only."
+        ),
+        "messages": [{"role": "user", "content":
+            f"Summarize this {label} ({len(text)} chars) — keep only security-relevant findings:\n\n"
+            + text[:16000]}],
+        "max_tokens": 900,
+        "temperature": 0.0,
+    }
+    headers = {"content-type": "application/json", "accept": "application/json"}
+    headers.update(auth)
+    body = json.dumps(payload).encode()
+    req = Request("https://api.anthropic.com/v1/messages", data=body, headers=headers, method="POST")
+    opener = build_opener(HTTPSHandler(context=ssl.create_default_context()), HTTPHandler())
+    try:
+        with opener.open(req, timeout=25) as r:
+            data = json.loads(r.read().decode("utf-8"))
+            content = data.get("content", [])
+            summary = "\n".join(b.get("text","") for b in content if b.get("type")=="text").strip()
+            if summary:
+                return f"[Haiku-summarized from {len(text)} chars]\n{summary}"
+    except Exception:
+        pass
+    return text[:threshold] + f"\n…[truncated: {len(text)} chars total]"
+
+
 def call_llm_with_tools(system, initial_user, tools, tool_executor,
                         model=None, max_tokens=4096, timeout=120,
                         on_tool_call=None, max_tool_rounds=200):
@@ -425,18 +470,33 @@ def call_llm_with_tools(system, initial_user, tools, tool_executor,
             # max_tokens hit or unexpected stop
             return final_text, tool_calls_log, f"stop_reason={stop_reason}"
 
-        # --- execute tool calls ---
-        tool_results = []
-        for block in content:
-            if block.get("type") != "tool_use":
-                continue
+        # --- execute tool calls (parallel when multiple arrive) ---
+        tool_use_blocks = [b for b in content if b.get("type") == "tool_use"]
+
+        def _run_one(block):
             tid  = block["id"]
             name = block["name"]
             inp  = block.get("input", {})
-
             result = tool_executor(name, inp)
-            result_str = str(result)[:12000]  # hard cap so context doesn't explode
+            result_str = str(result)
+            # improvement #6: summarize large outputs before they hit Sonnet's context
+            if len(result_str) > 3500 and name != "done":
+                result_str = summarize_if_large(result_str, threshold=3500, label=name)
+            result_str = result_str[:12000]
+            return tid, name, inp, result_str
 
+        tool_results = []
+        if len(tool_use_blocks) > 1:
+            # improvement #1: parallel tool execution
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(len(tool_use_blocks), 6)
+            ) as pool:
+                futures = [pool.submit(_run_one, b) for b in tool_use_blocks]
+                results = [f.result() for f in concurrent.futures.as_completed(futures)]
+        else:
+            results = [_run_one(b) for b in tool_use_blocks]
+
+        for tid, name, inp, result_str in results:
             tool_calls_log.append({
                 "name": name,
                 "input_summary": str(inp)[:300],
@@ -444,13 +504,11 @@ def call_llm_with_tools(system, initial_user, tools, tool_executor,
             })
             if on_tool_call:
                 on_tool_call(name, inp, result_str)
-
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": tid,
                 "content": result_str,
             })
-
             if name == "done" or result_str == "__DONE__":
                 done_signal = True
 
