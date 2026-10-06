@@ -26,9 +26,21 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-TOOLS = Path.home() / ".claude" / "tools"
 ROOT = Path(os.environ.get("HUNTR_HOME", str(Path.home() / ".huntr")))
 TARGETS = ROOT / "targets"
+REPO = Path(__file__).resolve().parent
+LOCAL_TOOLS = REPO / "tools"
+TOOLS = LOCAL_TOOLS if LOCAL_TOOLS.exists() else Path.home() / ".claude" / "tools"
+# UI/bridge live in the repo root, NOT in tools/ — look in both so either layout works
+ASSETS = [REPO, Path.home() / ".claude" / "tools", TOOLS]
+
+
+def asset(name):
+    for d in ASSETS:
+        p = d / name
+        if p.exists():
+            return p
+    return None
 PORT = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else 8899
 
 
@@ -82,7 +94,9 @@ class H(BaseHTTPRequestHandler):
             body = body.encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self.headers.get("Origin", "")
+        if origin.startswith("http://127.0.0.1") or origin.startswith("http://localhost"):
+            self.send_header("Access-Control-Allow-Origin", origin)
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
         self.wfile.write(body)
@@ -90,8 +104,12 @@ class H(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self._send(b"", 204)
 
+    MAX_BODY = 1024 * 1024  # 1MB limit
+
     def _body(self):
         n = int(self.headers.get("Content-Length", 0) or 0)
+        if n > self.MAX_BODY:
+            return {"error": "request too large"}
         try:
             return json.loads(self.rfile.read(n) or b"{}")
         except Exception:
@@ -102,8 +120,8 @@ class H(BaseHTTPRequestHandler):
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         t = q.get("target")
         if u.path == "/":
-            ui = TOOLS / "huntr-ui.html"
-            if ui.exists():
+            ui = asset("huntr-ui.html")
+            if ui:
                 html = ui.read_text()
                 # the server IS the real engine → enable live mode so entering a scope runs the
                 # actual hunt (not the offline demo pipeline)
@@ -120,13 +138,13 @@ class H(BaseHTTPRequestHandler):
                     else:
                         html = html + live   # last resort: after everything (never before doctype)
                 tag = '<script src="/huntr-bridge.js"></script>'
-                if (TOOLS / "huntr-bridge.js").exists() and tag not in html:
+                if asset("huntr-bridge.js") and tag not in html:
                     html = html.replace("</body>", tag + "\n</body>", 1) if "</body>" in html else html + tag
                 return self._send(html, ctype="text/html; charset=utf-8")
             return self._send(INDEX, ctype="text/html; charset=utf-8")
         if u.path == "/huntr-bridge.js":
-            bp = TOOLS / "huntr-bridge.js"
-            if bp.exists():
+            bp = asset("huntr-bridge.js")
+            if bp:
                 return self._send(bp.read_text(), ctype="application/javascript; charset=utf-8")
             return self._send("// no bridge", ctype="application/javascript")
         if u.path == "/api/targets":
@@ -229,7 +247,9 @@ class H(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/csv; charset=utf-8")
             self.send_header("Content-Disposition", "attachment; filename=\"huntr-earnings.csv\"")
-            self.send_header("Access-Control-Allow-Origin", "*")
+            origin = self.headers.get("Origin", "")
+            if origin.startswith("http://127.0.0.1") or origin.startswith("http://localhost"):
+                self.send_header("Access-Control-Allow-Origin", origin)
             self.end_headers()
             self.wfile.write(data)
             return
@@ -292,6 +312,23 @@ class H(BaseHTTPRequestHandler):
                         scope_hosts.append(ln)
             return self._send({"signals": sig, "scopeHosts": scope_hosts,
                                "coverage": run("hunt-status.py", [], t)["out"]})
+        if u.path == "/api/surface-graph":
+            # Serve the graphify knowledge graph HTML for the target's recon surface.
+            # Returns {available: true, url: "/surface-graph-frame?target=T"} when built,
+            # {available: false} otherwise — the UI renders an iframe or a "not ready" placeholder.
+            hd = hunt_dir(q.get("target", ""))
+            gf = hd / "graphify-out" / "graph.html"
+            return self._send({"available": gf.exists(),
+                               "url": "/surface-graph-frame?target=" + q.get("target", "")
+                                      if gf.exists() else None})
+        if u.path == "/surface-graph-frame":
+            # Serve the raw graph.html so it can be embedded in an <iframe>.
+            hd = hunt_dir(q.get("target", ""))
+            gf = hd / "graphify-out" / "graph.html"
+            if gf.exists():
+                return self._send(gf.read_text(), ctype="text/html; charset=utf-8")
+            return self._send("<p style='font-family:monospace;color:#888;padding:32px'>Surface graph not built yet — starts automatically after the first crawl.</p>",
+                              ctype="text/html; charset=utf-8")
         return self._send({"error": "unknown route"}, 404)
 
     def do_POST(self):
@@ -339,10 +376,14 @@ class H(BaseHTTPRequestHandler):
                 except Exception:
                     pass
             # persist launch opts so a rate-limit-paused hunt can be resumed with the same settings
+            try:
+                budget_sec = int(b.get("budget_sec") or 1200)
+            except (ValueError, TypeError):
+                budget_sec = 1200
             opts = {"program": b.get("program", ""), "mode": b.get("mode", "grey"),
                     "scope_types": b.get("scope_types") or ["web", "api"],
                     "stealth": bool(b.get("stealth")), "single_host": bool(b.get("single_host")),
-                    "llm_light": bool(b.get("llm_light")), "budget_sec": int(b.get("budget_sec") or 1200)}
+                    "llm_light": bool(b.get("llm_light")), "budget_sec": budget_sec}
             try: (hd / "launch.json").write_text(json.dumps(opts))
             except Exception: pass
             args = [sys.executable, str(TOOLS / "hunt-run.py"), "--target", t,
