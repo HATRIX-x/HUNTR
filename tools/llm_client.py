@@ -315,6 +315,155 @@ def llm_info():
     }
 
 
+def _anthropic_auth_headers():
+    """Resolve Anthropic auth headers: API key wins, then Claude Code OAuth."""
+    key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
+    if key:
+        return {"x-api-key": key, "anthropic-version": "2023-06-01"}
+    h, mode = _claude_oauth_headers()
+    if mode in ("api-key", "claude-account") and h:
+        return h
+    return {}
+
+
+def _anthropic_raw_request(payload, timeout=120):
+    """POST to api.anthropic.com/v1/messages, return (raw_data_dict, error_str)."""
+    auth = _anthropic_auth_headers()
+    if not auth:
+        return None, "No Anthropic credential (set ANTHROPIC_API_KEY or run 'claude login')"
+    headers = {
+        "content-type": "application/json",
+        "accept": "application/json",
+    }
+    headers.update(auth)
+    body = json.dumps(payload).encode()
+    req = Request("https://api.anthropic.com/v1/messages", data=body, headers=headers, method="POST")
+    opener = build_opener(HTTPSHandler(context=ssl.create_default_context()), HTTPHandler())
+    try:
+        with opener.open(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8")), None
+    except HTTPError as e:
+        try:
+            raw = e.read().decode("utf-8")
+        except Exception:
+            raw = ""
+        return None, f"HTTP {e.code}: {raw}"
+    except Exception as ex:
+        return None, f"{type(ex).__name__}: {ex}"
+
+
+def call_llm_with_tools(system, initial_user, tools, tool_executor,
+                        model=None, max_tokens=4096, timeout=120,
+                        on_tool_call=None, max_tool_rounds=200):
+    """
+    Multi-turn Anthropic tool-use conversation via OAuth or API key.
+
+    Claude gets real tools (bash, http_request, record_finding, etc.) and calls them
+    in a real feedback loop — same architecture as Claude Code itself. Each tool_use
+    block is executed by tool_executor(name, input) -> str, the raw result is fed back,
+    and Claude continues until it either stops calling tools or calls the 'done' tool.
+
+    Args:
+        system:         system prompt
+        initial_user:   first user message (the hunt digest)
+        tools:          list of Anthropic tool definition dicts
+        tool_executor:  callable(name: str, input: dict) -> str
+        model:          model id (default: claude-sonnet-4-6)
+        max_tokens:     per-turn token budget
+        timeout:        HTTP timeout per request
+        on_tool_call:   optional callback(name, input, result) for logging
+        max_tool_rounds: hard cap on tool-call rounds to prevent infinite loops
+
+    Returns:
+        (final_text, tool_calls_log, error)
+        tool_calls_log: list of {name, input_summary, result_summary}
+    """
+    mdl = model or "claude-sonnet-4-6"
+    messages = [{"role": "user", "content": initial_user}]
+    tool_calls_log = []
+    done_signal = False
+
+    for _round in range(max_tool_rounds):
+        payload = {
+            "model": mdl,
+            "system": system,
+            "messages": messages,
+            "tools": tools,
+            "max_tokens": max_tokens,
+            "temperature": 0.2,
+        }
+
+        # retry transient 5xx / 429 up to 4 times with backoff
+        data, err = None, None
+        for attempt in range(4):
+            data, err = _anthropic_raw_request(payload, timeout)
+            if data:
+                break
+            if err and ("429" in err or "529" in err):
+                import time as _time
+                _time.sleep(min(60, 10 * (attempt + 1)))
+            elif err and re.search(r"\b5\d\d\b", err or ""):
+                import time as _time
+                _time.sleep(3.5 * (2 ** attempt))
+            else:
+                break
+
+        if err and not data:
+            return None, tool_calls_log, err
+
+        stop_reason = data.get("stop_reason", "end_turn")
+        content = data.get("content", [])
+
+        # collect text blocks
+        text_parts = [b.get("text", "") for b in content if b.get("type") == "text"]
+        final_text = "\n".join(p for p in text_parts if p).strip()
+
+        if stop_reason == "end_turn":
+            return final_text, tool_calls_log, None
+
+        if stop_reason != "tool_use":
+            # max_tokens hit or unexpected stop
+            return final_text, tool_calls_log, f"stop_reason={stop_reason}"
+
+        # --- execute tool calls ---
+        tool_results = []
+        for block in content:
+            if block.get("type") != "tool_use":
+                continue
+            tid  = block["id"]
+            name = block["name"]
+            inp  = block.get("input", {})
+
+            result = tool_executor(name, inp)
+            result_str = str(result)[:12000]  # hard cap so context doesn't explode
+
+            tool_calls_log.append({
+                "name": name,
+                "input_summary": str(inp)[:300],
+                "result_summary": result_str[:300],
+            })
+            if on_tool_call:
+                on_tool_call(name, inp, result_str)
+
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": tid,
+                "content": result_str,
+            })
+
+            if name == "done" or result_str == "__DONE__":
+                done_signal = True
+
+        # advance conversation
+        messages.append({"role": "assistant", "content": content})
+        messages.append({"role": "user",      "content": tool_results})
+
+        if done_signal:
+            return final_text, tool_calls_log, None
+
+    return None, tool_calls_log, f"max_tool_rounds ({max_tool_rounds}) reached"
+
+
 if __name__ == "__main__":
     # Quick test
     import sys

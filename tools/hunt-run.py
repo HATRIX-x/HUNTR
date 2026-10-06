@@ -98,22 +98,31 @@ def mark_tested(ep, cls):
 SEVMAP = {"critical": "c", "high": "h", "medium": "m", "low": "l", "info": "i", "unknown": "i"}
 SEVLABEL = {"c": "CRITICAL", "h": "HIGH", "m": "MEDIUM", "l": "LOW", "i": "INFO"}
 
-# Quad-model routing — each role gets the right brain:
-#   LEAD   = phase_llm_lead agentic loop  → Claude Sonnet (best bug intuition, context reasoning)
-#   STRONG = phase_ai_judge + phase_chain → Claude Sonnet (validation + exploit chaining)
-#   CHEAP  = phase_adaptive / phase_ai_direct cell picker → Claude Haiku (high-frequency, cheap)
-#   NVIDIA fallback when ANTHROPIC_API_KEY is absent (original default).
-_have_claude = bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
+# Model routing — Claude via OAuth (llm_auth.py) or API key.
+# Tool-use agentic loop requires Anthropic — falls back to NVIDIA JSON-action loop
+# only when no Anthropic credential is available at all.
+def _resolve_claude_available():
+    """True if any Anthropic credential is present (API key or Claude Code OAuth)."""
+    if os.environ.get("ANTHROPIC_API_KEY", "").strip():
+        return True
+    try:
+        import importlib.util as _il
+        _spec = _il.spec_from_file_location("llm_auth", str(HERE / "llm_auth.py"))
+        _m = _il.module_from_spec(_spec); _spec.loader.exec_module(_m)
+        _, mode = _m.llm_headers()
+        return mode in ("api-key", "claude-account")
+    except Exception:
+        return False
+
+_have_claude = _resolve_claude_available()
 if _have_claude:
     MODEL_LEAD   = {"provider": "anthropic", "model": "claude-sonnet-4-6"}
     MODEL_STRONG = {"provider": "anthropic", "model": "claude-sonnet-4-6"}
     MODEL_CHEAP  = {"provider": "anthropic", "model": "claude-haiku-4-5-20251001"}
 else:
-    # NVIDIA Nemotron fallback — same as the original default
     MODEL_LEAD   = {"provider": "nvidia", "model": "nvidia/nemotron-3-ultra-550b-a55b"}
     MODEL_STRONG = {"provider": "nvidia", "model": "nvidia/nemotron-3-ultra-550b-a55b"}
     MODEL_CHEAP  = {"provider": "nvidia", "model": "nvidia/nemotron-3.5-lightning-30b-a3b"}
-# --llm-light: collapse all roles to Haiku (minimise cost / rate limits)
 if os.environ.get("HUNT_LLM") == "haiku" or "--llm-light" in sys.argv:
     MODEL_LEAD   = MODEL_CHEAP
     MODEL_STRONG = MODEL_CHEAP
@@ -1560,67 +1569,372 @@ def phase_memory_recall():
     flush()
 
 
+def _hunt_tools(authed):
+    """Tool definitions for the agentic lead loop. Claude gets a real shell + HTTP + scanner."""
+    return [
+        {
+            "name": "bash",
+            "description": (
+                "Run any shell command and get stdout+stderr. Use this for everything: "
+                "curl, python3, subfinder, httpx, katana, waybackurls, gau, nuclei, nmap, "
+                "grep, awk, jq, dnsx, ffuf, sqlmap, dalfox. "
+                "The scope guard is your responsibility — do not probe hosts outside the scope list. "
+                "Truncated at 12KB. Use pipes and head/tail to control output size."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Shell command to execute"},
+                    "timeout":  {"type": "integer", "description": "Timeout seconds (default 45, max 180)"}
+                },
+                "required": ["command"]
+            }
+        },
+        {
+            "name": "http_request",
+            "description": (
+                "Make one HTTP request to the target (scope-guarded). "
+                "Returns status, headers, and body excerpt. "
+                "Use bash+curl for multi-request loops or custom payloads instead."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "url":     {"type": "string"},
+                    "method":  {"type": "string", "enum": ["GET","POST","PUT","PATCH","DELETE","HEAD","OPTIONS"], "default": "GET"},
+                    "headers": {"type": "object", "description": "Extra request headers"},
+                    "body":    {"type": "string", "description": "Request body (POST/PUT/PATCH)"}
+                },
+                "required": ["url"]
+            }
+        },
+        {
+            "name": "scan_endpoint",
+            "description": (
+                "Run a deterministic scanner (nuclei / sqlmap / dalfox / custom) against one endpoint "
+                "for a specific vulnerability class. Returns tool-grade findings with proof. "
+                "Use AFTER you have a hypothesis — scanner evidence upgrades a lead to a confirmed finding."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                    "cls": {
+                        "type": "string",
+                        "description": "sqli|xss|ssti|ssrf|cors|redirect|idor|authz|param|race|lfi|rce"
+                    },
+                    "extra_args": {"type": "string", "description": "Extra flags passed verbatim to the scanner"}
+                },
+                "required": ["url", "cls"]
+            }
+        },
+        {
+            "name": "record_finding",
+            "description": (
+                "Record a confirmed vulnerability. Call ONLY when you have OBSERVED evidence "
+                "(response body, status code, reflected payload, tool output). "
+                "Do NOT call this to log a hypothesis — use bash/http_request to confirm first. "
+                "401/403 alone is NOT a finding."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "title":        {"type": "string"},
+                    "severity":     {"type": "string", "enum": ["critical","high","medium","low","info"]},
+                    "cls":          {"type": "string", "description": "sqli|xss|idor|ssrf|rce|ato|cors|ssti|lfi|redirect|logic|info"},
+                    "url":          {"type": "string"},
+                    "evidence":     {"type": "string", "description": "Exact observed evidence: status, body excerpt, payload, tool output"},
+                    "reproduction": {"type": "string", "description": "Step-by-step reproduction (numbered)"},
+                    "cvss":         {"type": "string", "description": "CVSS score if known"}
+                },
+                "required": ["title","severity","cls","url","evidence","reproduction"]
+            }
+        },
+        {
+            "name": "done",
+            "description": "Signal that the hunt is complete for this surface. Call when you have exhausted meaningful attack surface or found everything worth reporting.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string", "description": "What you found and why you're stopping"}
+                },
+                "required": ["summary"]
+            }
+        }
+    ]
+
+
+def _make_tool_executor(tok, tok2, authed, step_counter):
+    """Return a closure that executes hunt tool calls and updates STATE."""
+
+    def executor(name, inp):
+        step = step_counter[0]
+        step_counter[0] += 1
+
+        if name == "bash":
+            cmd = str(inp.get("command", "")).strip()
+            if not cmd:
+                return "ERROR: empty command"
+            timeout = min(int(inp.get("timeout", 45)), 180)
+            log("cmd", "$ " + cmd[:120])
+            out, err, rc = sh(["bash", "-c", cmd], timeout=timeout)
+            combined = (out + err).strip()
+            if len(combined) > 12000:
+                combined = combined[:6000] + "\n…[truncated]…\n" + combined[-2000:]
+            flush()
+            return combined or f"(exit {rc}, no output)"
+
+        elif name == "http_request":
+            url = str(inp.get("url", "")).strip()
+            if not url:
+                return '{"error":"missing url"}'
+            res = _lead_fetch(url, method=str(inp.get("method","GET")),
+                              body=inp.get("body"), headers=inp.get("headers") or {})
+            # register newly discovered endpoints
+            if res.get("ok") and res.get("status") not in (404, None):
+                u = res.get("url") or url
+                if u and not any(u == e["url"] for e in STATE["endpoints"]):
+                    from urllib.parse import urlparse as _up
+                    STATE["endpoints"].append({"url": u, "host": _up(u).netloc})
+                    STATE["stats"]["endpoints"] = len(STATE["endpoints"])
+                _note_gated(u, res.get("status"), step)
+            log("cmd", "$ " + inp.get("method","GET").upper() + " " + url[:90] +
+                " → " + str(res.get("status") or res.get("err",""))[:60])
+            flush()
+            return json.dumps(res, default=str)[:8000]
+
+        elif name == "scan_endpoint":
+            url = str(inp.get("url","")).strip()
+            cls = str(inp.get("cls","")).lower().strip()
+            if not url or not cls:
+                return '{"error":"need url and cls"}'
+            if cls in ("idor","authz") and not authed:
+                return '{"error":"idor/authz need an authenticated session — supply a token/cookie"}'
+            log("cmd", "$ scan_cell [" + cls + "] " + url[:90])
+            before = len(STATE["findings"])
+            try:
+                scan_cell(url, cls, tok, tok2)
+            except Exception as _e:
+                return json.dumps({"error": str(_e)[:200]})
+            newf = STATE["findings"][before:]
+            flush()
+            return json.dumps({
+                "ok": True, "scanned": url, "cls": cls,
+                "new_findings": [{"title": f.get("title"), "sev": f.get("sev"),
+                                  "cls": f.get("cls"), "verdict": f.get("verdict")} for f in newf]
+            })
+
+        elif name == "record_finding":
+            title = str(inp.get("title","")).strip()
+            evidence = str(inp.get("evidence","")).strip()
+            url = str(inp.get("url","")).strip()
+            if not title or not evidence or not url:
+                return '{"error":"title, evidence, and url are required"}'
+            if len(evidence) < 20:
+                return '{"error":"evidence too thin — describe exactly what you observed"}'
+            sev_map = {"critical":"c","high":"h","medium":"m","low":"l","info":"i"}
+            sev = sev_map.get(str(inp.get("severity","medium")).lower(), "m")
+            add_finding(sev, title, evidence, url,
+                        cvss=str(inp.get("cvss","")),
+                        cls=str(inp.get("cls","")),
+                        verdict="agent", det=False)
+            # store repro in finding
+            for f in STATE["findings"]:
+                if f.get("title") == title and not f.get("steps"):
+                    f["steps"] = str(inp.get("reproduction",""))[:1000]
+            log("ok", "★ finding recorded: [" + sev.upper() + "] " + title[:100])
+            flush()
+            return json.dumps({"ok": True, "recorded": title,
+                               "note": "run scan_endpoint on it for tool-grade proof if not already done"})
+
+        elif name == "done":
+            summary = str(inp.get("summary","")).strip()
+            log("ok", "✓ agent done: " + summary[:200])
+            STATE.setdefault("lead_results",[]).append({"action":"done","summary":summary[:400]})
+            flush()
+            return "__DONE__"
+
+        return json.dumps({"error": f"unknown tool: {name}"})
+
+    return executor
+
+
 def phase_llm_lead(deadline, share=0.70, max_steps=120):
-    """THE AGENT LOOP — the LLM leads the hunt instead of being asked for a pick from a fixed list.
+    """THE AGENT LOOP — Claude leads the hunt with REAL tool access.
 
-    Every round it reads the real state and chooses ONE action from a real action space, gets a real
-    scope-gated response back, and decides again from what actually happened. That feedback loop is
-    the difference between an agent and a scripted pipeline: it can read a 401 and pivot, notice a
-    leaked JSON key, open a spec, follow a redirect, then declare a finding with the evidence it saw.
+    Architecture: multi-turn Anthropic tool-use conversation (same as Claude Code).
+    Claude gets bash, http_request, scan_endpoint, record_finding, done.
+    Every tool call executes synchronously and feeds raw output back into the next
+    message — no JSON-action dispatch layer, no subprocess boundary, no pre-digested
+    snapshots. Claude reads JS, follows redirects, enumerates Supabase tables, chains
+    from recon to exploitation, all in one continuous reasoning thread.
 
-    Actions: probe · request · test (deterministic scanner) · remember · finding · done.
-    Runs in every mode — black box included, which is where the previous engine was effectively blind."""
+    Falls back to legacy JSON-action loop if OAuth/API key unavailable (NVIDIA path)."""
     if not STATE["endpoints"]:
-        log("warn", "→ LLM-led loop skipped: no mapped surface to operate on")
+        log("warn", "→ LLM-led loop skipped: no mapped surface")
         return
     if deadline is None:
         return
+
     span = max(0.0, deadline - time.time())
-    lead_deadline = time.time() + max(30.0, min(span * share, 240.0))
+    lead_budget = max(30.0, min(span * share, span - 30))
+    lead_deadline = time.time() + lead_budget
+
     c = _creds()
-    tok = (c.get("session_token") or "").strip()
+    tok  = (c.get("session_token") or "").strip()
     tok2 = (c.get("token2") or "").strip()
     authed = (MODE != "black") and bool(tok)
+
     STATE.setdefault("lead_results", [])
     STATE.setdefault("leads", [])
     stage("LLM-led", 86)
-    log("ok", "◆ LLM-led loop · the model chooses the next action each round (max " + str(max_steps) + ")")
+
+    # Detect whether we have Claude tool-use capability
+    _use_tool_loop = (MODEL_LEAD.get("provider") == "anthropic")
+
+    if _use_tool_loop:
+        _phase_llm_lead_tool_use(lead_deadline, tok, tok2, authed, max_steps)
+    else:
+        _phase_llm_lead_json(lead_deadline, tok, tok2, authed, max_steps)
+
+    log("ok", "✓ LLM-led · " + str(len(STATE.get("lead_log",[]))) + " action(s) · " +
+        str(len(STATE["findings"])) + " finding(s) so far")
+    flush()
+    stage("LLM-led", 94)
+
+
+def _phase_llm_lead_tool_use(lead_deadline, tok, tok2, authed, max_steps):
+    """Real tool-use agentic loop — Claude has bash, http, scanner, finding tools."""
+    log("ok", "◆ tool-use agent loop · Claude has bash + HTTP + scanner access")
+
+    digest = _lead_digest()
+    scope_summary = ", ".join(sorted(set(
+        e.get("host", "") for e in STATE["endpoints"]
+    )))[:400]
+    creds_hint = ""
+    if tok:
+        creds_hint = f"\nAuthenticated: YES (session token available). Use it in Authorization/Cookie headers."
+    else:
+        creds_hint = "\nAuthenticated: NO — black-box mode. Focus on unauthenticated surface."
 
     sys_p = (
-        "You are the LEAD BUG BOUNTER on target " + str(TARGET) + ". The deterministic scanner has already mapped "
-        "surface and coverage; YOU decide what happens next, one action per reply, until you stop.\n"
-        "You get: mapped endpoints, findings, untested cells, recorded leads, and the REAL results of "
-        "your last actions. Read them — they are ground truth, not theory.\n"
-        "You also get \"playbook\": sections retrieved from our skill library for what you are looking at "
-        "right now, and \"past_situations\": the closest analogous situation from every hunt we have "
-        "ever run (with what it paid). Apply that technique first instead of guessing.\n"
-        "Never repeat an action you already tried with the same arguments.\n"
-        "Reply STRICT JSON only. Actions:\n"
-        '{"action":"probe","path":"/path"}          → cheap status check; use it to enumerate/discover\n'
-        '{"action":"request","method":"GET|POST","url":"http://…","headers":{},"body":"…"}  → full request\n'
-        '{"action":"test","endpoint":"http://…","class":"sqli|xss|ssti|ssrf|cors|redirect|idor|authz|param|race"}\n'
-        '                                        → run a deterministic scanner for tool-grade proof\n'
-        '{"action":"remember","lead":"hypothesis","endpoint":"…"} → keep a lead for later rounds\n'
-        '{"action":"finding","severity":"c|h|m|l","title":"…","cls":"…","endpoint":"…","detail":"evidence you saw","steps":"repro"}\n'
-        '{"action":"done","summary":"…"}\n'
-        "Rules: report a finding ONLY when you observed the evidence yourself (or a tool confirmed it). "
-        "401/403 is a lead (route exists → needs a session), not a vulnerability. Prefer `test` once you "
-        "believe a bug — tool evidence beats your inference. If surface is thin, discover first. "
-        "Set done=true when you are confident nothing on this surface is left worth your time."
+        f"You are an elite bug bounty hunter. Your target is: {TARGET}\n"
+        f"In-scope hosts: {scope_summary}{creds_hint}\n\n"
+        "You have real shell access via the bash tool. Use it exactly as you would in a terminal:\n"
+        "  - curl, python3, subfinder, httpx, katana, waybackurls, gau, nuclei, sqlmap, dalfox, ffuf, jq\n"
+        "  - Read JS files to extract API endpoints, keys, and business logic\n"
+        "  - Enumerate subdomains, discover hidden routes, test auth flows\n"
+        "  - Chain discoveries: see a Supabase URL → test tables; find a JWT → test alg:none; "
+        "find an upload endpoint → test path traversal\n\n"
+        "METHODOLOGY:\n"
+        "1. Map the full surface first (subdomains, JS analysis, endpoint enumeration)\n"
+        "2. Identify interesting targets (auth, payments, admin, upload, API keys in JS)\n"
+        "3. Attack with precision: hypothesis → test → verify → record_finding\n"
+        "4. Only call record_finding when you have OBSERVED evidence (response body, tool output)\n"
+        "5. Run scan_endpoint to get tool-grade proof before submitting\n\n"
+        "You also have playbook sections from our skill library for the current surface — use them.\n"
+        "Think step by step. Be creative. Go deep. This is a real hunt."
     )
 
-    # rebuild the no-repeat set from persisted results so a resumed hunt doesn't redo its own work
+    skill_data = _skill_pick({
+        "untested_cells": digest.get("untested_cells", []),
+        "findings": STATE["findings"][:8],
+        "endpoints": [e["url"] for e in STATE["endpoints"][:20]],
+        "target": TARGET,
+    })
+    playbook_text = ""
+    if skill_data:
+        playbook_text = "\n\n## Skill Playbook\n" + "\n---\n".join(
+            f"### {s['skill']} — {s['heading']}\n{s['gist']}" for s in skill_data
+        )
+
+    initial_user = (
+        "## Hunt State\n" +
+        json.dumps(digest, default=str, indent=2)[:6000] +
+        playbook_text +
+        "\n\nBegin the hunt. Map the surface, discover vulnerabilities, and report findings."
+    )
+
+    step_counter = [0]
+    executor = _make_tool_executor(tok, tok2, authed, step_counter)
+
+    def on_tool_call(name, inp, result):
+        step = step_counter[0]
+        STATE["stage"] = f"agent·{name}·{step}"
+        STATE["pct"] = min(93, 86 + int(step / max(1, max_steps) * 7))
+        STATE.setdefault("lead_log", []).append({
+            "step": step, "act": name,
+            "ok": not result.startswith("ERROR") and not result.startswith('{"error"'),
+            "detail": result[:100]
+        })
+        STATE["lead_log"] = STATE["lead_log"][-120:]
+        # respect budget
+        if time.time() > lead_deadline:
+            raise TimeoutError("lead budget exceeded")
+
+    tools = _hunt_tools(authed)
+
+    try:
+        final_text, tool_log, err = llm_client.call_llm_with_tools(
+            system=sys_p,
+            initial_user=initial_user,
+            tools=tools,
+            tool_executor=executor,
+            model=MODEL_LEAD.get("model", "claude-sonnet-4-6"),
+            max_tokens=4096,
+            timeout=120,
+            on_tool_call=on_tool_call,
+            max_tool_rounds=max_steps,
+        )
+    except TimeoutError:
+        log("warn", "⏱ tool-use agent budget reached")
+        return
+    except Exception as _e:
+        log("warn", "→ tool-use agent error: " + str(_e)[:200])
+        return
+
+    if err and not tool_log:
+        log("warn", "→ tool-use agent failed: " + str(err)[:200] +
+            " — falling back to JSON-action loop")
+        _phase_llm_lead_json(lead_deadline, tok, tok2, authed, max_steps)
+        return
+
+    if err:
+        log("warn", "→ tool-use agent ended with: " + str(err)[:120])
+
+    STATE["lead_results"].append({
+        "action": "tool_loop_complete",
+        "tool_calls": len(tool_log),
+        "findings_added": sum(1 for t in tool_log if t["name"] == "record_finding"),
+    })
+
+
+def _phase_llm_lead_json(lead_deadline, tok, tok2, authed, max_steps):
+    """Legacy JSON-action dispatch loop — used for NVIDIA/non-Anthropic providers."""
+    log("ok", "◆ LLM-led loop (JSON mode) · max " + str(max_steps) + " steps")
     tried = set()
     for _r in STATE.get("lead_results", []):
         if isinstance(_r.get("k"), list):
             tried.add(tuple(_r["k"]))
-    stale = 0        # model returned something we could not parse
-    transport = 0    # provider never returned at all (503/timeout) — a reason to wait, not to quit
+    stale = 0
+    transport = 0
+
+    sys_p = (
+        "You are the LEAD BUG BOUNTER on target " + str(TARGET) + ". Reply STRICT JSON only.\n"
+        'Actions: {"action":"probe","path":"/path"} | '
+        '{"action":"request","method":"GET","url":"…","headers":{},"body":"…"} | '
+        '{"action":"test","endpoint":"…","class":"sqli|xss|ssti|ssrf|cors|redirect|idor|authz"} | '
+        '{"action":"remember","lead":"…","endpoint":"…"} | '
+        '{"action":"finding","severity":"c|h|m|l","title":"…","cls":"…","endpoint":"…","detail":"…","steps":"…"} | '
+        '{"action":"done","summary":"…"}\n'
+        "Only report findings you OBSERVED. 401/403 is a lead, not a vuln."
+    )
+
     for step in range(max_steps):
         if time.time() > lead_deadline:
             log("warn", "⏱ LLM-led loop budget reached at step " + str(step))
             break
-        check_pause()          # a 429 mid-loop pauses the hunt here, coverage already flushed
+        check_pause()
         STATE["stage"] = "LLM-led " + str(step + 1)
         STATE["pct"] = min(94, 86 + int(step / max(1, max_steps) * 8))
         flush()
@@ -1629,68 +1943,58 @@ def phase_llm_lead(deadline, share=0.70, max_steps=120):
         plan = llm_json(sys_p, usr, max_tokens=1500, timeout=90, _model=MODEL_LEAD)
         if plan is None:
             transport += 1
-            log("warn", "→ LLM-led round " + str(step) + " no reply from provider [" +
-                str(_LLM_LAST_ERR.get("e"))[:150] + "] — " + str(transport) + "/6")
+            log("warn", "→ LLM-led round " + str(step) + " no reply [" +
+                str(_LLM_LAST_ERR.get("e"))[:120] + "] — " + str(transport) + "/6")
             if transport >= 6:
-                log("warn", "→ LLM-led loop stopping (provider unavailable after retries)")
                 break
             time.sleep(min(30, 5 * transport))
             continue
         transport = 0
         if not isinstance(plan, dict):
             stale += 1
-            log("warn", "→ LLM-led round " + str(step) + " non-JSON (" + type(plan).__name__ +
-                "): " + str(plan)[:240])
             if stale >= 3:
-                log("warn", "→ LLM-led loop stopping (unparseable replies)")
                 break
             continue
         stale = 0
         act = (plan.get("action") or "").lower().strip()
-        cur_key = None
         if act in ("done", "stop"):
-            log("ok", "✓ LLM-led loop · agent stopped: " + str(plan.get("summary", ""))[:150])
-            STATE["lead_results"].append({"step": step, "action": "done",
-                                          "summary": str(plan.get("summary", ""))[:200]})
+            log("ok", "✓ agent stopped: " + str(plan.get("summary",""))[:150])
+            STATE["lead_results"].append({"step":step,"action":"done","summary":str(plan.get("summary",""))[:200]})
             break
         res = None
+        cur_key = None
 
         if act == "probe":
             path = str(plan.get("path") or plan.get("url") or "/").strip()
             if not path.startswith("http"):
-                path = "http://" + TARGET.split("/")[0] + ("/" + path.lstrip("/") if path.startswith("/") else "/" + path)
+                path = "http://" + TARGET.split("/")[0] + "/" + path.lstrip("/")
             key = ("probe", path)
             if key in tried:
-                res = {"ok": False, "err": "already tried this probe — pick a different path"}
+                res = {"ok": False, "err": "already tried"}
             else:
-                tried.add(key)
-                cur_key = key
+                tried.add(key); cur_key = key
                 res = _lead_fetch(path)
-                if isinstance(res, dict):
-                    res["k"] = list(key)
+                if isinstance(res, dict): res["k"] = list(key)
                 if res.get("ok") and res.get("status") not in (404, None):
                     u = res.get("url")
                     if u and not any(u == e["url"] for e in STATE["endpoints"]):
                         from urllib.parse import urlparse as _up
                         STATE["endpoints"].append({"url": u, "host": _up(u).netloc})
                         STATE["stats"]["endpoints"] = len(STATE["endpoints"])
-                    if _note_gated(u or path, res.get("status"), step):
-                        log("out", "⚿ gated (" + str(res.get("status")) + ") → " + str(u or path)[:110]
-                                   + "  [needs a session]")
-                log("cmd", "$ probe " + path + " → " + str(res.get("status") or res.get("err", ""))[:90])
+                    _note_gated(u or path, res.get("status"), step)
+                log("cmd", "$ probe " + path + " → " + str(res.get("status") or res.get("err",""))[:80])
 
         elif act == "request":
             url = str(plan.get("url") or "").strip()
             if not url:
                 res = {"ok": False, "err": "missing url"}
             else:
-                key = ("req", str(plan.get("method", "GET")).upper(), url, str(plan.get("body") or "")[:80])
+                key = ("req", str(plan.get("method","GET")).upper(), url, str(plan.get("body") or "")[:80])
                 if key in tried:
-                    res = {"ok": False, "err": "already sent this exact request — vary it"}
+                    res = {"ok": False, "err": "already sent"}
                 else:
-                    tried.add(key)
-                    cur_key = key
-                    res = _lead_fetch(url, method=str(plan.get("method", "GET")),
+                    tried.add(key); cur_key = key
+                    res = _lead_fetch(url, method=str(plan.get("method","GET")),
                                       body=plan.get("body"), headers=plan.get("headers") or {})
                     if res.get("ok"):
                         ep = str(plan.get("endpoint") or url).split("?")[0]
@@ -1698,11 +2002,9 @@ def phase_llm_lead(deadline, share=0.70, max_steps=120):
                             from urllib.parse import urlparse as _up
                             STATE["endpoints"].append({"url": ep, "host": _up(ep).netloc})
                             STATE["stats"]["endpoints"] = len(STATE["endpoints"])
-                        if _note_gated(res.get("url") or url, res.get("status"), step):
-                            log("out", "⚿ gated (" + str(res.get("status")) + ") → " +
-                                       str(res.get("url") or url)[:110] + "  [needs a session]")
-                    log("cmd", "$ " + str(plan.get("method", "GET")).upper() + " " + url[:90] +
-                        " → " + str(res.get("status") or res.get("err", ""))[:70])
+                        _note_gated(res.get("url") or url, res.get("status"), step)
+                    log("cmd", "$ " + str(plan.get("method","GET")).upper() + " " + url[:80] +
+                        " → " + str(res.get("status") or res.get("err",""))[:60])
 
         elif act == "test":
             ep = str(plan.get("endpoint") or "").strip()
@@ -1712,40 +2014,27 @@ def phase_llm_lead(deadline, share=0.70, max_steps=120):
             else:
                 key = ("test", ep, cls)
                 if key in tried:
-                    res = {"ok": False, "err": "already tested that cell — choose a different one"}
+                    res = {"ok": False, "err": "already tested"}
                 else:
-                    tried.add(key)
-                    cur_key = key
-                    if cls in ("idor", "authz") and not authed:
-                        res = {"ok": False, "err": "idor/authz need a session (none configured) — remember it as a lead instead"}
-                        STATE.setdefault("leads", [])
-                        if not any(l.get("endpoint") == ep and "session" in str(l.get("lead", ""))
-                                   for l in STATE["leads"]):
-                            STATE["leads"].append({
-                                "lead": (cls + " cell is untestable without a session — supply a "
-                                         "token/cookie, or re-run in an authenticated mode"),
-                                "endpoint": ep, "step": step, "source": "test"})
-                            STATE["leads"] = STATE["leads"][-60:]
+                    tried.add(key); cur_key = key
+                    if cls in ("idor","authz") and not authed:
+                        res = {"ok": False, "err": "needs session"}
                     else:
-                        log("cmd", "$ agent → scan_cell [" + cls + "] " + ep[:90])
+                        log("cmd", "$ scan_cell [" + cls + "] " + ep[:80])
                         before = len(STATE["findings"])
                         try:
                             scan_cell(ep, cls, tok, tok2)
                         except Exception as _e:
-                            res = {"ok": False, "err": "scanner errored: " + str(_e)[:120]}
+                            res = {"ok": False, "err": str(_e)[:100]}
                         else:
                             newf = STATE["findings"][before:]
-                            res = {"ok": True, "scanned": ep, "class": cls,
-                                   "tested": sorted(TESTED.get(ep, set())),
-                                   "new_findings": [{"title": f.get("title"), "sev": f.get("sev"),
-                                                     "verdict": f.get("verdict"), "cls": f.get("cls")}
-                                                    for f in newf]}
+                            res = {"ok": True, "scanned": ep, "cls": cls,
+                                   "new_findings": [{"title": f.get("title"), "sev": f.get("sev")} for f in newf]}
 
         elif act == "remember":
             lead = str(plan.get("lead") or "").strip()
             if lead:
-                STATE["leads"].append({"lead": lead, "endpoint": str(plan.get("endpoint") or ""),
-                                       "step": step})
+                STATE["leads"].append({"lead": lead, "endpoint": str(plan.get("endpoint") or ""), "step": step})
                 STATE["leads"] = STATE["leads"][-60:]
                 res = {"ok": True, "recorded": lead[:160]}
             else:
@@ -1755,21 +2044,12 @@ def phase_llm_lead(deadline, share=0.70, max_steps=120):
             title = str(plan.get("title") or "").strip()
             detail = str(plan.get("detail") or plan.get("evidence") or "").strip()
             endpoint = str(plan.get("endpoint") or plan.get("url") or "").strip()
-            if not title:
-                res = {"ok": False, "err": "missing title"}
-            elif not detail or len(detail) < 20:
-                res = {"ok": False, "err": "missing evidence — describe exactly what you observed "
-                                            "(status, body excerpt, reflected payload). "
-                                            "If you have not SEEN it, use action=test instead of action=finding."}
-            elif not endpoint:
-                res = {"ok": False, "err": "missing endpoint — a finding needs the URL it was observed on"}
+            if not title or len(detail) < 20 or not endpoint:
+                res = {"ok": False, "err": "missing title/evidence/endpoint"}
             else:
                 sev = str(plan.get("severity") or plan.get("sev") or "m")
-                add_finding(sev, title, detail, endpoint, cls=str(plan.get("cls") or ""),
-                            verdict="", det=False)
-                res = {"ok": True, "accepted": title[:160],
-                       "note": "reported as a lead-strength finding; run action=test on it for tool-grade proof"}
-
+                add_finding(sev, title, detail, endpoint, cls=str(plan.get("cls") or ""), verdict="", det=False)
+                res = {"ok": True, "accepted": title[:160]}
         else:
             res = {"ok": False, "err": "unknown action '" + str(act) + "'"}
 
@@ -1779,16 +2059,11 @@ def phase_llm_lead(deadline, share=0.70, max_steps=120):
                 res["k"] = list(cur_key)
             STATE["lead_results"].append(res)
             STATE["lead_results"] = STATE["lead_results"][-40:]
-            STATE["lead_log"] = STATE.get("lead_log", []) + [{
+            STATE.setdefault("lead_log", []).append({
                 "step": step, "act": act, "ok": res.get("ok"),
-                "detail": str(res.get("status") or res.get("err") or res.get("note") or "")[:100]}]
+                "detail": str(res.get("status") or res.get("err") or res.get("note") or "")[:100]})
             STATE["lead_log"] = STATE["lead_log"][-80:]
             flush()
-
-    log("ok", "✓ LLM-led loop · " + str(len(STATE.get("lead_log", []))) + " action(s) · " +
-        str(len(STATE["findings"])) + " finding(s) so far")
-    flush()
-    stage("LLM-led", 94)
 
 
 def phase_adaptive(deadline, max_cells=200):
