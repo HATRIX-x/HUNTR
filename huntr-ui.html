@@ -182,6 +182,8 @@ button,input,select,textarea{font-family:inherit;}
 #adv-btn.on .adv-chev{transform:rotate(180deg);}
 #adv-panel{display:none;flex-direction:column;gap:14px;padding:18px;background:var(--surface);border:1px solid var(--border);border-radius:12px;}
 #adv-panel.on{display:flex;}
+.adv-head{font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--text3);margin-bottom:-2px;}
+.adv-mode-note{font-weight:400;text-transform:none;letter-spacing:0;color:var(--text3);opacity:.75;}
 .f-checks{display:flex;gap:26px;}
 .f-check{display:flex;align-items:center;gap:8px;}
 .f-check input{width:15px;height:15px;accent-color:var(--accent);cursor:pointer;}
@@ -599,7 +601,7 @@ button,input,select,textarea{font-family:inherit;}
         </div>
         <div class="f-group narrow">
           <span class="f-label">Mode</span>
-          <input type="hidden" id="f-mode" value="grey">
+          <input type="hidden" id="f-mode" value="grey" onchange="updateModeUI()">
           <div class="f-dd" id="f-mode-dd">
             <button type="button" class="f-dd-btn" onclick="ddToggle(event,'f-mode-dd')">
               <span class="f-dd-val">Grey box</span><span class="f-dd-chev">▾</span>
@@ -614,10 +616,11 @@ button,input,select,textarea{font-family:inherit;}
       </div>
       <div class="sv-actions">
         <button id="hunt-btn" onclick="startHunt()"><span class="btn-ico">⚡</span>Start hunt</button>
-        <button id="intake-btn" onclick="smartIntake()" title="Optional: let the AI read the full program page for rewards, rules, caps & a clean summary (the scope above is already parsed)"><span class="btn-ico">✦</span>AI enrich</button>
       </div>
-      <button id="adv-btn" onclick="toggleAdv()"><span>Advanced options</span><span class="adv-chev">▾</span></button>
+      <!-- Credentials: shown automatically only for Grey/White box (modes that use
+           creds); hidden for Black box, which hunts with no credentials. -->
       <div id="adv-panel">
+        <div class="adv-head">Credentials &amp; run options <span class="adv-mode-note" id="adv-mode-note"></span></div>
         <div class="f-row">
           <div class="f-group">
             <span class="f-label">Auth token</span>
@@ -823,6 +826,31 @@ async function scopePreview(){
   const sc=r&&r.scope;
   if(!sc){ pv.innerHTML='<div class="sp-head"><span class="sp-spin">couldn’t parse — is the engine up?</span></div>'; return; }
   renderScopePreview(sc);
+  maybeAutoEnrich(sc, raw);           // a full program page auto-enriches (no button)
+}
+
+// When a whole program page is pasted, the AI enrich runs automatically in the
+// background (once per distinct paste) to pull rewards/rules/caps/policy — no
+// manual button. Degrades silently if the model is unavailable/rate-limited.
+let _enrichedHash=null, _enriching=false;
+async function maybeAutoEnrich(sc, raw){
+  if(!sc || sc.shape!=='program_page' || !(sc.targets||[]).length) return;
+  if(_enriching || _enrichedHash===sc.source_hash) return;
+  _enriching=true;
+  const pv=document.getElementById('scope-preview');
+  const n0=document.createElement('div'); n0.className='sp-foot'; n0.id='sp-enriching';
+  n0.textContent='⌻ AI reading the program page for rewards, rules & caps…';
+  pv.appendChild(n0);
+  let r=null; try{ r=await apiLong('/api/scope/parse',{text:raw}); }catch(e){}   // enrich on (default)
+  _enriching=false;
+  const es=r&&r.scope;
+  const cur=(document.getElementById('scope-ta').value||'').trim();
+  if(!es || cur!==raw){ const n=document.getElementById('sp-enriching'); if(n) n.remove(); return; }
+  _enrichedHash=es.source_hash;
+  S.intake=es;                                    // carry full program context into the hunt
+  const pf=document.getElementById('f-prog');
+  if(pf && !pf.value.trim() && es.program) pf.value=es.program;   // auto-fill program name
+  renderScopePreview(es);                         // show enriched chips + ✦ AI-enriched badge
 }
 function renderScopePreview(sc){
   const pv=document.getElementById('scope-preview');
@@ -1473,10 +1501,14 @@ function copyReport(idx){
 }
 
 /* ─── advanced ─── */
-function toggleAdv(){
-  S.advOpen=!S.advOpen;
-  document.getElementById('adv-panel').classList.toggle('on',S.advOpen);
-  document.getElementById('adv-btn').classList.toggle('on',S.advOpen);
+// Credentials panel is shown automatically for the modes that actually use creds
+// (Grey/White box) and hidden for Black box — no manual "Advanced" toggle.
+function updateModeUI(){
+  const mode=(document.getElementById('f-mode')||{}).value||'grey';
+  const show=(mode==='grey'||mode==='white');
+  document.getElementById('adv-panel').classList.toggle('on',show);
+  const note=document.getElementById('adv-mode-note');
+  if(note) note.textContent=show?'· '+mode+' box uses credentials':'';
 }
 /* ─── custom dropdown ─── */
 function ddToggle(ev,id){
@@ -2174,6 +2206,7 @@ function timeAgo(ts){
 }
 
 boot(true);   // initial load: auto-resume a live hunt. showScope()/New-hunt calls boot() (no auto-resume).
+updateModeUI();   // show/hide the credentials panel based on the default mode (grey)
 </script>
 </body>
 </html>

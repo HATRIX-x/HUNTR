@@ -21,10 +21,12 @@ test.describe('dashboard loads and renders', () => {
     expect(consoleErrors, `console errors on load:\n${consoleErrors.join('\n')}`).toEqual([]);
   });
 
-  test('advanced (auth) panel toggles open', async ({ page }) => {
+  test('credentials panel is shown by default (grey box), no toggle needed', async ({ page }) => {
     await page.goto('/');
-    await page.locator('#adv-btn').click();
+    // no "Advanced options" toggle; creds show automatically for the default grey mode
+    await expect(page.locator('#adv-btn')).toHaveCount(0);
     await expect(page.locator('#adv-panel')).toBeVisible();
+    await expect(page.locator('#f-tok')).toBeVisible();   // auth token field
   });
 });
 
@@ -67,6 +69,32 @@ test.describe('live scope preview (deterministic, as-you-type)', () => {
     await expect(page.locator('#scope-preview')).toContainText('*.acme.com');
     await page.fill('#scope-ta', '');
     await expect(page.locator('#scope-preview')).toContainText('parsed here');
+  });
+
+  test('there is no manual AI-enrich button (enrich is automatic)', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('#intake-btn')).toHaveCount(0);
+    await expect(page.locator('#hunt-btn')).toBeVisible();   // the single primary action
+  });
+});
+
+test.describe('credentials panel is mode-gated (no "Advanced" toggle)', () => {
+  test('shown for Grey/White box, hidden for Black box', async ({ page }) => {
+    await page.goto('/');
+    const creds = page.locator('#adv-panel');
+    // no "Advanced options" toggle anymore
+    await expect(page.locator('#adv-btn')).toHaveCount(0);
+    // default mode is Grey box -> credentials visible
+    await expect(creds).toBeVisible();
+    await expect(creds).toContainText('Auth token');
+
+    // switch to Black box (via the dropdown's own pick handler) -> credentials hidden
+    await page.evaluate(() => (window as any).ddPick('f-mode-dd', 'black', 'Black box'));
+    await expect(creds).toBeHidden();
+
+    // switch to White box -> credentials visible again
+    await page.evaluate(() => (window as any).ddPick('f-mode-dd', 'white', 'White box'));
+    await expect(creds).toBeVisible();
   });
 });
 

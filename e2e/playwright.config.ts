@@ -80,5 +80,8 @@ export default defineConfig({
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,
     cwd: __dirname,
+    // Disable LLM creds so /api/scope/parse (and the auto-enrich) stay deterministic
+    // and fast in tests — no live model call, no rate-limit dependency.
+    env: { ...process.env, HUNT_CLAUDE_CREDS: '/nonexistent/creds.json', ANTHROPIC_API_KEY: '' },
   },
 });
