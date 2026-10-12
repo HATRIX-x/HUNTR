@@ -44,6 +44,23 @@ tests + Playwright and exits non-zero on any failure. CI enforces it.
 
 ---
 
+## Phase 1.5 — Deterministic scope intake  (prerequisite for autonomy)
+*The intake was a client-side, LLM-only, button-dependent coin flip: "Confirm &
+summarize" ran an LLM parse, while "Start hunt" on a raw page fed the whole page
+to hunt-run.py --target, which whitespace-split it into hundreds of junk assets.
+Autonomy is impossible if step one is that unreliable.*
+
+- ☑ `tools/scope_ingest.py`: one pipeline — detect shape → **deterministic** asset
+  extract (hosts/URLs/CIDRs/repos, typed web/api/mobile/source, in/out-of-scope
+  split) → optional LLM enrich of metadata only (rewards/rules/caps, and only when
+  creds exist) → canonicalize/dedup → persist `scope.allow`/`scope.deny`/`program.json`.
+- ☑ Wired `/api/scope/parse` and `/api/hunt/start` through it, so a pasted page
+  never reaches `hunt-run.py --target` as raw text again.
+  - Verified (`tests/test_scope_ingest.py` 9 + server integration): a full program
+    page yields exactly the real assets, correctly typed and in/out-split, with
+    **zero prose junk** — no LLM needed. Live run confirmed LLM enrich fills
+    metadata while the asset list stays deterministic.
+
 ## Phase 1 — Outcome-labeled corpus  (axis: Learning loop / data moat)
 *Why second: cheapest high-leverage moat; the funnel data already exists, just
 not fed back. Turns "we submitted X" (XBOW) into "X got paid/rejected" (us).*

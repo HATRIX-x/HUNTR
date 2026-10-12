@@ -541,11 +541,14 @@ class H(BaseHTTPRequestHandler):
         if b.get("__too_large__"):
             return self._send({"ok": False, "error": "request too large"}, 413)
         t = b.get("target")
-        if u.path == "/api/scope/parse":  # POST {text} — AI-organize a pasted program page into a clean scope
+        if u.path == "/api/scope/parse":  # POST {text} — deterministic scope extract + optional LLM enrich
             text = b.get("text") or ""
             if not text.strip():
                 return self._send({"ok": False, "error": "no text"}, 400)
-            r = run("scope-parse.py", ["--json"], stdin=text, timeout=100)
+            # scope_ingest extracts the asset list deterministically (reliable, instant)
+            # and enriches rewards/rules/etc with the LLM only when creds exist — so the
+            # scope is correct even if the model is down/rate-limited.
+            r = run("scope_ingest.py", ["--json"], stdin=text, timeout=100)
             try:
                 parsed = json.loads((r.get("out") or "").strip().splitlines()[-1])
             except Exception:
@@ -556,7 +559,35 @@ class H(BaseHTTPRequestHandler):
                 # Whitespace-only used to collapse via safe() to the shared
                 # "default" workspace and silently start a real hunt there.
                 return self._send({"ok": False, "error": "no target"}, 400)
+            # If a whole program page was pasted, deterministically extract the real
+            # scope here instead of handing the page text to hunt-run.py --target
+            # (which whitespace-splits it into hundreds of junk "assets"). Runs
+            # without the LLM so Start is fast and reliable; the structured scope is
+            # persisted below as the single source of truth.
+            _scope_obj = None
+            if ("\n" in t) or (len(t) > 120) or (len(t.split()) > 6):
+                try:
+                    import importlib.util as _ilu
+                    _spec = _ilu.spec_from_file_location("scope_ingest", str(TOOLS / "scope_ingest.py"))
+                    _si = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_si)
+                    _scope_obj = _si.ingest(t, enrich=False)
+                    if _scope_obj.get("targets"):
+                        t = ",".join(_scope_obj["targets"])  # clean asset list, not the page
+                    else:
+                        _scope_obj = None
+                except Exception:
+                    _scope_obj = None
             hd = hunt_dir(t)
+            if _scope_obj:  # persist the canonical scope the hunt will read
+                try:
+                    hd.mkdir(parents=True, exist_ok=True)
+                    if _scope_obj.get("allow"):
+                        (hd / "scope.allow").write_text("\n".join(_scope_obj["allow"]) + "\n")
+                    if _scope_obj.get("deny"):
+                        (hd / "scope.deny").write_text("\n".join(_scope_obj["deny"]) + "\n")
+                    (hd / "program.json").write_text(json.dumps(_scope_obj, indent=2))
+                except Exception:
+                    pass
             # Idempotent start: if a live hunt already owns this target, adopt it
             # instead of forking a duplicate hunt-run.py that races on the same
             # run.json/run.pid (double-click, client retry, or a second tab).

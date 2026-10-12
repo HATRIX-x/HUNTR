@@ -46,7 +46,10 @@ class ServerHardening(unittest.TestCase):
     def setUpClass(cls):
         cls.port = _free_port()
         cls.home = tempfile.mkdtemp(prefix="huntr-test-home-")
-        env = dict(os.environ, HUNTR_HOME=cls.home)
+        # Disable LLM creds so /api/scope/parse stays deterministic + fast in tests
+        # (no live model call / no rate-limit dependency).
+        env = dict(os.environ, HUNTR_HOME=cls.home, HUNT_CLAUDE_CREDS="/nonexistent/creds.json")
+        env.pop("ANTHROPIC_API_KEY", None)
         cls.proc = subprocess.Popen(
             [sys.executable, str(SERVER), "--port", str(cls.port)],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, cwd=str(REPO),
@@ -107,6 +110,19 @@ class ServerHardening(unittest.TestCase):
         st, _ = _req("GET", self.base + "/api/hunt/status?target=" + ("A" * 100_000))
         self.assertGreaterEqual(st, 400)   # 414 from stdlib; must not be a crash/5xx
         self.assertLess(st, 500)
+
+    def test_scope_parse_extracts_assets_deterministically(self):
+        page = ("In scope:\n*.acme.com\napi.acme.com\n\n"
+                "Out of scope:\nlegacy.acme.com\nRewards: Critical $5000. PoC required.")
+        st, body = _req("POST", self.base + "/api/scope/parse", body={"text": page})
+        self.assertEqual(st, 200)
+        sc = json.loads(body)["scope"]
+        in_assets = {a["asset"] for a in sc["in_scope"]}
+        self.assertIn("*.acme.com", in_assets)
+        self.assertIn("api.acme.com", in_assets)
+        self.assertIn("legacy.acme.com", {o["asset"] for o in sc["out_of_scope"]})
+        # prose never becomes scope
+        self.assertFalse(any("critical" in a for a in in_assets))
 
     def test_no_server_traceback_leaked(self):
         # After all the malformed probes above run in the suite, a 400 body must be a
