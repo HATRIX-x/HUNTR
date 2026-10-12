@@ -66,12 +66,17 @@ not fed back. Turns "we submitted X" (XBOW) into "X got paid/rejected" (us).*
 *Why third: the scale win at ~0 cost to us; the pieces (`hunt-fleet`,
 `hunt-queue`, `hunt-worker`, `hunt-swarm`, agent↔cloud job schema) already exist.*
 
-- ☐ **2.1** Cloud brain dispatches partitioned work (coverage-ledger cells) to
-  opt-in local agents that pull jobs.
-- ☐ **2.2** Workers execute in parallel across targets×classes; results stream
-  back as metadata (raw stays local).
-  - Verify: N workers drain a queue of M jobs with no double-work and no
-    workspace clobber (idempotent start already landed); throughput scales ~linearly.
+- ☑ **2.2 (local/shared-storage grid)** Already built: `hunt-queue.py` (sqlite,
+  WAL, atomic single-statement claim), `hunt-worker.py` (pull loop), `hunt-fleet.py`
+  (fan out N workers sharing one bounded LLM slot pool). Workers on other
+  machines work the same queue by pointing at a shared `HUNTR_FLEET_DB`.
+  - Verified (`tests/test_fleet_queue.py`): 24 jobs × 8 concurrent workers → every
+    job claimed exactly once, none double-assigned, queue drains clean.
+- ☐ **2.1 (cloud dispatch) — DECISION NEEDED.** Wiring the cloud control plane
+  (`/v1/jobs` dispatch in `cloud/app/`) to hand partitioned coverage-ledger cells
+  to opt-in agents needs a running FastAPI + Postgres + a deploy target. That's
+  an infrastructure decision (where it runs, who pays, auth model), not something
+  to build blind. Blocked pending that call.
 
 ---
 
