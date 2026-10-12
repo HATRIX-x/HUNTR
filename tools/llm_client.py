@@ -22,11 +22,59 @@ import json
 import ssl
 import sys
 import re
+import time
+import shutil
+import subprocess
 import concurrent.futures
 import threading
 from pathlib import Path
 from urllib.request import Request, build_opener, HTTPSHandler, HTTPHandler
 from urllib.error import HTTPError
+
+# ── cross-process LLM slot pool ──
+# Caps concurrent LLM calls across ALL workers (fleet) so N parallel hunts never blow the account
+# rate limit. HUNTR_LLM_SLOTS=N enables it (default: no cap). Implemented as atomic lock files, so it
+# works across processes and machines sharing storage — the "rate-governed shared LLM pool".
+_LLM_SLOT_DIR = Path(os.environ.get("HUNTR_LLM_SLOT_DIR", str(Path.home() / ".huntr" / "llm_slots")))
+
+
+def _llm_slots():
+    try:
+        return int(os.environ.get("HUNTR_LLM_SLOTS", "0") or 0)
+    except Exception:
+        return 0
+
+
+def _llm_slot_acquire():
+    n = _llm_slots()
+    if n <= 0:
+        return None
+    _LLM_SLOT_DIR.mkdir(parents=True, exist_ok=True)
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        for i in range(n):
+            lp = _LLM_SLOT_DIR / ("slot%d.lock" % i)
+            try:
+                fd = os.open(str(lp), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, str(os.getpid()).encode()); os.close(fd)
+                return lp
+            except FileExistsError:
+                # reclaim a stale slot (holder dead / >300s old)
+                try:
+                    if time.time() - lp.stat().st_mtime > 300:
+                        lp.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        time.sleep(0.4)
+    return None  # couldn't get a slot in time — proceed rather than deadlock
+
+
+def _llm_slot_release(lp):
+    if lp:
+        try:
+            Path(lp).unlink(missing_ok=True)
+        except Exception:
+            pass
 
 # Key files searched in order (first hit wins, existing env vars always win).
 ENV_FILES = [
@@ -80,8 +128,15 @@ PROVIDERS = {
         "chat_path": "/v1/messages",
         "auth_header": "x-api-key",
         "extra_headers": {"anthropic-version": "2023-06-01"},
-        "format_request": lambda body: body,  # Anthropic native format
-        "parse_response": lambda data: data.get("content", [{}])[0].get("text", ""),
+        # Anthropic native format — strip keys the Messages API rejects: enable_thinking is not a valid
+        # param; temperature + top_p cannot both be sent (drop top_p); and newer models (Opus 4.8) REJECT
+        # `temperature` outright ("deprecated for this model") → drop it for claude-opus* too.
+        "format_request": lambda body: {k: v for k, v in body.items()
+                                        if k not in ("enable_thinking", "top_p")
+                                        and not (k == "temperature" and str(body.get("model", "")).startswith("claude-opus"))},
+        "parse_response": lambda data: next(
+            (c.get("text", "") for c in data.get("content", []) if c.get("type") == "text"),
+            (data.get("content", [{}])[0].get("text", "") if data.get("content") else "")),
     },
     "nvidia": {
         "default_base": "https://integrate.api.nvidia.com",
@@ -126,18 +181,21 @@ def get_provider_config():
     names a provider we actually support on its own — a stale/foreign value like
     "groq,anthropic" left over from another tool no longer silently hijacks the default.
     """
-    provider = "nvidia"
+    provider = "anthropic"   # operator policy: Anthropic (Opus 4.8 / Sonnet 4.6) is the default engine
     provider_env = os.environ.get("HUNT_LLM_PROVIDER", "").strip().lower()
     if provider_env:
         if provider_env in PROVIDERS:
             provider = provider_env
         else:
-            # Legacy comma-chains (e.g. "groq,anthropic") left over from other tools used to
-            # silently hijack the default. Nemotron 3 Ultra is the intended engine, so a chain
-            # is ignored — set HUNT_LLM_PROVIDER to a single provider to switch away from it.
-            print(f"[llm_client] ignoring HUNT_LLM_PROVIDER={provider_env!r} (expected a single "
-                  f"provider: {' | '.join(PROVIDERS)}). Using nvidia / Nemotron 3 Ultra.",
-                  file=sys.stderr)
+            # A comma-chain like "groq,anthropic" left over from another tool is not a single
+            # provider we support. Rather than silently fall through, pick the first supported
+            # provider named in the chain (so "groq,anthropic" -> anthropic); if none is
+            # supported, keep the anthropic default. Either way the log names what we ACTUALLY use.
+            picked = next((p for p in (x.strip() for x in provider_env.split(",")) if p in PROVIDERS), None)
+            if picked:
+                provider = picked
+            print(f"[llm_client] HUNT_LLM_PROVIDER={provider_env!r} is not a single supported "
+                  f"provider ({' | '.join(PROVIDERS)}); using {provider!r}.", file=sys.stderr)
 
     config = PROVIDERS[provider].copy()
     config["provider"] = provider
@@ -159,7 +217,7 @@ def _default_model(provider):
         "nvidia": "nvidia/nemotron-3-ultra-550b-a55b",
         "openai": "gpt-4o",
     }
-    return defaults.get(provider, "nvidia/nemotron-3-ultra-550b-a55b")
+    return defaults.get(provider, "claude-sonnet-4-6")
 
 
 # Cheap/fast sibling of the flagship, same family — used for mechanical + high-volume work
@@ -179,6 +237,52 @@ def _key_for(provider):
         if v:
             return v
     return ""
+
+
+def _claude_cli_call(system, user, model, timeout=180):
+    """Run a completion through the `claude` CLI (-p) instead of the raw API.
+
+    The Pro subscription OAuth token is 429-blocked when POSTed to /v1/messages by a third-party app, but
+    the CLI is the SANCTIONED way to use the subscription — so this path works on a Pro account with no key
+    and respects the normal session usage limits. HUNT_CLAUDE_CLI_DIR (or the dir of HUNT_CLAUDE_CREDS)
+    selects which logged-in account to bill, so the engine can use a SEPARATE account from Claude Code.
+    Returns (text, error)."""
+    cli = shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
+    if not os.path.exists(cli):
+        return None, "claude CLI not found (install Claude Code or set PATH)"
+    env = dict(os.environ)
+    cdir = os.environ.get("HUNT_CLAUDE_CLI_DIR") or (
+        os.path.dirname(os.environ["HUNT_CLAUDE_CREDS"]) if os.environ.get("HUNT_CLAUDE_CREDS") else "")
+    if cdir:
+        env["CLAUDE_CONFIG_DIR"] = os.path.expanduser(cdir)
+    # a pure completion: our prompt only, no tool access, no inherited model override
+    env.pop("ANTHROPIC_MODEL", None)
+    cmd = [cli, "-p", user or "", "--model", model or "claude-sonnet-4-6"]
+    if system:
+        cmd += ["--append-system-prompt", system]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+    except subprocess.TimeoutExpired:
+        return None, "claude-cli timeout"
+    except Exception as e:
+        return None, "claude-cli error: " + str(e)[:200]
+    out = (r.stdout or "").strip()
+    # The CLI prints usage-limit / auth notices to STDOUT as plain prose (not an error exit), e.g.
+    # "You've hit your session limit · resets 5:10pm". Detect these so callers get a real error instead
+    # of trying to parse the notice as content (which silently produced garbage summaries).
+    low = out.lower()
+    if out and len(out) < 400 and any(k in low for k in (
+            "hit your session limit", "hit your limit", "usage limit", "rate limit", "resets ",
+            "please run /login", "/login", "invalid api key", "credit balance is too low",
+            "out of credit", "quota")):
+        return None, "claude-cli limit/auth: " + out[:160]
+    if out:
+        return out, None
+    return None, "claude-cli empty (rc=%s): %s" % (r.returncode, (r.stderr or "")[:200])
+
+
+def _cli_mode():
+    return os.environ.get("HUNT_LLM_VIA_CLI") == "1"
 
 
 def _claude_oauth_headers():
@@ -206,6 +310,15 @@ def call_llm(system, user, model=None, max_tokens=None, temperature=None,
     Call the configured LLM provider (default: NVIDIA Nemotron 3 Ultra).
     Returns (text, error) where error is None on success.
     """
+    # CLI backend (HUNT_LLM_VIA_CLI=1): run Anthropic completions through the `claude` CLI, which is the
+    # sanctioned subscription path (the raw OAuth API key is 429-blocked). Used for a model that is Claude.
+    if _cli_mode():
+        _m = (model or "").strip()
+        if not _m:
+            _m = os.environ.get("HUNT_MODEL_MID") or "claude-sonnet-4-6"
+        if _m.startswith("claude") or (provider or "").lower().strip() == "anthropic":
+            return _claude_cli_call(system, user, _m if _m.startswith("claude") else "claude-sonnet-4-6",
+                                    timeout=timeout)
     if provider:
         prov = provider.lower().strip()
         if prov not in PROVIDERS:
@@ -278,24 +391,41 @@ def call_llm(system, user, model=None, max_tokens=None, temperature=None,
     # Make request
     body = json.dumps(payload).encode()
     req = Request(url, data=body, headers=headers, method="POST")
-    
+
     handlers = [HTTPSHandler(context=ssl.create_default_context()), HTTPHandler()]
     opener = build_opener(*handlers)
-    
+
+    _slot = _llm_slot_acquire()  # cross-process LLM pool: bounds concurrent calls across all workers
     try:
-        with opener.open(req, timeout=timeout) as r:
-            raw = r.read()
-            data = json.loads(raw.decode("utf-8"))
-            text = config["parse_response"](data)
-            return text, None
-    except HTTPError as e:
-        try:
-            raw = e.read().decode("utf-8")
-        except Exception:
-            raw = ""
-        return None, f"HTTP {e.code}: {raw}"
-    except Exception as ex:
-        return None, f"{type(ex).__name__}: {ex}"
+        import time as _t
+        last = None
+        # Bounded retry so a TRANSIENT 429/5xx rides through (honors Retry-After, capped) instead of
+        # dropping the call ("LLM did not respond"). A SUSTAINED limit still surfaces the 429 to the
+        # caller, where hunt-run raises RateLimitPause (pause + resume) rather than sleep-burning budget.
+        _RETRIES = int(os.environ.get("HUNT_LLM_RETRIES", "3"))
+        for attempt in range(_RETRIES + 1):
+            try:
+                with opener.open(req, timeout=timeout) as r:
+                    data = json.loads(r.read().decode("utf-8"))
+                    return config["parse_response"](data), None
+            except HTTPError as e:
+                try: raw = e.read().decode("utf-8")
+                except Exception: raw = ""
+                last = f"HTTP {e.code}: {raw}"
+                if e.code in (429, 500, 502, 503, 504, 529) and attempt < _RETRIES:
+                    try: ra = int(e.headers.get("retry-after", 0))
+                    except Exception: ra = 0
+                    _t.sleep(min(ra if ra > 0 else 8 * (attempt + 1), 25))
+                    continue
+                return None, last
+            except Exception as ex:
+                last = f"{type(ex).__name__}: {ex}"
+                if attempt < _RETRIES:
+                    _t.sleep(min(6 * (attempt + 1), 20)); continue
+                return None, last
+        return None, last
+    finally:
+        _llm_slot_release(_slot)
 
 
 def llm_available():
@@ -329,11 +459,37 @@ def _anthropic_auth_headers():
     return {}
 
 
+_API_SEMAPHORE = threading.Semaphore(1)  # only one concurrent Anthropic call per process
+
+
 def _anthropic_raw_request(payload, timeout=120):
-    """POST to api.anthropic.com/v1/messages, return (raw_data_dict, error_str)."""
+    """POST to api.anthropic.com/v1/messages, return (raw_data_dict, error_str).
+    Returns retry_after (int seconds) as third element when 429."""
+    # CLI mode: the raw OAuth key is 429-blocked, so run the SAME request through the `claude` CLI (the
+    # sanctioned subscription path). Flatten system + the conversation into one prompt and return the
+    # result shaped like an Anthropic /v1/messages response so every caller (call_claude, the summarizer,
+    # the lead multi-turn loop) keeps working unchanged. This makes ALL Anthropic paths use the subscription.
+    if _cli_mode():
+        model = payload.get("model") or os.environ.get("HUNT_MODEL_MID") or "claude-sonnet-4-6"
+        if not str(model).startswith("claude"):
+            model = "claude-sonnet-4-6"
+        system = payload.get("system") or ""
+        parts = []
+        for m in payload.get("messages", []):
+            role = m.get("role", "user")
+            content = m.get("content", "")
+            if isinstance(content, list):   # content blocks → join their text
+                content = "\n".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in content)
+            parts.append(f"[{role}] {content}")
+        user = "\n\n".join(parts) if parts else ""
+        txt, err = _claude_cli_call(system, user, model, timeout=timeout)
+        if err:
+            return None, err, 0
+        return {"content": [{"type": "text", "text": txt}], "stop_reason": "end_turn",
+                "role": "assistant", "model": model}, None, 0
     auth = _anthropic_auth_headers()
     if not auth:
-        return None, "No Anthropic credential (set ANTHROPIC_API_KEY or run 'claude login')"
+        return None, "No Anthropic credential (set ANTHROPIC_API_KEY or run 'claude login')", 0
     headers = {
         "content-type": "application/json",
         "accept": "application/json",
@@ -344,15 +500,20 @@ def _anthropic_raw_request(payload, timeout=120):
     opener = build_opener(HTTPSHandler(context=ssl.create_default_context()), HTTPHandler())
     try:
         with opener.open(req, timeout=timeout) as r:
-            return json.loads(r.read().decode("utf-8")), None
+            return json.loads(r.read().decode("utf-8")), None, 0
     except HTTPError as e:
+        retry_after = 0
+        try:
+            retry_after = int(e.headers.get("retry-after", 0))
+        except Exception:
+            pass
         try:
             raw = e.read().decode("utf-8")
         except Exception:
             raw = ""
-        return None, f"HTTP {e.code}: {raw}"
+        return None, f"HTTP {e.code}: {raw}", retry_after
     except Exception as ex:
-        return None, f"{type(ex).__name__}: {ex}"
+        return None, f"{type(ex).__name__}: {ex}", 0
 
 
 def summarize_if_large(text, threshold=3500, label="tool output"):
@@ -363,20 +524,23 @@ def summarize_if_large(text, threshold=3500, label="tool output"):
     Falls back to hard truncation when Haiku is unavailable."""
     if not text or len(text) <= threshold:
         return text
+    _sys = ("You are a security tool output parser. Extract ONLY security-relevant signal: credentials, "
+            "endpoints, vulnerability indicators, error messages, interesting headers, and anomalies. "
+            "Drop noise. Be concise. Plain text only.")
+    _usr = f"Summarize this {label} ({len(text)} chars) — keep only security-relevant findings:\n\n" + text[:16000]
+    # CLI mode: run the summarizer through the sanctioned `claude` CLI (subscription), not the raw API.
+    if _cli_mode():
+        s, e = _claude_cli_call(_sys, _usr, "claude-sonnet-4-6", timeout=60)
+        if s and not e:
+            return f"[summarized from {len(text)} chars]\n{s}"
+        return text[:threshold] + f"\n…[truncated: {len(text)} chars total]"
     auth = _anthropic_auth_headers()
     if not auth:
         return text[:threshold] + f"\n…[truncated: {len(text)} chars total]"
     payload = {
-        "model": "claude-haiku-4-5-20251001",
-        "system": (
-            "You are a security tool output parser. "
-            "Extract ONLY security-relevant signal: credentials, endpoints, "
-            "vulnerability indicators, error messages, interesting headers, "
-            "and anomalies. Drop noise. Be concise. Plain text only."
-        ),
-        "messages": [{"role": "user", "content":
-            f"Summarize this {label} ({len(text)} chars) — keep only security-relevant findings:\n\n"
-            + text[:16000]}],
+        "model": "claude-sonnet-4-6",
+        "system": _sys,
+        "messages": [{"role": "user", "content": _usr}],
         "max_tokens": 900,
         "temperature": 0.0,
     }
@@ -423,6 +587,11 @@ def call_llm_with_tools(system, initial_user, tools, tool_executor,
         (final_text, tool_calls_log, error)
         tool_calls_log: list of {name, input_summary, result_summary}
     """
+    # CLI mode: `claude -p` cannot drive the engine's custom tool definitions + scope-guarded executor
+    # (native function-calling over the raw API). Signal the caller to use its JSON-action fallback loop,
+    # which issues one decision at a time through call_llm (→ CLI). So tool-use still runs on the subscription.
+    if _cli_mode():
+        return None, [], "cli-mode: native tool-use unavailable — use JSON-action loop"
     mdl = model or "claude-sonnet-4-6"
     messages = [{"role": "user", "content": initial_user}]
     tool_calls_log = []
@@ -438,20 +607,22 @@ def call_llm_with_tools(system, initial_user, tools, tool_executor,
             "temperature": 0.2,
         }
 
-        # retry transient 5xx / 429 up to 4 times with backoff
+        # retry transient 5xx / 429 up to 6 times with backoff; semaphore prevents
+        # concurrent agents from piling up simultaneous OAuth calls
+        import time as _time
         data, err = None, None
-        for attempt in range(4):
-            data, err = _anthropic_raw_request(payload, timeout)
-            if data:
-                break
-            if err and ("429" in err or "529" in err):
-                import time as _time
-                _time.sleep(min(60, 10 * (attempt + 1)))
-            elif err and re.search(r"\b5\d\d\b", err or ""):
-                import time as _time
-                _time.sleep(3.5 * (2 ** attempt))
-            else:
-                break
+        with _API_SEMAPHORE:
+            for attempt in range(6):
+                data, err, retry_after = _anthropic_raw_request(payload, timeout)
+                if data:
+                    break
+                if err and ("429" in err or "529" in err):
+                    wait = retry_after if retry_after > 0 else min(120, 15 * (attempt + 1))
+                    _time.sleep(wait)
+                elif err and re.search(r"\b5\d\d\b", err or ""):
+                    _time.sleep(3.5 * (2 ** attempt))
+                else:
+                    break
 
         if err and not data:
             return None, tool_calls_log, err
