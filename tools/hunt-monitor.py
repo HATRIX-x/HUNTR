@@ -52,7 +52,14 @@ def _load(fname):
 
 
 def safe(t):
-    return re.sub(r"[^a-z0-9._-]+", "_", t.lower())
+    s = re.sub(r"[^a-z0-9._-]+", "_", (t or "default").lower()).strip("_") or "default"
+    # Bound the workspace dir name: a pasted program page (thousands of chars) as the "target" made
+    # mkdir() raise "File name too long" and crash. Cap length and append a short hash of the full
+    # input so distinct long inputs stay unique. Keep in sync with huntr-server.py:safe.
+    if len(s) > 80:
+        import hashlib
+        s = s[:72] + "_" + hashlib.sha1((t or "").encode("utf-8", "ignore")).hexdigest()[:8]
+    return s
 
 
 def read_surface():

@@ -26,7 +26,15 @@ def arg(n, d=None):
 
 
 def safe(h):
-    return re.sub(r"[^a-z0-9.-]+", "_", h.lower())
+    s = re.sub(r"[^a-z0-9._-]+", "_", (h or "default").lower()).strip("_") or "default"
+    # Bound the workspace dir name: a pasted program page (thousands of chars) as the "target" made
+    # mkdir() raise "File name too long" and crash. Cap length and append a short hash of the full
+    # input so distinct long inputs stay unique. Keep in sync with huntr-server.py:safe.
+    # (Charset now matches the other tools so the same target maps to one workspace dir.)
+    if len(s) > 80:
+        import hashlib
+        s = s[:72] + "_" + hashlib.sha1((h or "").encode("utf-8", "ignore")).hexdigest()[:8]
+    return s
 
 
 def hosts():
