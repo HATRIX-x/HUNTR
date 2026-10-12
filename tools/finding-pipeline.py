@@ -179,6 +179,21 @@ def main():
     else:
         reasons.append(f"looks unique ({dup_prob}% dup)")
 
+    # ── 2b. FP PRE-KILL (learned priors from human adjudications) ───────
+    # Once a class has enough funnel history AND low acceptance, don't let it
+    # reach a human as SUBMIT — the human already rejected this signature class
+    # before, so down-rank it here and save the submission.
+    fp_bias = None
+    try:
+        import outcome_priors
+        sig = outcome_priors.fp_signal(cls, [stack] if stack else None)
+        stages["prior"] = {"p_accept": sig["p_accept"], "n": sig["n"], "bias": sig["bias"]}
+        fp_bias = sig["bias"]
+        if sig["reason"]:
+            reasons.append(sig["reason"])
+    except Exception as e:
+        stages["prior"] = {"skipped": str(e)[:80]}
+
     # ── 5a. VERDICT (decide before spending a model call on the draft) ──
     if verify_state == "FIXED":
         verdict = "HOLD"
@@ -190,6 +205,12 @@ def main():
         verdict = "REVIEW"
     else:  # STILL_VULNERABLE + SUBMIT
         verdict = "SUBMIT"
+
+    # learned-prior cap: never auto-SUBMIT a class the human keeps rejecting
+    if fp_bias == "hold" and verdict == "SUBMIT":
+        verdict = "HOLD"
+    elif fp_bias == "review" and verdict == "SUBMIT":
+        verdict = "REVIEW"
 
     # ── 3. EVIDENCE ────────────────────────────────────────────────────
     if not flag("--skip-evidence") and fid:

@@ -125,6 +125,15 @@ def fp_by_class(events, target=None):
 def main():
     events = load_events()
 
+    if H.flag("--sync-outcomes"):
+        # Bridge human funnel adjudications → the learning store so acceptance
+        # history (not just hardcoded priors) drives ranking + FP pre-kill.
+        import outcome_priors
+        written = outcome_priors.sync_from_funnel(events)
+        H.emit({"ok": True, "bridged": len(written), "records": written},
+               human=f"bridged {len(written)} funnel outcome(s) into the learning store",
+               code=0)
+
     if H.flag("--log"):
         stage = H.arg("--stage")
         if stage not in STAGES:

@@ -48,15 +48,17 @@ tests + Playwright and exits non-zero on any failure. CI enforces it.
 *Why second: cheapest high-leverage moat; the funnel data already exists, just
 not fed back. Turns "we submitted X" (XBOW) into "X got paid/rejected" (us).*
 
-- ☐ **1.1** Close the loop: `funnel` adjudications (accepted/dupe/rejected +
-  payout) become labels on `corpus` rows.
-- ☐ **1.2** Dupe/FP pre-kill: `finding-pipeline` queries the labeled corpus to
-  down-rank a finding that matches a historically-rejected signature *before* it
-  reaches a human.
-- ☐ **1.3** `hypo-gen` ranks hypotheses by corpus-derived acceptance priors.
-  - Verify: a replayed historical rejected-signature scores HOLD; an
-    accepted-class signature scores higher; acceptance-rate metric moves on a
-    backtest.
+- ☑ **1.1** `funnel.py --sync-outcomes` bridges terminal funnel adjudications
+  (accepted/dupe/rejected/paid + payout) into the `outcome-check` learning store,
+  idempotently (dedup by `src_funnel_id`). New shared helper `tools/outcome_priors.py`.
+- ☑ **1.2** `finding-pipeline` consults learned priors (`fp_signal`) and caps a
+  historically-rejected class so it can never auto-SUBMIT — down-ranked to
+  REVIEW/HOLD before a human looks. Only fires with ≥5 adjudications; cold/healthy
+  classes untouched.
+- ☑ **1.3** `hypo-gen` reorders hypotheses by learned EV of their attack class and
+  annotates each with `ev_prior`.
+  - Verified (`tests/test_outcome_loop.py`): rejected-heavy class → `hold` bias +
+    low p_accept; accepted class ranks higher by EV; sync is idempotent; CLI works.
 
 ---
 
