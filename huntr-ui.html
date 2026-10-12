@@ -89,6 +89,32 @@ button,input,select,textarea{font-family:inherit;}
   transition:border-color .16s,box-shadow .16s;
 }
 #scope-ta:focus{border-color:var(--accent-bd);box-shadow:0 0 0 3px var(--accent-bg);}
+/* ── live scope preview ── */
+#scope-preview{display:none;flex-direction:column;gap:10px;
+  background:var(--surface);border:1px solid var(--border2);border-radius:12px;padding:14px 16px;
+  animation:spFade .18s ease-out;}
+#scope-preview.on{display:flex;}
+@keyframes spFade{from{opacity:0;transform:translateY(-4px);}to{opacity:1;transform:none;}}
+.sp-head{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;color:var(--text2);}
+.sp-head .sp-ok{color:var(--green);font-weight:600;}
+.sp-head .sp-deny{color:var(--c);}
+.sp-head .sp-spin{color:var(--text3);}
+.sp-list{display:flex;flex-direction:column;gap:5px;max-height:190px;overflow:auto;}
+.sp-row{display:flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12.5px;color:var(--text);}
+.sp-row.deny{color:var(--text2);opacity:.85;}
+.sp-pill{flex-shrink:0;font-size:9.5px;font-weight:700;letter-spacing:.6px;padding:2px 6px;border-radius:5px;
+  text-transform:uppercase;width:52px;text-align:center;}
+.sp-pill.web{background:rgba(139,124,246,.16);color:#B9AEFB;}
+.sp-pill.api{background:rgba(56,189,248,.15);color:#7DD3FC;}
+.sp-pill.mobile{background:rgba(52,211,153,.15);color:#6EE7B7;}
+.sp-pill.source{background:rgba(255,255,255,.07);color:var(--text2);}
+.sp-pill.other,.sp-pill.deny{background:rgba(244,63,94,.14);color:#FDA4AF;}
+.sp-asset{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.sp-meta{display:flex;flex-wrap:wrap;gap:6px;padding-top:4px;border-top:1px solid var(--border);}
+.sp-chip{font-family:var(--mono);font-size:10.5px;padding:3px 8px;border-radius:6px;
+  background:rgba(255,255,255,.05);color:var(--text2);border:1px solid var(--border);}
+.sp-chip.warn{background:rgba(251,146,60,.12);color:#FDBA74;border-color:rgba(251,146,60,.28);}
+.sp-foot{font-family:var(--mono);font-size:10px;color:var(--text3);}
 #scope-ta::placeholder{color:var(--text3);}
 .f-row{display:flex;gap:12px;}
 .f-group{display:flex;flex-direction:column;gap:6px;flex:1;}
@@ -560,8 +586,11 @@ button,input,select,textarea{font-family:inherit;}
         <h1>HUNTR<em>.</em></h1>
         <p>drop a scope &middot; get confirmed findings</p>
       </div>
-      <textarea id="scope-ta" spellcheck="false"
+      <textarea id="scope-ta" spellcheck="false" oninput="scopePreviewDebounced()"
         placeholder="*.example.com&#10;https://api.example.com&#10;&#10;Or paste the full HackerOne / YesWeHack scope block"></textarea>
+      <!-- live deterministic scope preview: updates as you type, no LLM, so you see
+           exactly what will be hunted (and what's excluded) before spending a hunt -->
+      <div id="scope-preview" aria-live="polite"></div>
       <div class="f-row">
         <div class="f-group">
           <span class="f-label">Program</span>
@@ -584,7 +613,7 @@ button,input,select,textarea{font-family:inherit;}
       </div>
       <div class="sv-actions">
         <button id="hunt-btn" onclick="startHunt()"><span class="btn-ico">⚡</span>Start hunt</button>
-        <button id="intake-btn" onclick="smartIntake()" title="Paste the whole program page → AI summary + clean scope"><span class="btn-ico">✦</span>Confirm &amp; summarize</button>
+        <button id="intake-btn" onclick="smartIntake()" title="Optional: let the AI read the full program page for rewards, rules, caps & a clean summary (the scope above is already parsed)"><span class="btn-ico">✦</span>AI enrich</button>
       </div>
       <button id="adv-btn" onclick="toggleAdv()"><span>Advanced options</span><span class="adv-chev">▾</span></button>
       <div id="adv-panel">
@@ -776,6 +805,46 @@ async function boot(autoResume){
 }
 
 /* ─── start / resume ─── */
+// ── live scope preview ────────────────────────────────────────────────
+// As you type/paste, hit the deterministic parser (enrich:false → instant, no LLM)
+// and render exactly what will be hunted + what's excluded, before spending a hunt.
+let _spTimer=null, _spSeq=0;
+function scopePreviewDebounced(){ clearTimeout(_spTimer); _spTimer=setTimeout(scopePreview, 320); }
+async function scopePreview(){
+  const pv=document.getElementById('scope-preview');
+  const raw=(document.getElementById('scope-ta').value||'').trim();
+  if(raw.length<4){ pv.className=''; pv.innerHTML=''; return; }
+  const seq=++_spSeq;
+  if(!pv.classList.contains('on')){ pv.className='on'; }
+  if(!pv.innerHTML) pv.innerHTML='<div class="sp-head"><span class="sp-spin">⠋ parsing scope…</span></div>';
+  let r=null; try{ r=await api('/api/scope/parse',{text:raw,enrich:false}); }catch(e){}
+  if(seq!==_spSeq) return;            // a newer keystroke already superseded this
+  const sc=r&&r.scope;
+  if(!sc){ pv.innerHTML='<div class="sp-head"><span class="sp-spin">couldn’t parse — is the engine up?</span></div>'; return; }
+  renderScopePreview(sc);
+}
+function renderScopePreview(sc){
+  const pv=document.getElementById('scope-preview');
+  const E=(s)=>esc(s==null?'':String(s));
+  const ins=(sc.in_scope||[]), outs=(sc.out_of_scope||[]);
+  if(!ins.length && !outs.length){
+    pv.innerHTML='<div class="sp-head"><span class="sp-spin">no assets detected yet — paste hosts or a program page</span></div>'; return;
+  }
+  const head=`<div class="sp-head"><span class="sp-ok">✓ ${ins.length} in scope</span>`
+    + (outs.length?` · <span class="sp-deny">${outs.length} out of scope</span>`:'')
+    + (sc.enriched?' · <span style="color:var(--accent)">✦ AI-enriched</span>':'')+`</div>`;
+  const rows=ins.map(a=>`<div class="sp-row"><span class="sp-pill ${E(a.type)}">${E(a.type)}</span><span class="sp-asset">${E(a.asset)}</span></div>`).join('')
+    + outs.map(o=>`<div class="sp-row deny"><span class="sp-pill deny">deny</span><span class="sp-asset">${E(o.asset)}</span></div>`).join('');
+  const chips=[];
+  if(sc.rewards) chips.push(`<span class="sp-chip">${E(sc.rewards).slice(0,48)}</span>`);
+  if(sc.rate_limit) chips.push(`<span class="sp-chip">rate ${E(sc.rate_limit)}</span>`);
+  if(sc.poc_required) chips.push(`<span class="sp-chip warn">PoC required</span>`);
+  if(sc.ua_required) chips.push(`<span class="sp-chip">UA ${E(sc.ua_required)}</span>`);
+  const meta=chips.length?`<div class="sp-meta">${chips.join('')}</div>`:'';
+  const foot=`<div class="sp-foot">${sc.enriched?'enriched by AI':'parsed deterministically'} · ${ins.filter(a=>a.type==='web'||a.type==='api').length} will be hunted</div>`;
+  pv.innerHTML=head+`<div class="sp-list">${rows}</div>`+meta+foot;
+}
+
 async function smartIntake(){
   const ta=document.getElementById('scope-ta');
   const raw=ta.value.trim();

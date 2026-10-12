@@ -28,6 +28,46 @@ test.describe('dashboard loads and renders', () => {
   });
 });
 
+test.describe('live scope preview (deterministic, as-you-type)', () => {
+  const PAGE = [
+    'In scope:',
+    '*.acme.com',
+    'https://api.acme.com/v2',
+    'Out of scope:',
+    'legacy.acme.com',
+    'Rewards: Critical $5000. PoC required.',
+  ].join('\n');
+
+  test('typing a program page renders the parsed scope with types and in/out split', async ({ page }) => {
+    await page.goto('/');
+    const pv = page.locator('#scope-preview');
+    await expect(pv).toBeHidden();              // nothing shown before input
+    await page.fill('#scope-ta', PAGE);         // fill fires input -> debounced parse
+
+    // the preview appears and lists the real assets, correctly typed
+    await expect(pv).toBeVisible();
+    await expect(pv).toContainText('*.acme.com');
+    await expect(pv).toContainText('api.acme.com/v2');
+    await expect(pv).toContainText('2 in scope');
+    await expect(pv).toContainText('out of scope');
+    await expect(pv).toContainText('legacy.acme.com');
+    // prose never becomes an asset (the whole point vs whitespace-splitting)
+    await expect(pv).not.toContainText('Rewards:');
+    // a WEB and an API type pill are rendered
+    await expect(pv.locator('.sp-pill.web').first()).toBeVisible();
+    await expect(pv.locator('.sp-pill.api').first()).toBeVisible();
+    await expect(pv.locator('.sp-pill.deny').first()).toBeVisible();
+  });
+
+  test('clearing the box hides the preview again', async ({ page }) => {
+    await page.goto('/');
+    await page.fill('#scope-ta', PAGE);
+    await expect(page.locator('#scope-preview')).toBeVisible();
+    await page.fill('#scope-ta', '');
+    await expect(page.locator('#scope-preview')).toBeHidden();
+  });
+});
+
 test.describe('regression: API base follows the served origin (not hardcoded :8899)', () => {
   // huntr-ui.html used to hardcode `const API='http://127.0.0.1:8899'`, so serving
   // on any other port left every button talking to the wrong instance. It now uses

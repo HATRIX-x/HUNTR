@@ -546,9 +546,12 @@ class H(BaseHTTPRequestHandler):
             if not text.strip():
                 return self._send({"ok": False, "error": "no text"}, 400)
             # scope_ingest extracts the asset list deterministically (reliable, instant)
-            # and enriches rewards/rules/etc with the LLM only when creds exist — so the
-            # scope is correct even if the model is down/rate-limited.
-            r = run("scope_ingest.py", ["--json"], stdin=text, timeout=100)
+            # and enriches rewards/rules/etc with the LLM only when creds exist. The live
+            # as-you-type preview sends {enrich:false} for an instant deterministic parse;
+            # the explicit "AI enrich" button omits it (enrich on).
+            _enrich = b.get("enrich", True)
+            _args = ["--json"] if _enrich else ["--json", "--no-enrich"]
+            r = run("scope_ingest.py", _args, stdin=text, timeout=(100 if _enrich else 15))
             try:
                 parsed = json.loads((r.get("out") or "").strip().splitlines()[-1])
             except Exception:
