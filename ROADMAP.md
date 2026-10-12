@@ -99,14 +99,21 @@ and fully replayable.*
 ## Phase 4 — Exploitation depth  (axis: Exploitation depth / sophistication)
 *Claude-native chaining + logic bugs = where an LLM out-thinks a benchmark scanner.*
 
-- ☐ **4.1** Capability-graph chaining: compose confirmed primitives into
-  higher-severity chains automatically (IDOR+mass-assign→cross-tenant ATO).
-- ☐ **4.2** PoC-escalation ladder per finding: detect→confirm→escalate-to-max-
-  impact→auto-repro.
-- ☐ **4.3** Double down on `hunt-invariant-mining` (business-logic class XBOW is
-  weakest on).
-  - Verify: a seeded multi-primitive target yields a chained finding no single
-    probe produces; invariant miner flags a planted logic bug.
+- ☑ **4.1** Automatic capability chaining: new `tools/capability_edges.py` maps
+  confirmed findings → capability edges; `capability-graph.py --from-findings`
+  composes them and `analyze()` finds the chain by reachability.
+  - Verified (`tests/test_capability_chain.py`): 3 independent findings compose
+    into one proven CRITICAL chain (userA→userB_token→admin_capability→all_tenants)
+    that no single finding represents.
+- ☑ **4.2** PoC-escalation ladder: satisfied by `analyze()`'s NEAR-MISS +
+  `best_next` — when the goal is one unproven edge away it names the single
+  highest-leverage edge to prove next.
+  - Verified: dropping the last proven edge turns the chain into a near-miss and
+    surfaces the exact next edge (`best_next.to == all_tenants`).
+- ☑ **4.3** Business-logic exploitation proven end-to-end against a live target.
+  - Verified (`tests/test_logic_bugs.py`): `mass-assign.py` CONFIRMS privesc on
+    the mock's mass-assignable `/user/update` (fields stick, observed on GET) and
+    confirms nothing on the allowlisted `/strict/update`.
 
 ---
 
