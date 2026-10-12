@@ -62,6 +62,7 @@ def asset(name):
             return p
     return None
 PORT = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else 8899
+START_TS = time.time()  # process start, for /api/health uptime
 
 
 def safe(t):
@@ -169,6 +170,19 @@ class H(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         t = q.get("target")
+        if u.path == "/api/health":  # liveness + observability for the UI and uptime checks
+            active = 0
+            try:
+                for pidf in (TARGETS.glob("*/.hunt/run.pid") if TARGETS.exists() else []):
+                    try:
+                        os.kill(int(pidf.read_text().strip()), 0); active += 1
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            return self._send({"ok": True, "port": PORT,
+                               "uptime_sec": round(time.time() - START_TS, 1),
+                               "active_hunts": active})
         if u.path == "/":
             ui = asset("huntr-ui.html")
             if ui:
