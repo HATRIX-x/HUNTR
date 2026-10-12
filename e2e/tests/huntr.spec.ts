@@ -41,11 +41,13 @@ test.describe('live scope preview (deterministic, as-you-type)', () => {
   test('typing a program page renders the parsed scope with types and in/out split', async ({ page }) => {
     await page.goto('/');
     const pv = page.locator('#scope-preview');
-    await expect(pv).toBeHidden();              // nothing shown before input
+    await expect(pv).toBeVisible();             // visible on load with an inviting hint
+    await expect(pv).toContainText('parsed here');
     await page.fill('#scope-ta', PAGE);         // fill fires input -> debounced parse
 
-    // the preview appears and lists the real assets, correctly typed
+    // the preview updates to list the real assets, correctly typed
     await expect(pv).toBeVisible();
+    await expect(pv).not.toContainText('parsed here');
     await expect(pv).toContainText('*.acme.com');
     await expect(pv).toContainText('api.acme.com/v2');
     await expect(pv).toContainText('2 in scope');
@@ -59,12 +61,12 @@ test.describe('live scope preview (deterministic, as-you-type)', () => {
     await expect(pv.locator('.sp-pill.deny').first()).toBeVisible();
   });
 
-  test('clearing the box hides the preview again', async ({ page }) => {
+  test('clearing the box returns the preview to its hint state', async ({ page }) => {
     await page.goto('/');
     await page.fill('#scope-ta', PAGE);
-    await expect(page.locator('#scope-preview')).toBeVisible();
+    await expect(page.locator('#scope-preview')).toContainText('*.acme.com');
     await page.fill('#scope-ta', '');
-    await expect(page.locator('#scope-preview')).toBeHidden();
+    await expect(page.locator('#scope-preview')).toContainText('parsed here');
   });
 });
 

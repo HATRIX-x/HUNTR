@@ -99,6 +99,7 @@ button,input,select,textarea{font-family:inherit;}
 .sp-head .sp-ok{color:var(--green);font-weight:600;}
 .sp-head .sp-deny{color:var(--c);}
 .sp-head .sp-spin{color:var(--text3);}
+.sp-head .sp-hint{color:var(--text3);font-style:normal;}
 .sp-list{display:flex;flex-direction:column;gap:5px;max-height:190px;overflow:auto;}
 .sp-row{display:flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12.5px;color:var(--text);}
 .sp-row.deny{color:var(--text2);opacity:.85;}
@@ -590,7 +591,7 @@ button,input,select,textarea{font-family:inherit;}
         placeholder="*.example.com&#10;https://api.example.com&#10;&#10;Or paste the full HackerOne / YesWeHack scope block"></textarea>
       <!-- live deterministic scope preview: updates as you type, no LLM, so you see
            exactly what will be hunted (and what's excluded) before spending a hunt -->
-      <div id="scope-preview" aria-live="polite"></div>
+      <div id="scope-preview" class="on" aria-live="polite"><div class="sp-head"><span class="sp-hint">↳ as you type, your scope is parsed here — what's in scope, what's excluded, and what gets hunted</span></div></div>
       <div class="f-row">
         <div class="f-group">
           <span class="f-label">Program</span>
@@ -813,7 +814,7 @@ function scopePreviewDebounced(){ clearTimeout(_spTimer); _spTimer=setTimeout(sc
 async function scopePreview(){
   const pv=document.getElementById('scope-preview');
   const raw=(document.getElementById('scope-ta').value||'').trim();
-  if(raw.length<4){ pv.className=''; pv.innerHTML=''; return; }
+  if(raw.length<4){ pv.className='on'; pv.innerHTML='<div class="sp-head"><span class="sp-hint">↳ as you type, your scope is parsed here — what’s in scope, what’s excluded, and what gets hunted</span></div>'; return; }
   const seq=++_spSeq;
   if(!pv.classList.contains('on')){ pv.className='on'; }
   if(!pv.innerHTML) pv.innerHTML='<div class="sp-head"><span class="sp-spin">⠋ parsing scope…</span></div>';
