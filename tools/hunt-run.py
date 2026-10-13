@@ -3874,7 +3874,8 @@ def phase_chain():
     for ni, c in enumerate(nears):
         c["_ni"] = ni
     plan = {}
-    if nears:
+    if nears and not NO_LLM:   # LLM only enriches the "how to prove the missing edge" strategy;
+                               # deterministic mode still reports the near-miss chains + the edge to prove
         items = [{"i": c["_ni"], "impact": c["node"],
                   "path": " → ".join([c["path"][0]["frm"]] + [e["prim"] + "→" + e["to"] for e in c["path"]]),
                   "missing": [e["prim"] + " (" + e["frm"] + "→" + e["to"] + ")" for e in c["path"] if e["status"] == "unproven"]} for c in nears]
@@ -4974,7 +4975,8 @@ def main():
             check_pause(); phase_verify()               # LLM re-verifies every finding: confirmed / dismissed / manual
             check_pause(); phase_methodology(deadline)
             check_pause(); phase_ai_judge()              # Layer 3 — strong-model validation
-            check_pause(); phase_chain()                 # Chain-to-Impact
+        check_pause(); phase_chain()                 # Chain-to-Impact — deterministic core (proven + near-miss chains);
+                                                     #   LLM only enriches near-miss strategy, so it runs in NO_LLM too
         phase_scenario()                             # "impossible scenario" engine — oracle-gated kill-chains
         phase_economics()                            # Economics brain
         phase_hard_triage()                          # FINAL authority: prove-it-or-lead; info-class capped

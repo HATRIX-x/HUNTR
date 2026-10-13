@@ -131,6 +131,12 @@ Fast, offline, needs no Claude account, and makes autonomy reproducibly verifiab
 - ☑ **4.1** Automatic capability chaining: new `tools/capability_edges.py` maps
   confirmed findings → capability edges; `capability-graph.py --from-findings`
   composes them and `analyze()` finds the chain by reachability.
+  **Bet #2:** wired into the engine deterministically — `phase_chain` now runs in
+  `HUNT_NO_LLM` (the LLM only enriches near-miss *strategy*), so confirmed findings
+  auto-compose into escalated-severity chains with no account. Verified on real
+  run findings: 103 findings → 101 edges reaching `account-takeover` + `cloud-role`
+  (both CRITICAL). Locked by `tests/test_chain_depth.py` (5). This is the $-recall
+  lever — one proven chain to ATO outranks many lows.
   - Verified (`tests/test_capability_chain.py`): 3 independent findings compose
     into one proven CRITICAL chain (userA→userB_token→admin_capability→all_tenants)
     that no single finding represents.
