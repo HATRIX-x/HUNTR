@@ -72,6 +72,12 @@ not fed back. Turns "we submitted X" (XBOW) into "X got paid/rejected" (us).*
   historically-rejected class so it can never auto-SUBMIT — down-ranked to
   REVIEW/HOLD before a human looks. Only fires with ≥5 adjudications; cold/healthy
   classes untouched.
+- ☑ **Bet #3 (trust layer):** `tools/proof_repro.py` attaches a deterministic,
+  one-click reproduction command (+ the exact signal to look for) to EVERY finding
+  via `add_finding`. A triager pastes one line, sees the signal, trusts it in 30s —
+  the opposite of volume-flooding. Verified LIVE: the generated repros actually
+  reproduce the planted SQLi/XSS/SSTI/LFI/CORS against the lab
+  (`tests/test_proof_repro.py` — 4 shape + 5 live).
 - ☑ **1.3** `hypo-gen` reorders hypotheses by learned EV of their attack class and
   annotates each with `ev_prior`.
   - Verified (`tests/test_outcome_loop.py`): rejected-heavy class → `hold` bias +

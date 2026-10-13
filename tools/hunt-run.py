@@ -404,6 +404,15 @@ def add_finding(sev, title, detail, endpoint, cvss="", cls="", verdict="", det=N
                 f["proof"] = {"proven": False, "method": "oracle:" + om, "evidence": oe}
         except Exception:
             pass
+    # One-click reproduction: a deterministic command a triager pastes to reproduce,
+    # plus the exact signal to look for. The trust layer — a finding verifiable in 30s.
+    try:
+        import proof_repro as _pr
+        _rp = _pr.repro_for(f)
+        if _rp:
+            f["repro"] = _rp
+    except Exception:
+        pass
     STATE["findings"].append(f)
     STATE["stats"]["findings"] = len(STATE["findings"])
     sevw = SEVLABEL[sev]
