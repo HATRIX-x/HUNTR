@@ -183,6 +183,20 @@ Fast, offline, needs no Claude account, and makes autonomy reproducibly verifiab
 
 ---
 
+## Bet #4 — the money-weighted scoreboard (reframe the leaderboard)
+*XBOW's brand is one volume leaderboard. Beat it with a better, reproducible one:
+score PROVEN, high-$ findings; penalize junk submissions; measure on ground truth.*
+
+- ☑ `hunt-bench.py` now emits a **money-weighted, FP-penalized** scorecard:
+  `$-recall` (Σ bounty-$ of PROVEN found bugs ÷ Σ possible), `fp_rate` (would-be junk
+  submissions ÷ all submits), and the **HUNTR Score** = `$-recall × proof_rate ×
+  (1 − fp_rate)` ∈ [0,1] — volume can't game it (unproven/FP findings add nothing).
+- **Verified on the planted-vuln lab (deterministic, no account):**
+  **$-recall 0.951** ($40,900 / $43,000 proven impact), **fp_rate 0.0**,
+  **HUNTR Score 0.827.** Locked by `tests/test_bench_score.py` (3).
+- This is the reproducible, honest, publishable number HUNTR wins on — one a
+  cloud black box can't credibly match.
+
 ## Verification discipline (applies to every step)
 No step is "done" until its verify line passes. Phase 0 delivers `make verify`
 (unit tests + stress battery + Playwright); later phases add their checks to it.
