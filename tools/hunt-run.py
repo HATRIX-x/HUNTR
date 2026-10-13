@@ -16,10 +16,16 @@ Usage:
               [--scope-types web,api] [--hunt-dir /path/.hunt]
 Env: HUNT_DIR overrides --hunt-dir (the server sets it).
 """
-import sys, os, re, json, time, subprocess, tempfile
+import sys, os, re, json, time, subprocess, tempfile, threading
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+try:
+    import llm_client
+except ImportError:      # llm_client sits next to this script
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import llm_client
 
 
 def arg(n, d=None):
@@ -79,7 +85,7 @@ STATE = {
     "status": "running", "stage": "Boot", "pct": 0,
     "started": time.time(), "updated": time.time(),
     "logs": [], "hosts": [], "endpoints": [], "findings": [], "leads": [],
-    "chains": [], "invariants": [], "economics": {},
+    "chains": [], "invariants": [], "economics": {}, "memory_recall": [],
     "coverage": {"breadth": 0, "depth": 0, "verified": 0, "total": 0, "resolved": 0, "todo": 0},
     "stats": {"subs": 0, "live": 0, "endpoints": 0, "findings": 0, "leads": 0, "chains": 0},
 }
@@ -92,27 +98,46 @@ def mark_tested(ep, cls):
 SEVMAP = {"critical": "c", "high": "h", "medium": "m", "low": "l", "info": "i", "unknown": "i"}
 SEVLABEL = {"c": "CRITICAL", "h": "HIGH", "m": "MEDIUM", "l": "LOW", "i": "INFO"}
 
-# tri-hybrid model routing. Each is an ordered fallback chain: llm_call tries them in
-# order and falls through on any error (429 rate-limit included), so the engine always
-# uses the strongest model currently available and degrades to Haiku (which answers even
-# when the heavy models are rate-limited) rather than failing.
-#   STRONG = Layer-3 judge (validate findings, kill false-positives, write repro/impact).
-#   CHEAP  = Layer-2 directed loop (high-frequency cell selection) — Haiku by design.
-MODEL_STRONG = ["claude-opus-4-8", "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5"]
-MODEL_CHEAP = ["claude-haiku-4-5"]
-# Light-LLM mode (HUNT_LLM=haiku / --llm-light): route ALL phases to Haiku. Haiku has far higher
-# subscription rate limits than Opus/Sonnet, so this makes rate-limiting rare when no paid API key is
-# available — at a small cost to judge/chain depth. Deterministic tool findings are unaffected.
+# Model routing — Claude via OAuth (llm_auth.py) or API key.
+# Tool-use agentic loop requires Anthropic — falls back to NVIDIA JSON-action loop
+# only when no Anthropic credential is available at all.
+def _resolve_claude_available():
+    """True if any Anthropic credential is present (API key or Claude Code OAuth)."""
+    if os.environ.get("ANTHROPIC_API_KEY", "").strip():
+        return True
+    try:
+        import importlib.util as _il
+        _spec = _il.spec_from_file_location("llm_auth", str(HERE / "llm_auth.py"))
+        _m = _il.module_from_spec(_spec); _spec.loader.exec_module(_m)
+        _, mode = _m.llm_headers()
+        return mode in ("api-key", "claude-account")
+    except Exception:
+        return False
+
+_have_claude = _resolve_claude_available()
+if _have_claude:
+    MODEL_LEAD   = {"provider": "anthropic", "model": "claude-sonnet-4-6"}
+    MODEL_STRONG = {"provider": "anthropic", "model": "claude-sonnet-4-6"}
+    MODEL_CHEAP  = {"provider": "anthropic", "model": "claude-haiku-4-5-20251001"}
+else:
+    MODEL_LEAD   = {"provider": "nvidia", "model": "nvidia/nemotron-3-ultra-550b-a55b"}
+    MODEL_STRONG = {"provider": "nvidia", "model": "nvidia/nemotron-3-ultra-550b-a55b"}
+    MODEL_CHEAP  = {"provider": "nvidia", "model": "nvidia/nemotron-3.5-lightning-30b-a3b"}
 if os.environ.get("HUNT_LLM") == "haiku" or "--llm-light" in sys.argv:
-    MODEL_STRONG = ["claude-haiku-4-5"]
+    MODEL_LEAD   = MODEL_CHEAP
+    MODEL_STRONG = MODEL_CHEAP
 
 
-# rate-limit state: set when every model in a call returns 429 (the account's limit is reached). The
-# engine then PAUSES (not errors) so it can be resumed once the limit resets.
+# rate-limit state: set when the provider returns 429 (rate limit reached).
 _RL = {"hit": False, "retry_after": 0}
+_LLM_LAST_ERR = {"e": ""}
+# multi-agent STATE lock: prevents concurrent agents from corrupting findings/leads
+_STATE_LOCK = threading.Lock()
+
 
 class RateLimitPause(Exception):
     pass
+
 
 def check_pause():
     """Raise if the account rate limit has been reached, so main() can pause the hunt for resume."""
@@ -120,50 +145,46 @@ def check_pause():
         raise RateLimitPause()
 
 
-def llm_call(models, system, user, max_tokens=1600, timeout=100):
-    """One Claude call via llm_auth (account OAuth or API key). `models` = try in order (fallback on error).
-    Returns text, or None. If EVERY model returns 429 (rate limit), sets _RL['hit'] so the hunt can pause."""
-    try:
-        import urllib.request
-        sys.path.insert(0, str(HERE))
-        from llm_auth import llm_headers
-        hdrs, mode = llm_headers()
-        if not hdrs:
-            return None
-        hdrs["content-type"] = "application/json"
-        import urllib.error, time as _time
-        any_429 = False; any_other = False
-        for m in (models if isinstance(models, list) else [models]):
-            body = json.dumps({"model": m, "max_tokens": max_tokens, "system": system,
-                               "messages": [{"role": "user", "content": user}]}).encode()
-            for attempt in range(3):   # retry the same model on 429 before falling through
-                req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=body, headers=hdrs, method="POST")
-                try:
-                    with urllib.request.urlopen(req, timeout=timeout) as r:
-                        data = json.loads(r.read())
-                    return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
-                except urllib.error.HTTPError as e:
-                    if e.code == 429:
-                        any_429 = True
-                        try: _RL["retry_after"] = int(e.headers.get("retry-after") or 0)
-                        except Exception: pass
-                        if attempt < 2:
-                            _time.sleep(2 * (attempt + 1)); continue   # backoff: 2s, 4s
-                        break   # exhausted for this model → next model
-                    any_other = True; break   # non-429 error → next model
-                except Exception:
-                    any_other = True; break   # next model
-        # fell through with no success: if it was purely 429s, the account limit is reached → pause signal
-        if any_429 and not any_other:
+def llm_call(system, user, max_tokens=1600, timeout=100, _model=None):
+    """One LLM call via llm_client. Returns text, or None. Sets _RL['hit'] on rate limit.
+
+    Transient provider failures (503 overload, blips, dropped connections) are retried with
+    backoff — a single hiccup must not terminate an agentic loop that is mid-reasoning.
+
+    _model: optional dict with 'provider' and 'model' keys (MODEL_LEAD / MODEL_STRONG / MODEL_CHEAP).
+    When omitted the llm_client env config is used (NVIDIA default or HUNT_LLM_PROVIDER override)."""
+    m = _model or {}
+    text, err = None, None
+    for attempt in range(4):
+        try:
+            text, err = llm_client.call_llm(
+                system, user, max_tokens=max_tokens, timeout=timeout,
+                provider=m.get("provider"), model=m.get("model"),
+            )
+        except Exception as _e:
+            text, err = None, str(_e)
+        if text:
+            return text
+        if err:
+            _LLM_LAST_ERR["e"] = err
+        if err and "429" in err:
+            if attempt < 3:
+                # rate limited but the account may still serve — back off and retry rather than
+                # burning an agentic round; only a 429 that survives every retry pauses the hunt.
+                time.sleep(5.0 * (attempt + 1))
+                continue
             _RL["hit"] = True
-        return None
-    except Exception:
-        return None
+            return None
+        if attempt < 3:
+            # 5xx overload needs a real pause, not a courtesy one — the provider serves the
+            # same 503 if you come back a second later. 3.5 → 7 → 14s rides out a busy window.
+            time.sleep((3.5 * (2 ** attempt)) if re.search(r"\b5\d\d\b", err or "") else (1.5 * (attempt + 1)))
+    return None
 
 
-def llm_json(models, system, user, max_tokens=1600, timeout=100):
+def llm_json(system, user, max_tokens=1600, timeout=100, _model=None):
     """llm_call + robustly extract a JSON object/array from the reply."""
-    txt = llm_call(models, system, user, max_tokens, timeout)
+    txt = llm_call(system, user, max_tokens, timeout, _model=_model)
     if not txt:
         return None
     # strip ```json fences, then try the whole thing before falling back to a span search
@@ -395,6 +416,36 @@ def phase_recon():
     stage("Recon", 45)
 
 
+def _build_surface_graph(endpoints):
+    """Build / incrementally update a graphify knowledge graph from the crawled surface.
+
+    Writes into <HUNT_DIR>/graphify-out/. The graph is small (endpoints + JS + specs) so
+    extraction is fast and uses zero LLM tokens (pure AST / structural pass). The result
+    feeds _lead_digest() and the dashboard's surface-graph tab. Silently skips if graphify
+    is not installed."""
+    recon_dir = HUNT_DIR / "recon"
+    try:
+        recon_dir.mkdir(parents=True, exist_ok=True)
+        # Write a plain endpoint list as a text file so graphify can ingest it
+        ep_file = recon_dir / "endpoints.txt"
+        ep_file.write_text("\n".join(e["url"] for e in endpoints) + "\n")
+    except Exception:
+        return
+    try:
+        out, err, rc = sh(
+            ["graphify", str(recon_dir), "--no-viz", "--update",
+             "--out", str(HUNT_DIR / "graphify-out")],
+            timeout=60,
+        )
+        if rc == 0:
+            log("ok", "◆ surface graph built · " + str(len(endpoints)) + " endpoints → graphify-out/")
+        else:
+            # graphify not installed or failed — non-fatal
+            log("out", "→ surface graph skipped (" + (err.strip() or "graphify not found")[:80] + ")")
+    except Exception as _e:
+        log("out", "→ surface graph skipped (" + str(_e)[:80] + ")")
+
+
 def phase_surface():
     stage("Surface", 52)
     live = [h for h in STATE["hosts"] if h.get("status")]
@@ -481,8 +532,356 @@ def phase_surface():
     else:
         log("ok", "✓ " + str(len(endpoints)) + " endpoints mapped across " +
             str(len(targets)) + " host(s)")
+
+    # Build a graphify knowledge graph of the recon surface so the LLM lead loop gets
+    # graph-ranked context instead of a flat URL list. Non-blocking: failure is logged,
+    # never crashes the hunt. Only runs if graphify is installed.
+    _build_surface_graph(endpoints)
+
     stage("Surface", 82)
 
+
+DISCOVER_SEEDS = [
+    # API surface — the classes katana can never reach because they are unlinked or JSON-only
+    "/api", "/api/", "/api/v1", "/api/v2", "/api/v3", "/api/v1/", "/api/v2/",
+    "/api/users", "/api/user", "/api/admin", "/api/me", "/api/orders", "/api/account",
+    "/api/accounts", "/api/auth", "/api/login", "/api/session", "/api/token", "/api/tokens",
+    "/api/profile", "/api/config", "/api/settings", "/api/search", "/api/products",
+    "/api/health", "/api/status", "/api/info", "/api/version", "/api/debug", "/api/keys",
+    "/api/upload", "/api/files", "/api/export", "/api/import", "/api/graphql",
+    # auth / account surfaces
+    "/admin", "/admin/", "/administrator", "/dashboard", "/panel", "/manage", "/manager",
+    "/console", "/login", "/signin", "/logout", "/register", "/signup", "/auth", "/oauth",
+    "/oauth/authorize", "/oauth/token", "/sso", "/saml", "/account", "/profile", "/settings",
+    "/user", "/users", "/me", "/forgot", "/reset", "/password", "/verify",
+    # spec + schema discovery (unlocks every path in one shot)
+    "/swagger.json", "/swagger.yaml", "/openapi.json", "/openapi.yaml", "/api-docs",
+    "/api-docs.json", "/v2/api-docs", "/v3/api-docs", "/api/swagger.json", "/api/openapi.json",
+    "/swagger-ui", "/swagger-ui.html", "/api-docs-ui", "/graphql", "/graphiql", "/playground",
+    # framework debug + metadata (high-severity when exposed)
+    "/actuator", "/actuator/env", "/actuator/health", "/actuator/mappings", "/debug",
+    "/debug/vars", "/debug/pprof", "/_debug", "/metrics", "/prometheus", "/health",
+    "/healthz", "/readyz", "/livez", "/status", "/info", "/version", "/env", "/.env",
+    "/server-status", "/server-info", "/phpinfo.php", "/trace", "/config.json",
+    "/.well-known/openid-configuration", "/.well-known/security.txt", "/sitemap.xml",
+    "/robots.txt", "/manifest.json", "/asset-manifest.json", "/.git/config", "/.git/HEAD",
+    "/wp-login.php", "/wp-json", "/xmlrpc.php", "/cgi-bin/", "/vendor/phpunit",
+    "/elmah.axd", "/trace.axd", "/console/", "/debug/vars/",
+]
+
+
+def _disc_probe(url, timeout=8):
+    """One stealth-friendly GET. Returns (status, body_len, content_type) or (None, 0, '').
+    Routed through scope-guard's own matcher so active discovery is covered by the same
+    request-layer scope enforcement as the scanner tools — never a self-exempt path."""
+    import urllib.request, urllib.error
+    try:
+        import importlib.util as _dl
+        global _SG
+        try:
+            _SG
+        except NameError:
+            _s = _dl.spec_from_file_location("_sg", str(HERE / "scope-guard.py"))
+            _SG = _dl.module_from_spec(_s); _s.loader.exec_module(_SG)
+        _h = _SG.host_of(url)
+        _ok, _why = _SG.in_scope(_h, _SG.host_variants(url))
+        if not _ok:
+            return None, 0, ""
+    except Exception:
+        pass
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) HUNTR/1.0",
+            "Accept": "*/*",
+        })
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            body = r.read(300000)
+            return (getattr(r, "status", 200) or 200), len(body), (r.headers.get("Content-Type") or "")
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read(300000)
+        except Exception:
+            body = b""
+        return e.code, len(body), (e.headers.get("Content-Type") or "") if e.headers else ""
+    except Exception:
+        return None, 0, ""
+
+
+def _disc_spec_paths(text):
+    """Pull every path (and its params) out of an OpenAPI/Swagger doc, without a YAML dep."""
+    import json as _js
+    paths = {}
+    try:
+        doc = _js.loads(text)
+    except Exception:
+        for m in re.finditer(r'^\s{0,4}(/[\w\-./{}\[\]*]+):', text, re.M):   # YAML-ish fallback
+            paths[m.group(1)] = {}
+        return paths
+    raw = (doc.get("paths") if isinstance(doc, dict) else None) or {}
+    if not isinstance(raw, dict):
+        return paths
+    for p, ops in raw.items():
+        params = set()
+        try:
+            ops = ops if isinstance(ops, dict) else {}
+            for method, op in ops.items():
+                if not isinstance(op, dict):
+                    continue
+                for prm in (op.get("parameters") or []):
+                    if isinstance(prm, dict) and prm.get("name"):
+                        params.add(str(prm["name"]))
+                for name in ((op.get("requestBody") or {}).get("content", {}) or {}):
+                    params.add(str(name).replace("application/", "").split("+")[0] or "body")
+            for comp in ((doc.get("components") or {}).get("schemas") or {}).values():
+                if isinstance(comp, dict):
+                    params.update(str(k) for k in (comp.get("properties") or {}))
+        except Exception:
+            pass
+        paths[p] = sorted(params)[:8]
+    return paths
+
+
+def phase_discover(deadline=None):
+    """ACTIVE surface discovery. katana only follows *linked* HTML, and gau/wayback are skipped for
+    single-host/local targets — so unlinked routes (/api/admin/*, /graphql, /swagger.json) are never
+    seen and the scanners have nothing to test. Probe a curated high-value path set against in-scope
+    live hosts, walk any OpenAPI/Swagger doc found, then BFS-expand directories. Soft-404 is handled
+    by comparing each response against a random-path baseline so 'everything returns 200' targets
+    don't flood the ledger with phantom endpoints."""
+    import time as _t
+    from concurrent.futures import ThreadPoolExecutor
+    t_start = _t.time()
+    # Discovery gets its OWN allocation instead of scraping what's left of the hunt budget. Left-over
+    # budgeting backfired: recon burns the slack on a big target, so the seed sweep still ran while the
+    # collection-ID pass (the highest-yield one — it finds /collection/{id} routes that no wordlist can)
+    # was the first thing dropped. A few hundred cheap GETs are worth more than a stalled tail.
+    alloc = 180
+    if deadline is not None:
+        span = max(0.0, deadline - _t.time())
+        alloc = int(max(45.0, min(45.0 + 0.15 * span, 180.0)))
+    disc_deadline = _t.time() + alloc
+
+    def out_of_time(reserve=25):
+        return _t.time() > disc_deadline - reserve
+
+    live = [h for h in STATE["hosts"] if h.get("status") and h.get("host")]
+    if not live:
+        return
+    bases = []
+    for h in live[:4]:
+        host, sch = h.get("host"), (h.get("scheme") or "")
+        if not sch:
+            try:
+                sch = probe_host(host)[2] or "https"
+            except Exception:
+                sch = "https"
+        bases.append((sch + "://" + host, host))
+    if not bases:
+        return
+    stage("Discover", 84)
+    log("cmd", "$ active discovery · %d curated paths × %d host(s)" % (len(DISCOVER_SEEDS), len(bases)))
+
+    workers = 3 if STEALTH else 10
+    existing = {e["url"] for e in STATE["endpoints"]}
+    found = {}          # url -> host
+    tested = set()
+    gated = set((STATE.get("discovery") or {}).get("gated") or [])   # 401/403 routes: real surface, untestable
+
+    def probe(base, host, path):
+        u = path if path.startswith("http") else base.rstrip("/") + path
+        if u in tested:
+            return None
+        tested.add(u)
+        st, blen, ctype = _disc_probe(u)
+        return (u, host, path, st, blen, ctype)
+
+    def sweep(base, host, paths):
+        got = []
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for res in ex.map(lambda p: probe(base, host, p), paths):
+                if res:
+                    got.append(res)
+        return got
+
+    base_status = {}
+    for base, host in bases:
+        # soft-404 baseline: a random path tells us what "not found" looks like on this host
+        rnd = "/hunt-%d-x" % int(_t.time() * 1000 % 100000)
+        st, blen, _ = _disc_probe(base.rstrip("/") + rnd)
+        base_status[base] = (st, blen)
+        if out_of_time():
+            log("warn", "→ discovery stopped early (budget) after baseline for " + host)
+            break
+        hits = sweep(base, host, DISCOVER_SEEDS)
+        spec_hits = [h for h in hits if re.search(r"(swagger|openapi|api-docs)", h[2], re.I)]
+        interesting = []
+        for (u, hh, path, st, blen, ctype) in hits:
+            if st is None:
+                continue
+            bst, blen0 = base_status[base]
+            soft = (st == bst and abs(blen - blen0) <= 3)
+            live_hit = st in (200, 201, 204, 301, 302, 307, 401, 403, 405, 500) and not soft
+            if live_hit or (st == 200 and blen != blen0):
+                interesting.append((u, hh, path, st, blen, ctype))
+        for (u, hh, path, st, blen, ctype) in interesting:
+            found[u] = hh
+            if st in (401, 403):
+                gated.add(u)
+        unauth = [h for h in interesting if h[3] in (401, 403)]
+        log("ok", "✓ " + host + " · " + str(len(interesting)) + " live path(s) of " +
+            str(len(DISCOVER_SEEDS)) + " probed" +
+            (" · " + str(len(unauth)) + " auth-gated (401/403)" if unauth else "") +
+            (" · " + str(len(spec_hits)) + " spec doc(s)" if spec_hits else ""))
+
+        # walk specs → every documented path, with its params, in one shot
+        for (u, hh, path, st, blen, ctype) in spec_hits:
+            if st != 200 or blen > 900000:
+                continue
+            try:
+                import urllib.request as _ur
+                with _ur.urlopen(_ur.Request(u, headers={"User-Agent": "Mozilla/5.0 HUNTR"}), timeout=10) as r:
+                    txt = r.read(900000).decode("utf-8", "ignore")
+            except Exception:
+                continue
+            for sp, sparams in _disc_spec_paths(txt).items():
+                concrete = re.sub(r"\{[^}]+\}", "1", sp).rstrip("/") or "/"
+                if "?" in concrete or sparams:
+                    concrete += "?" + "&".join("%s=1" % p for p in sparams[:4])
+                fu = base.rstrip("/") + concrete
+                if fu not in tested:
+                    found[fu] = hh
+            log("ok", "→ spec walk · " + u.split("/")[-1] + " → " + str(len(_disc_spec_paths(txt))) + " path(s)")
+
+    # Collection-ID probe — the highest-yield IDOR shape. A real API rarely exposes /api/orders at all;
+    # it exposes /api/orders/1 and /api/orders/2 and nothing links to them. No wordlist finds those,
+    # and they are exactly the routes the IDOR/BFLA testers need. Probe <collection>/1 and /2 for any
+    # discovered or seeded path whose last segment names a collection, so we catch /api/orders/{id}
+    # even when the collection root itself 404s.
+    COLLECTIONS = ("users", "user", "accounts", "account", "orders", "order", "items", "item",
+                   "products", "product", "invoices", "invoice", "tickets", "ticket", "customers",
+                   "customer", "transactions", "transaction", "payments", "payment", "documents",
+                   "document", "files", "file", "messages", "message", "sessions", "session",
+                   "tokens", "token", "keys", "key", "webhooks", "webhook", "jobs", "job",
+                   "reports", "report", "cards", "card", "refunds", "refund", "comments",
+                   "comment", "posts", "post", "projects", "project", "orgs", "org", "teams",
+                   "team", "roles", "role", "permissions", "permission", "clients", "client",
+                   "subscriptions", "subscription", "plans", "plan", "coupons", "coupon",
+                   "vouchers", "voucher", "wallets", "wallet", "ledgers", "ledger", "entries")
+    COLL_RE = re.compile(r"/(" + "|".join(COLLECTIONS) + r")/?$", re.I)
+    if not out_of_time(35):
+        stems, seen_stem = [], set()
+        # discovered routes first (they are real), then seeded collections as the fallback net
+        ordered = list(found) + [b.rstrip("/") + p for b, _ in bases[:1] for p in DISCOVER_SEEDS]
+        for u in ordered:
+            pu = re.sub(r"[?#].*$", "", u)
+            if COLL_RE.search(pu) and not re.search(r"/\d+/?$", pu) and pu not in seen_stem:
+                seen_stem.add(pu)
+                stems.append(pu)
+        for base, host in bases:
+            if not stems:
+                break
+            cand = []
+            for st_ in stems[:60]:
+                cand += [st_ + "/1", st_ + "/2"]
+            extra = 0
+            bst, blen0 = base_status.get(base, (404, 0))
+            for (u, hh, path, st, blen, ctype) in sweep(base, host, cand):
+                if st is None or (st == bst and abs(blen - blen0) <= 3):
+                    continue
+                if st in (200, 201, 204, 301, 302, 401, 403, 405, 500) and u not in found:
+                    found[u] = hh
+                    if st in (401, 403):
+                        gated.add(u)
+                    extra += 1
+            if extra:
+                log("ok", "→ collection-ID probe · +" + str(extra) +
+                    " record route(s) (/collection/{id}) — IDOR/BFLA testable")
+
+    # BFS-expand directories: /api found → probe /api/<common leaf>
+    leaves = ["users", "admin", "me", "orders", "accounts", "config", "settings", "search",
+              "products", "items", "health", "status", "v1", "v2", "graphql", "docs", "login",
+              "tokens", "keys", "upload", "export", "flags", "debug", "internal",
+              "users/list", "admin/users", "admin/settings", "admin/config", "admin/roles",
+              "admin/permissions", "admin/audit", "admin/logs", "admin/stats"]
+    dirs = {u for u in found if re.search(r"/(api|admin|v\d+|[a-z-]+)/?$", u, re.I) and
+            not re.search(r"\.(js|css|png|jpg|json|html?)$", u, re.I)}
+    if dirs and not out_of_time():
+        bfs = []
+        for d in list(dirs)[:12]:
+            bfs += [d.rstrip("/") + "/" + lf for lf in leaves]
+        extra = 0
+        for base, host in bases:
+            got = sweep(base, host, bfs)
+            bst, blen0 = base_status.get(base, (404, 0))
+            for (u, hh, path, st, blen, ctype) in got:
+                if st is None or (st == bst and abs(blen - blen0) <= 3):
+                    continue
+                if st in (200, 201, 204, 301, 302, 401, 403, 405, 500) and u not in found:
+                    found[u] = hh
+                    if st in (401, 403):
+                        gated.add(u)
+                    extra += 1
+        if extra:
+            log("ok", "→ BFS expand · +" + str(extra) + " route(s) under " + str(len(dirs)) + " discovered dir(s)")
+
+    # ffuf amplifier — only when a curated probe already proved the host serves real content,
+    # so we never hammer a host that is refusing us.
+    if has("ffuf") and not out_of_time(40):
+        for base, host in bases[:2]:
+            bst, blen0 = base_status.get(base, (404, 0))
+            if bst is None or bst >= 500:
+                continue
+            wl = HUNT_DIR / "discover-wordlist.txt"
+            wl.write_text("\n".join(sorted({p.lstrip("/") for p in DISCOVER_SEEDS
+                                            if not p.endswith("/")})) + "\n")
+            rl = 3 if STEALTH else 25
+            log("cmd", "$ ffuf -u " + base + "/FUZZ -w discover-wordlist.txt -rate " + str(rl))
+            out, _, _ = sh(["ffuf", "-u", base + "/FUZZ", "-w", str(wl), "-rate", str(rl),
+                            "-t", "10" if not STEALTH else "4", "-timeout", "8", "-s",
+                            "-mc", "200,204,301,302,307,401,403,405,500"], timeout=70)
+            n = 0
+            for ln in out.splitlines():
+                if "::" not in ln or not ln.startswith("http"):
+                    continue
+                u = ln.split("::")[0].strip()
+                if u not in found:
+                    found[u] = host
+                    n += 1
+            if n:
+                log("ok", "→ ffuf · +" + str(n) + " path(s)")
+
+    new = [(u, h) for u, h in found.items() if u not in existing]
+    # collapse to one representative per (host, path, param-name) shape — same rule phase_surface uses
+    import urllib.parse as _upd
+    seen_sig = set()
+    for e in STATE["endpoints"]:
+        try:
+            pu = _upd.urlparse(e["url"])
+            seen_sig.add((pu.netloc, pu.path, tuple(sorted(k for k, _ in _upd.parse_qsl(pu.query)))))
+        except Exception:
+            pass
+    added = 0
+    for u, h in new:
+        try:
+            pu = _upd.urlparse(u)
+            sig = (pu.netloc, pu.path, tuple(sorted(k for k, _ in _upd.parse_qsl(pu.query))))
+        except Exception:
+            continue
+        if sig in seen_sig:
+            continue
+        seen_sig.add(sig)
+        STATE["endpoints"].append({"url": u, "host": h})
+        added += 1
+    STATE["stats"]["endpoints"] = len(STATE["endpoints"])
+    STATE["discovery"] = {"gated": sorted(gated)}
+    STATE["stats"]["auth_gated"] = len(gated)
+    elapsed = int(_t.time() - t_start)
+    log("ok", "✓ discovery · +" + str(added) + " endpoint(s) → " + str(len(STATE["endpoints"])) +
+        " total surface · " + str(elapsed) + "s")
+    for e in STATE["endpoints"][-min(12, added):]:
+        log("out", "↳ " + e["url"][:110])
+    flush()
+    stage("Discover", 90)
 
 def phase_spa_capture():
     """SPA surface discovery: katana only sees linked HTML, so a single-page app's REAL API (the XHR/
@@ -586,7 +985,7 @@ def phase_active():
         ff.write(json.dumps([{"title": f["title"], "endpoint": f.get("endpoint", "")} for f in STATE["findings"]])); ff.close()
         a = ["--endpoints-file", ef.name, "--findings-file", ff.name, "--json", "--max", "5"]
         if PROGRAM: a += ["--program", PROGRAM]
-        a += ["--model", "claude-haiku-4-5"]
+        # no --model override: hypothesis generation uses the configured engine (Nemotron 3 Ultra)
         d = tool_json("hypo-gen.py", a, timeout=90)
         for p in (ef.name, ff.name):
             try: os.unlink(p)
@@ -677,7 +1076,12 @@ def _cls_key(c):
 
 
 def build_coverage():
-    """Write a real coverage.tsv (surface item × vuln-class cells) from what was actually scanned."""
+    """Write a real coverage.tsv (surface item × vuln-class cells) from what was actually scanned.
+
+    The ledger only ever grades DISCOVERED endpoints, so a hunt that found 6 easy routes could report
+    94% depth while the routes it never discovered were invisible. Report the discovery denominator
+    alongside it (auth-gated routes are reachable but untestable without a session) so a high depth
+    can no longer hide a thin surface."""
     eps = [e["url"] for e in STATE["endpoints"]]
     if not eps:
         eps = ["https://" + h["host"] for h in STATE["hosts"] if h.get("host")]
@@ -701,6 +1105,10 @@ def build_coverage():
             else:
                 cells.append(".")   # not applicable to this endpoint → not counted
         lines.append(ep + "\tendpoint\t" + "\t".join(cells) + "\t")
+    gated = len((STATE.get("discovery") or {}).get("gated") or STATE.get("stats", {}).get("auth_gated") or [])
+    lines.append("# surface %d endpoint(s) graded · %d auth-gated(401/403) route(s) discovered but "
+                 "untestable without a session · depth here covers DISCOVERED surface only, so a high "
+                 "depth is not evidence the whole target was mapped" % (len(eps[:400]), gated))
     (HUNT_DIR / "coverage.tsv").write_text("\n".join(lines) + "\n")
 
 
@@ -803,6 +1211,1099 @@ def scan_cell(ep, cls, tok, tok2):
     return ran
 
 
+def _lead_fetch(url, method="GET", body=None, headers=None, timeout=10):
+    """Scope-gated request for the LLM-led loop. Returns a COMPACT result — status, redirect, title,
+    a small text snippet and any error signal — because the model has to re-read every round: a full
+    body would blow the context window and actually make the agent dumber, not better informed."""
+    import urllib.request, urllib.error
+    import json as _js
+    if not url.startswith("http"):
+        return {"ok": False, "err": "url must be absolute"}
+    try:
+        global _SG
+        try:
+            _SG
+        except NameError:
+            import importlib.util as _dl
+            _s = _dl.spec_from_file_location("_sg", str(HERE / "scope-guard.py"))
+            _SG = _dl.module_from_spec(_s); _s.loader.exec_module(_SG)
+        _h = _SG.host_of(url)
+        _ok, _why = _SG.in_scope(_h, _SG.host_variants(url))
+        if not _ok:
+            return {"ok": False, "scope": "DENY", "err": "OUT OF SCOPE: " + str(_why)}
+    except Exception as _e:
+        return {"ok": False, "err": "scope-check failed: " + str(_e)[:80]}
+    hdrs = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) HUNTR/1.0", "Accept": "*/*"}
+    for k, v in (headers or {}).items():
+        if str(k).lower() not in ("host", "content-length"):
+            hdrs[str(k)] = str(v)
+    data = None
+    if body is not None:
+        data = (body if isinstance(body, bytes) else str(body).encode("utf-8", "ignore"))
+        hdrs.setdefault("Content-Type", "application/x-www-form-urlencoded")
+    try:
+        req = urllib.request.Request(url, data=data, headers=hdrs,
+                                     method=(method or "GET").upper())
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read(160000)
+            st = getattr(r, "status", 200) or 200
+            redir = r.geturl() if r.geturl() != url else ""
+            ctype = r.headers.get("Content-Type") or ""
+            rh = {k.lower(): v for k, v in r.headers.items()}
+    except urllib.error.HTTPError as e:
+        try:
+            raw = e.read(160000)
+        except Exception:
+            raw = b""
+        st, redir, ctype = e.code, "", (e.headers.get("Content-Type") or "") if e.headers else ""
+        rh = {k.lower(): v for k, v in (e.headers.items() if e.headers else [])}
+    except Exception as e:
+        return {"ok": False, "url": url, "method": method, "err": str(e)[:140]}
+    txt = raw.decode("utf-8", "ignore") if isinstance(raw, bytes) else str(raw)
+    r = {"ok": True, "method": (method or "GET").upper(), "url": url, "status": st, "len": len(raw)}
+    if redir:
+        r["redirect"] = redir
+    if ctype:
+        r["ctype"] = ctype.split(";")[0]
+    for k in ("location", "server", "x-powered-by", "set-cookie", "access-control-allow-origin",
+              "www-authenticate", "content-security-policy"):
+        if k in rh:
+            r["hdr:" + k] = str(rh[k])[:220]
+    m = re.search(r"<title[^>]*>(.*?)</title>", txt, re.I | re.S)
+    if m:
+        r["title"] = m.group(1).strip()[:120]
+    if "json" in ctype or txt.lstrip()[:1] in "{[":
+        try:
+            j = _js.loads(txt)
+            r["json_keys"] = (sorted(j.keys())[:24] if isinstance(j, dict)
+                              else ("[%d items]" % len(j)))
+            r["json_preview"] = _js.dumps(j)[:500]
+        except Exception:
+            pass
+    else:
+        snippet = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", txt)
+        snippet = re.sub(r"(?s)<[^>]+>", " ", snippet)
+        snippet = re.sub(r"\s+", " ", snippet).strip()
+        if snippet:
+            r["snippet"] = snippet[:520]
+    sig = re.search(r"(traceback|exception|stack trace|SQLSTATE|syntax error|ORA-\d|"
+                    r"column .* not found|doesn't exist|debug|is not permitted|unauthorized|"
+                    r"forbidden|denied|{{\d+}}|<script>alert)", txt, re.I)
+    if sig:
+        r["signal"] = sig.group(0)[:60]
+    return r
+
+
+def _note_gated(url, status, step=None):
+    """A 401/403 is not a finding — it is proof the route exists behind auth.
+
+    Record it so the session/coverage layers (and the operator) know there is something
+    worth a token here, instead of the probe evaporating into the log."""
+    if status not in (401, 403) or not url:
+        return False
+    d = STATE.setdefault("discovery", {})
+    gated = d.setdefault("gated", [])
+    if url in gated:
+        return False
+    gated.append(url)
+    d["gated"] = sorted(set(gated))
+    STATE.setdefault("stats", {})["auth_gated"] = len(d["gated"])
+    STATE.setdefault("leads", [])
+    if not any(l.get("endpoint") == url for l in STATE["leads"]):
+        STATE["leads"].append({
+            "lead": ("route exists behind auth (" + str(status) + ") — reachable but untestable "
+                     "without a session; supply a token/cookie or run an authenticated pass"),
+            "endpoint": url, "step": step, "source": "probe"})
+        STATE["leads"] = STATE["leads"][-60:]
+    return True
+
+
+_SKILL_CAT = None
+
+
+def _skill_catalog():
+    """Index every local Claude skill once per process: frontmatter description, report_count and
+    section map. Whole file is held so section extraction is pure string work — 135 skills, one read.
+
+    Covers ALL skills, not just hunt-*: chain-builder / bb-local-toolkit / report-writing /
+    never-submit carry judgement the loop is otherwise blind to."""
+    global _SKILL_CAT
+    if _SKILL_CAT is not None:
+        return _SKILL_CAT
+    root = Path.home() / ".claude" / "skills"
+    cat = []
+    if root.is_dir():
+        for d in sorted(root.iterdir()):
+            if not d.is_dir():
+                continue
+            f = d / "SKILL.md"
+            if not f.exists():
+                cand = sorted(x for x in d.glob("*.md") if x.name != "README.md")
+                if not cand:
+                    continue
+                f = cand[0]
+            try:
+                text = f.read_text(errors="ignore")
+            except Exception:
+                continue
+            if not text.strip():
+                continue
+            fm = ""
+            m = re.match(r"^---\s*\n(.*?)\n---", text, re.S)
+            if m:
+                fm = m.group(1)
+            desc = ""
+            dm = re.search(r"^description:\s*(.+)$", fm or text[:1500], re.M)
+            if dm:
+                desc = " ".join(dm.group(1).split())
+            rc = 0
+            rm = re.search(r"report_count:\s*(\d+)", fm)
+            if rm:
+                rc = int(rm.group(1))
+            secs = [(mm.group(1).strip(), mm.start())
+                    for mm in re.finditer(r"^#{2,3}\s+(.+)$", text, re.M)]
+            cat.append({"name": d.name, "desc": desc[:420], "rc": rc, "secs": secs, "text": text})
+    _SKILL_CAT = cat
+    return cat
+
+
+def _skill_pick(state, topn=3, budget=460):
+    """Retrieve the skill sections most relevant to what this round is actually looking at.
+
+    Relevance = overlap with the live attack surface (untested classes, endpoint paths, gated
+    routes, finding classes, stack) + a report_count prior — not a hardcoded skill list."""
+    cat = _skill_catalog()
+    if not cat:
+        return []
+    tok = set()
+    for g in (state.get("untested_cells") or []):
+        tok.update(re.findall(r"[a-z]{4,}", str(g.get("ep", "")).lower()))
+        tok.update(re.findall(r"[a-z]{4,}", str(g.get("untested", "")).lower()))
+    for f in (state.get("findings") or []):
+        tok.update(re.findall(r"[a-z]{4,}", str(f.get("cls", "")).lower()))
+    for u in (state.get("endpoints") or []):
+        tok.update(re.findall(r"[a-z]{4,}", str(u).lower()))
+    for g in (state.get("discovered_gated_routes") or []):
+        tok.update(re.findall(r"[a-z]{4,}", str(g).lower()))
+    tok.update(re.findall(r"[a-z]{4,}", (state.get("target") or "").lower()))
+    if not tok:
+        return []
+    scored = []
+    for s_ in cat:
+        name = s_["name"].lower()
+        hay = name + " " + s_["desc"].lower()
+        sc = sum(1 for t in tok if t in hay)
+        for cls in ("idor", "sqli", "xss", "ssrf", "ssti", "cors", "authz", "redirect",
+                    "race", "oauth", "jwt", "csrf", "lfi", "xxe", "upload", "ssrf"):
+            if cls in tok and cls in name:
+                sc += 3
+        sc += min(s_["rc"], 40) / 20.0
+        if sc > 0:
+            scored.append((sc, s_))
+    scored.sort(key=lambda x: -x[0])
+    out = []
+    for sc, s_ in scored[:topn]:
+        # deepest matching section: prefer a heading that names what we are looking at
+        best = None; best_n = -1
+        for i, (h, _off) in enumerate(s_["secs"]):
+            hl = h.lower()
+            n = sum(1 for t in tok if t in hl)
+            # prefer the actionable sections (methodology / step / test) over overview or
+            # FEEDER / "what unlocks next" — the loop needs the how, not the why
+            if any(k in hl for k in ("methodolog", "step-by-step", "step ", "testing",
+                                     "test ", "exploit", "technique", "how to", "checklist")):
+                n += 1.5
+            if any(k in hl for k in ("feeder", "unlocks", "crown jewel", "what ", "reference")):
+                n -= 1.5
+            if n > best_n:
+                best_n, best = n, i
+        if best is None:
+            body = " ".join(s_["text"].split())[:budget]
+            heading = ""
+        else:
+            h, off = s_["secs"][best]
+            nxt = s_["secs"][best + 1][1] if best + 1 < len(s_["secs"]) else len(s_["text"])
+            body = " ".join(s_["text"][off:nxt].split())[:budget]
+            heading = h
+        out.append({"skill": s_["name"], "heading": heading, "gist": body})
+    return out
+
+
+def _graphify_surface_digest():
+    """Query the target's graphify knowledge graph (if built) and return a compact,
+    high-signal surface summary. Returns None when no graph exists — caller falls back
+    to the flat digest.
+
+    The graph is built by phase_discover / phase_surface writing raw recon into
+    <HUNT_DIR>/recon/ and then calling `graphify` on it. When present it gives us:
+      - the 8 highest-betweenness endpoints (most connected → widest attack surface)
+      - untested cells ranked by graph centrality instead of raw order
+      - cross-endpoint relationships the flat list can't express
+    """
+    graph_json = HUNT_DIR / "graphify-out" / "graph.json"
+    if not graph_json.exists():
+        return None
+    try:
+        import json as _json
+        g = _json.loads(graph_json.read_text())
+        nodes = g.get("nodes", [])
+        # score by degree — proxy for betweenness when we don't want to recompute it
+        ep_nodes = [n for n in nodes if n.get("type") == "endpoint" or
+                    (n.get("source_location", "").startswith("http"))]
+        ep_nodes.sort(key=lambda n: n.get("degree", 0), reverse=True)
+        top_eps = [{"url": n.get("id", ""), "degree": n.get("degree", 0),
+                    "community": n.get("community_name", n.get("community", ""))}
+                   for n in ep_nodes[:12]]
+        # surface edges that cross community boundaries — these are the attack paths
+        cross_edges = [e for e in g.get("edges", [])
+                       if e.get("source_community") != e.get("target_community")][:8]
+        return {"graph_endpoints": top_eps, "cross_community_edges": cross_edges,
+                "total_graph_nodes": len(nodes)}
+    except Exception:
+        return None
+
+
+def _lead_digest(max_eps=34, max_res=14):
+    """Compact view of hunt state for the LLM — enough to decide the next move, small enough to
+    repeat every round without exhausting the context.
+
+    When a graphify surface graph exists for this target, the endpoint list is replaced with a
+    graph-ranked view (highest-betweenness endpoints first, cross-community edges highlighted).
+    This cuts context by ~60% on large surfaces while surfacing the most attack-relevant paths."""
+    c = _creds()
+    tok = (c.get("session_token") or "").strip()
+    eps = [e["url"] for e in STATE["endpoints"][:max_eps]]
+    tested = sum(len(v) for v in TESTED.values())
+    gaps = []
+    for ep in STATE["endpoints"]:
+        gaps.append({"ep": ep["url"], "untested": sorted(set(applicable_classes(ep["url"])) - TESTED.get(ep["url"], set()))})
+        if len(gaps) >= 16:
+            break
+    res = list(STATE.get("lead_results", []))[-max_res:]
+
+    # Try to enrich with the graphify surface graph — replaces raw endpoint list if available
+    graph_ctx = _graphify_surface_digest()
+    if graph_ctx:
+        # Reorder gaps to prioritise high-degree graph endpoints
+        top_urls = {e["url"] for e in graph_ctx.get("graph_endpoints", [])}
+        gaps_top = [g for g in gaps if g["ep"] in top_urls]
+        gaps_rest = [g for g in gaps if g["ep"] not in top_urls]
+        gaps = (gaps_top + gaps_rest)[:16]
+        eps_out = [e["url"] for e in graph_ctx["graph_endpoints"]]
+    else:
+        eps_out = eps
+
+    digest = {
+        "target": TARGET, "mode": MODE,
+        "session": bool(tok) if MODE != "black" else None,
+        "endpoints": eps_out,
+        "endpoint_count": len(STATE["endpoints"]),
+        "tested_cells": tested,
+        "findings": [{"sev": f.get("sev"), "title": f.get("title"), "cls": f.get("cls"),
+                      "endpoint": f.get("endpoint"), "verdict": f.get("verdict"),
+                      "_det": f.get("_det", False)}
+                     for f in STATE["findings"][:16]],
+        "leads": (STATE.get("leads") or [])[-8:],
+        "untested_cells": gaps,
+        "recent_results": res,
+        "discovered_gated_routes": (STATE.get("discovery") or {}).get("gated", [])[:12],
+        "past_situations": STATE.get("memory_recall", [])[:5],
+        "playbook": _skill_pick({"untested_cells": gaps, "findings": STATE["findings"][:8],
+                                 "endpoints": eps_out, "discovered_gated_routes":
+                                     (STATE.get("discovery") or {}).get("gated", [])[:8],
+                                 "target": TARGET}),
+    }
+    if graph_ctx:
+        digest["graph_surface"] = graph_ctx   # extra signal: cross-community edges
+    return digest
+
+
+def phase_memory_recall():
+    """Long-term memory — recall analogous situations from every past hunt BEFORE the LLM leads.
+
+    The corpus/invariants tell the loop what to ASSERT; memory tells it 'this exact response shape
+    paid $8k on target Y, here is the technique that worked'. Retrieval is local (character n-gram
+    + token cosine weighted by reward) — no cloud, no keys. This is the one piece of the knowledge
+    layer that was never wired into the production path (only hunt-agent/hunt-swarm called it)."""
+    mem = HERE / "hunt-memory.py"
+    if not mem.exists() or not STATE["endpoints"]:
+        return
+    paths = []
+    for e in STATE["endpoints"][:40]:
+        paths.append(_upd_path(str(e)))
+    gated = (STATE.get("discovery") or {}).get("gated", [])[:10]
+    q = " ".join([x for x in ([PROGRAM, TARGET] + paths + gated) if x])
+    q = q[:900]
+    if len(q) < 24:
+        return
+    try:
+        out, err, rc = sh([sys.executable, str(mem), "--recall", "--text", q,
+                           "--stack", (_stack().split(",")[0] or "generic"), "--k", "5"], timeout=45)
+    except Exception:
+        return
+    if rc != 0 or not out.strip():
+        log("out", "→ memory recall · " + (err.strip() or "no analogous past situation")[:120])
+        return
+    hits = []
+    # recall prints "  [cos] kind/cls · program" then the situation on the next indented line
+    lines = out.splitlines()
+    for i, ln in enumerate(lines):
+        m = re.match(r"^\s*\[([0-9.]+)\]\s+(\S+?)\s*·\s*(\S+)", ln)
+        if not m:
+            continue
+        txt = ""
+        if i + 1 < len(lines):
+            txt = lines[i + 1].strip()
+        # recall prints "<kind>/<cls> · <program>" — split them, don't mislabel program as cls
+        w = m.group(2).split("/", 1)
+        hits.append({"cos": float(m.group(1)), "kind": w[0], "cls": w[-1],
+                     "program": m.group(3), "text": txt[:260]})
+    hits.sort(key=lambda h: -h.get("cos", 0))
+    STATE["memory_recall"] = hits[:5]
+    if hits:
+        log("ok", "◆ memory · " + str(len(hits[:5])) + " analogous past situation(s) recalled — " +
+            str(hits[0]["kind"]) + "/" + str(hits[0]["cls"]) + " · " + str(hits[0].get("program", "")) +
+            " @cos " + str(hits[0]["cos"]))
+        for h in hits[:3]:
+            log("out", "   ⤷ [" + str(h["cos"]) + "] " + str(h["cls"]) + " · " + str(h["text"])[:120])
+    else:
+        log("out", "→ memory recall · no analogous past situation — this looks new")
+    flush()
+
+
+def _start_background_scanners():
+    """Improvement #4 — fire nuclei + subfinder in background threads before the agent loop.
+
+    Results land in HUNT_DIR/nuclei_bg.txt and HUNT_DIR/subs_bg.txt.
+    Claude can read them any time with bash("cat ~/.huntr/targets/.../nuclei_bg.txt").
+    This means heavy scanners run in parallel with Claude's reasoning — not after."""
+    domain = apex(TARGET)
+
+    def _nuclei():
+        if not has("nuclei"):
+            return
+        out_f = str(HUNT_DIR / "nuclei_bg.txt")
+        hosts = [e["url"] for e in STATE.get("endpoints", [])[:20]] or ["https://" + domain]
+        input_f = str(HUNT_DIR / "nuclei_targets.txt")
+        Path(input_f).write_text("\n".join(hosts) + "\n")
+        sh(["nuclei", "-l", input_f, "-severity", "critical,high,medium",
+            "-silent", "-timeout", "8", "-o", out_f], timeout=300)
+
+    def _subfinder():
+        if not has("subfinder"):
+            return
+        sh(["subfinder", "-d", domain, "-silent",
+            "-o", str(HUNT_DIR / "subs_bg.txt")], timeout=120)
+
+    def _gau():
+        if not has("gau"):
+            return
+        out, _, _ = sh(["gau", "--subs", domain], timeout=90)
+        if out:
+            (HUNT_DIR / "gau_bg.txt").write_text(out)
+
+    for fn in (_nuclei, _subfinder, _gau):
+        threading.Thread(target=fn, daemon=True).start()
+    log("ok", "◉ background: nuclei + subfinder + gau started (results in HUNT_DIR/)")
+
+
+def _query_hunt_corpus():
+    """Improvement #3 — pull past technique wins for this tech stack from hunt-corpus.
+
+    Returns a compact string Claude gets in its initial context:
+    'On Next.js+Supabase targets: found anon key in JS chunks, enumerated tables via
+    error oracle, admin edge function returned 405 on GET → test POST.'
+    Returns '' when corpus tool unavailable or no relevant history."""
+    cor = HERE / "hunt-corpus.py"
+    if not cor.exists():
+        return ""
+    stack = _stack()
+    host = "https://" + apex(TARGET)
+    try:
+        out, _, rc = sh(
+            [sys.executable, str(cor), "--recall", "--stack", stack,
+             "--host", host, "--limit", "8", "--json"],
+            timeout=30,
+        )
+        if not out:
+            return ""
+        data = json.loads(out.strip().splitlines()[-1])
+        items = data if isinstance(data, list) else data.get("items", [])
+        if not items:
+            return ""
+        lines = []
+        for it in items[:8]:
+            tech = it.get("technique") or it.get("title") or ""
+            paid = it.get("paid") or it.get("bounty") or ""
+            ep   = it.get("endpoint") or it.get("url") or ""
+            if tech:
+                lines.append(f"- {tech}" + (f" [{ep}]" if ep else "") + (f" → {paid}" if paid else ""))
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
+def _auto_chain_trigger():
+    """Improvement #5 — after a new finding is recorded, auto-run chain-builder.
+
+    Fires in a daemon thread so it doesn't block the agent loop.
+    Results are appended to STATE['leads'] so the agent sees them in the next round."""
+    cb = HERE / "chain-builder.py"
+    if not cb.exists() or len(STATE["findings"]) < 2:
+        return
+    def _run():
+        try:
+            f_arg = json.dumps(STATE["findings"][-10:])
+            tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+            tmp.write(f_arg); tmp.close()
+            out, _, rc = sh(
+                [sys.executable, str(cb), "--findings", tmp.name, "--json"],
+                timeout=60,
+            )
+            try: os.unlink(tmp.name)
+            except Exception: pass
+            if not out:
+                return
+            for line in out.strip().splitlines():
+                if not line.startswith("{"):
+                    continue
+                ch = json.loads(line)
+                chain_desc = ch.get("chain") or ch.get("title") or ""
+                if chain_desc:
+                    with _STATE_LOCK:
+                        STATE.setdefault("leads", []).append({
+                            "lead": "AUTO-CHAIN: " + chain_desc[:300],
+                            "endpoint": ch.get("endpoint", ""),
+                            "source": "chain-builder",
+                        })
+                        STATE["leads"] = STATE["leads"][-60:]
+                    log("ok", "⛓ auto-chain: " + chain_desc[:120])
+        except Exception:
+            pass
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _save_conversation_checkpoint(messages):
+    """Improvement #7 — persist the tool-use conversation to disk.
+
+    Saved to HUNT_DIR/lead_conversation.json on every tool round.
+    On resume, prior leads and lead_log are already in STATE (loaded from run.json),
+    and the agent's initial digest includes them — so context carries over even after
+    the process is killed and restarted."""
+    try:
+        ckpt = HUNT_DIR / "lead_conversation.json"
+        # keep only last 40 messages to avoid huge files
+        trimmed = messages[-40:] if len(messages) > 40 else messages
+        ckpt.write_text(json.dumps(trimmed, default=str, ensure_ascii=False))
+    except Exception:
+        pass
+
+
+def _graphify_clusters(n=2):
+    """Improvement #2 — split endpoints into n clusters using graphify communities.
+
+    Returns list of endpoint-URL lists, one per cluster. Falls back to
+    round-robin split when no graph is available."""
+    graph_json = HUNT_DIR / "graphify-out" / "graph.json"
+    eps = [e["url"] for e in STATE.get("endpoints", [])]
+    if not eps:
+        return [eps]
+    if not graph_json.exists():
+        # round-robin fallback
+        clusters = [[] for _ in range(n)]
+        for i, u in enumerate(eps):
+            clusters[i % n].append(u)
+        return [c for c in clusters if c]
+    try:
+        g = json.loads(graph_json.read_text())
+        nodes = {nd["id"]: nd for nd in g.get("nodes", [])}
+        # group nodes by community
+        from collections import defaultdict
+        by_comm = defaultdict(list)
+        for nd in g.get("nodes", []):
+            comm = nd.get("community", 0)
+            url  = nd.get("label", "") or nd.get("id", "")
+            if url.startswith("http") and url in eps:
+                by_comm[comm].append(url)
+        # merge small communities into n buckets by size
+        sorted_comms = sorted(by_comm.values(), key=len, reverse=True)
+        clusters = [[] for _ in range(n)]
+        for i, comm_eps in enumerate(sorted_comms):
+            clusters[i % n].extend(comm_eps)
+        # anything not in graph: append to smallest cluster
+        covered = set(u for c in clusters for u in c)
+        leftovers = [u for u in eps if u not in covered]
+        for i, u in enumerate(leftovers):
+            clusters[i % n].append(u)
+        return [c for c in clusters if c]
+    except Exception:
+        clusters = [[] for _ in range(n)]
+        for i, u in enumerate(eps):
+            clusters[i % n].append(u)
+        return [c for c in clusters if c]
+
+
+def _hunt_tools(authed):
+    """Tool definitions for the agentic lead loop. Claude gets a real shell + HTTP + scanner."""
+    return [
+        {
+            "name": "bash",
+            "description": (
+                "Run any shell command and get stdout+stderr. Use this for everything: "
+                "curl, python3, subfinder, httpx, katana, waybackurls, gau, nuclei, nmap, "
+                "grep, awk, jq, dnsx, ffuf, sqlmap, dalfox. "
+                "The scope guard is your responsibility — do not probe hosts outside the scope list. "
+                "Truncated at 12KB. Use pipes and head/tail to control output size."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Shell command to execute"},
+                    "timeout":  {"type": "integer", "description": "Timeout seconds (default 45, max 180)"}
+                },
+                "required": ["command"]
+            }
+        },
+        {
+            "name": "http_request",
+            "description": (
+                "Make one HTTP request to the target (scope-guarded). "
+                "Returns status, headers, and body excerpt. "
+                "Use bash+curl for multi-request loops or custom payloads instead."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "url":     {"type": "string"},
+                    "method":  {"type": "string", "enum": ["GET","POST","PUT","PATCH","DELETE","HEAD","OPTIONS"], "default": "GET"},
+                    "headers": {"type": "object", "description": "Extra request headers"},
+                    "body":    {"type": "string", "description": "Request body (POST/PUT/PATCH)"}
+                },
+                "required": ["url"]
+            }
+        },
+        {
+            "name": "scan_endpoint",
+            "description": (
+                "Run a deterministic scanner (nuclei / sqlmap / dalfox / custom) against one endpoint "
+                "for a specific vulnerability class. Returns tool-grade findings with proof. "
+                "Use AFTER you have a hypothesis — scanner evidence upgrades a lead to a confirmed finding."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                    "cls": {
+                        "type": "string",
+                        "description": "sqli|xss|ssti|ssrf|cors|redirect|idor|authz|param|race|lfi|rce"
+                    },
+                    "extra_args": {"type": "string", "description": "Extra flags passed verbatim to the scanner"}
+                },
+                "required": ["url", "cls"]
+            }
+        },
+        {
+            "name": "record_finding",
+            "description": (
+                "Record a confirmed vulnerability. Call ONLY when you have OBSERVED evidence "
+                "(response body, status code, reflected payload, tool output). "
+                "Do NOT call this to log a hypothesis — use bash/http_request to confirm first. "
+                "401/403 alone is NOT a finding."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "title":        {"type": "string"},
+                    "severity":     {"type": "string", "enum": ["critical","high","medium","low","info"]},
+                    "cls":          {"type": "string", "description": "sqli|xss|idor|ssrf|rce|ato|cors|ssti|lfi|redirect|logic|info"},
+                    "url":          {"type": "string"},
+                    "evidence":     {"type": "string", "description": "Exact observed evidence: status, body excerpt, payload, tool output"},
+                    "reproduction": {"type": "string", "description": "Step-by-step reproduction (numbered)"},
+                    "cvss":         {"type": "string", "description": "CVSS score if known"}
+                },
+                "required": ["title","severity","cls","url","evidence","reproduction"]
+            }
+        },
+        {
+            "name": "done",
+            "description": "Signal that the hunt is complete for this surface. Call when you have exhausted meaningful attack surface or found everything worth reporting.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string", "description": "What you found and why you're stopping"}
+                },
+                "required": ["summary"]
+            }
+        }
+    ]
+
+
+def _make_tool_executor(tok, tok2, authed, step_counter):
+    """Return a closure that executes hunt tool calls and updates STATE."""
+
+    def executor(name, inp):
+        step = step_counter[0]
+        step_counter[0] += 1
+
+        if name == "bash":
+            cmd = str(inp.get("command", "")).strip()
+            if not cmd:
+                return "ERROR: empty command"
+            timeout = min(int(inp.get("timeout", 45)), 180)
+            log("cmd", "$ " + cmd[:120])
+            out, err, rc = sh(["bash", "-c", cmd], timeout=timeout)
+            combined = (out + err).strip()
+            # improvement #6: large outputs summarized by Haiku before Sonnet sees them
+            if len(combined) > 3500:
+                combined = llm_client.summarize_if_large(combined, threshold=3500, label="bash:" + cmd[:40])
+            flush()
+            return combined or f"(exit {rc}, no output)"
+
+        elif name == "http_request":
+            url = str(inp.get("url", "")).strip()
+            if not url:
+                return '{"error":"missing url"}'
+            res = _lead_fetch(url, method=str(inp.get("method","GET")),
+                              body=inp.get("body"), headers=inp.get("headers") or {})
+            # register newly discovered endpoints (lock for multi-agent safety)
+            if res.get("ok") and res.get("status") not in (404, None):
+                u = res.get("url") or url
+                with _STATE_LOCK:
+                    if u and not any(u == e["url"] for e in STATE["endpoints"]):
+                        from urllib.parse import urlparse as _up
+                        STATE["endpoints"].append({"url": u, "host": _up(u).netloc})
+                        STATE["stats"]["endpoints"] = len(STATE["endpoints"])
+                _note_gated(u, res.get("status"), step)
+            log("cmd", "$ " + inp.get("method","GET").upper() + " " + url[:90] +
+                " → " + str(res.get("status") or res.get("err",""))[:60])
+            flush()
+            return json.dumps(res, default=str)[:8000]
+
+        elif name == "scan_endpoint":
+            url = str(inp.get("url","")).strip()
+            cls = str(inp.get("cls","")).lower().strip()
+            if not url or not cls:
+                return '{"error":"need url and cls"}'
+            if cls in ("idor","authz") and not authed:
+                return '{"error":"idor/authz need an authenticated session — supply a token/cookie"}'
+            log("cmd", "$ scan_cell [" + cls + "] " + url[:90])
+            before = len(STATE["findings"])
+            try:
+                scan_cell(url, cls, tok, tok2)
+            except Exception as _e:
+                return json.dumps({"error": str(_e)[:200]})
+            newf = STATE["findings"][before:]
+            flush()
+            return json.dumps({
+                "ok": True, "scanned": url, "cls": cls,
+                "new_findings": [{"title": f.get("title"), "sev": f.get("sev"),
+                                  "cls": f.get("cls"), "verdict": f.get("verdict")} for f in newf]
+            })
+
+        elif name == "record_finding":
+            title = str(inp.get("title","")).strip()
+            evidence = str(inp.get("evidence","")).strip()
+            url = str(inp.get("url","")).strip()
+            if not title or not evidence or not url:
+                return '{"error":"title, evidence, and url are required"}'
+            if len(evidence) < 20:
+                return '{"error":"evidence too thin — describe exactly what you observed"}'
+            sev_map = {"critical":"c","high":"h","medium":"m","low":"l","info":"i"}
+            sev = sev_map.get(str(inp.get("severity","medium")).lower(), "m")
+            with _STATE_LOCK:
+                add_finding(sev, title, evidence, url,
+                            cvss=str(inp.get("cvss","")),
+                            cls=str(inp.get("cls","")),
+                            verdict="agent", det=False)
+                for f in STATE["findings"]:
+                    if f.get("title") == title and not f.get("steps"):
+                        f["steps"] = str(inp.get("reproduction",""))[:1000]
+            log("ok", "★ finding recorded: [" + sev.upper() + "] " + title[:100])
+            flush()
+            # improvement #5: auto-trigger chain-builder in background
+            _auto_chain_trigger()
+            return json.dumps({"ok": True, "recorded": title,
+                               "note": "chain-builder running in background; check leads for chain opportunities"})
+
+        elif name == "done":
+            summary = str(inp.get("summary","")).strip()
+            log("ok", "✓ agent done: " + summary[:200])
+            STATE.setdefault("lead_results",[]).append({"action":"done","summary":summary[:400]})
+            flush()
+            return "__DONE__"
+
+        return json.dumps({"error": f"unknown tool: {name}"})
+
+    return executor
+
+
+def phase_llm_lead(deadline, share=0.70, max_steps=120):
+    """THE AGENT LOOP — Claude leads the hunt with REAL tool access.
+
+    Architecture: multi-turn Anthropic tool-use conversation (same as Claude Code).
+    Claude gets bash, http_request, scan_endpoint, record_finding, done.
+    Every tool call executes synchronously and feeds raw output back into the next
+    message — no JSON-action dispatch layer, no subprocess boundary, no pre-digested
+    snapshots. Claude reads JS, follows redirects, enumerates Supabase tables, chains
+    from recon to exploitation, all in one continuous reasoning thread.
+
+    Falls back to legacy JSON-action loop if OAuth/API key unavailable (NVIDIA path)."""
+    if not STATE["endpoints"]:
+        log("warn", "→ LLM-led loop skipped: no mapped surface")
+        return
+    if deadline is None:
+        return
+
+    span = max(0.0, deadline - time.time())
+    lead_budget = max(30.0, min(span * share, span - 30))
+    lead_deadline = time.time() + lead_budget
+
+    c = _creds()
+    tok  = (c.get("session_token") or "").strip()
+    tok2 = (c.get("token2") or "").strip()
+    authed = (MODE != "black") and bool(tok)
+
+    STATE.setdefault("lead_results", [])
+    STATE.setdefault("leads", [])
+    stage("LLM-led", 86)
+
+    # improvement #4: start background scanners immediately
+    _start_background_scanners()
+
+    _use_tool_loop = (MODEL_LEAD.get("provider") == "anthropic")
+
+    if not _use_tool_loop:
+        _phase_llm_lead_json(lead_deadline, tok, tok2, authed, max_steps)
+    else:
+        n_eps = len(STATE.get("endpoints", []))
+        # improvement #2: dual-agent for larger surfaces (≥8 endpoints)
+        if n_eps >= 8:
+            clusters = _graphify_clusters(n=2)
+            if len(clusters) >= 2:
+                steps_each = max(40, max_steps // 2)
+                log("ok", f"◆ dual-agent mode · {len(clusters[0])} + {len(clusters[1])} endpoints")
+                # stagger start by 12s to avoid concurrent OAuth rate-limit burst
+                def _run_deep():
+                    time.sleep(12)
+                    _phase_llm_lead_tool_use(
+                        lead_deadline, tok, tok2, authed, steps_each,
+                        surface_filter=set(clusters[1]), agent_label="DEEP")
+                t = threading.Thread(target=_run_deep, daemon=True)
+                t.start()
+                _phase_llm_lead_tool_use(
+                    lead_deadline, tok, tok2, authed, steps_each,
+                    surface_filter=set(clusters[0]), agent_label="BROAD")
+                t.join(timeout=max(0, lead_deadline - time.time()))
+            else:
+                _phase_llm_lead_tool_use(lead_deadline, tok, tok2, authed, max_steps)
+        else:
+            _phase_llm_lead_tool_use(lead_deadline, tok, tok2, authed, max_steps)
+
+    log("ok", "✓ LLM-led · " + str(len(STATE.get("lead_log",[]))) + " action(s) · " +
+        str(len(STATE["findings"])) + " finding(s) so far")
+    flush()
+    stage("LLM-led", 94)
+
+
+def _phase_llm_lead_tool_use(lead_deadline, tok, tok2, authed, max_steps,
+                              surface_filter=None, agent_label=""):
+    """Real tool-use agentic loop — Claude has bash, http, scanner, finding tools.
+
+    surface_filter: optional URL list this agent owns (improvement #2 multi-agent mode).
+    agent_label: short label e.g. 'BROAD' or 'DEEP' for logging."""
+    label = f"[{agent_label}] " if agent_label else ""
+    log("ok", f"◆ {label}tool-use agent · bash + HTTP + scanner + corpus memory")
+
+    # improvement #3: seed corpus memory before the loop
+    corpus_context = _query_hunt_corpus()
+
+    # improvement #7: inject prior leads from previous sessions
+    prior_leads = STATE.get("leads", [])[-20:]
+    prior_lead_text = ""
+    if prior_leads:
+        prior_lead_text = "\n\n## Leads from Prior Session\n" + "\n".join(
+            f"- {l.get('lead','')} [{l.get('endpoint','')}]" for l in prior_leads
+        )
+
+    digest = _lead_digest()
+    if surface_filter:
+        digest["endpoints"] = [e for e in digest.get("endpoints", [])
+                               if e.get("url") in surface_filter]
+        digest["untested_cells"] = [c for c in digest.get("untested_cells", [])
+                                    if c.get("ep") in surface_filter]
+
+    scope_summary = ", ".join(sorted(set(
+        e.get("host", "") for e in STATE["endpoints"]
+    )))[:400]
+    creds_hint = (
+        "\nAuthenticated: YES (session token available). Use it in Authorization/Cookie headers."
+        if tok else
+        "\nAuthenticated: NO — black-box mode. Focus on unauthenticated surface."
+    )
+    surface_note = (
+        f"\nYour surface slice: {len(surface_filter)} endpoints (multi-agent mode — stay on your slice)."
+        if surface_filter else ""
+    )
+
+    sys_p = (
+        f"You are an elite bug bounty hunter. Target: {TARGET}\n"
+        f"In-scope hosts: {scope_summary}{creds_hint}{surface_note}\n\n"
+        "You have a real shell via bash. Use it like a terminal:\n"
+        "  curl, python3, subfinder, httpx, katana, nuclei, sqlmap, dalfox, ffuf, jq, gau, waybackurls\n"
+        "  Read JS chunks for API keys, Supabase URLs, payment flows, admin routes\n"
+        "  Enumerate tables via Supabase error oracle; test JWTs (alg:none, weak secret)\n"
+        f"  Background scanners already running — check: bash('cat {HUNT_DIR}/nuclei_bg.txt')\n\n"
+        "METHODOLOGY:\n"
+        "1. JS analysis first — grep _next/static/chunks for keys, fetch() calls, auth patterns\n"
+        "2. Enumerate: subdomains, hidden routes, edge functions, GraphQL introspection\n"
+        "3. Attack: hypothesis → bash/http_request → verify → scan_endpoint → record_finding\n"
+        "4. Chain: CORS+XSS=ATO, IDOR+info=data breach, open-redirect+OAuth=token hijack\n"
+        "5. record_finding ONLY with OBSERVED evidence (response body, tool output, scanner proof)\n\n"
+        "Skill playbook and past wins on similar targets are below — apply matching technique FIRST."
+    )
+
+    skill_data = _skill_pick({
+        "untested_cells": digest.get("untested_cells", []),
+        "findings": STATE["findings"][:8],
+        "endpoints": [e["url"] for e in STATE["endpoints"][:20]],
+        "target": TARGET,
+    })
+    playbook_text = ""
+    if skill_data:
+        playbook_text = "\n\n## Skill Playbook\n" + "\n---\n".join(
+            f"### {s['skill']} — {s['heading']}\n{s['gist']}" for s in skill_data
+        )
+    corpus_text = ("\n\n## Past Wins on Similar Targets\n" + corpus_context) if corpus_context else ""
+
+    initial_user = (
+        "## Hunt State\n" +
+        json.dumps(digest, default=str, indent=2)[:5000] +
+        corpus_text +
+        playbook_text +
+        prior_lead_text +
+        "\n\nBegin the hunt. Map surface → identify targets → attack → record findings."
+    )
+
+    step_counter = [0]
+    messages_snapshot = [[]]
+
+    executor = _make_tool_executor(tok, tok2, authed, step_counter)
+
+    def on_tool_call(name, inp, result):
+        step = step_counter[0]
+        with _STATE_LOCK:
+            STATE["stage"] = f"{label}agent·{name}·{step}"
+            STATE["pct"] = min(93, 86 + int(step / max(1, max_steps) * 7))
+            STATE.setdefault("lead_log", []).append({
+                "step": step, "act": name,
+                "ok": not str(result).startswith("ERROR") and not str(result).startswith('{"error"'),
+                "detail": str(result)[:100],
+                "agent": agent_label or "main",
+            })
+            STATE["lead_log"] = STATE["lead_log"][-120:]
+        # improvement #7: checkpoint conversation every 10 tool calls
+        if step % 10 == 0:
+            _save_conversation_checkpoint(messages_snapshot[0])
+        if time.time() > lead_deadline:
+            raise TimeoutError("lead budget exceeded")
+
+    tools = _hunt_tools(authed)
+
+    try:
+        final_text, tool_log, err = llm_client.call_llm_with_tools(
+            system=sys_p,
+            initial_user=initial_user,
+            tools=tools,
+            tool_executor=executor,
+            model=MODEL_LEAD.get("model", "claude-sonnet-4-6"),
+            max_tokens=4096,
+            timeout=120,
+            on_tool_call=on_tool_call,
+            max_tool_rounds=max_steps,
+        )
+    except TimeoutError:
+        log("warn", f"⏱ {label}tool-use agent budget reached")
+        return
+    except Exception as _e:
+        log("warn", f"→ {label}tool-use agent error: " + str(_e)[:200])
+        return
+
+    if err and not tool_log:
+        log("warn", f"→ {label}tool-use agent failed: " + str(err)[:200] +
+            " — falling back to JSON-action loop")
+        if not agent_label:  # only fallback on the main agent, not sub-agents
+            _phase_llm_lead_json(lead_deadline, tok, tok2, authed, max_steps)
+        return
+
+    if err:
+        log("warn", f"→ {label}agent ended: " + str(err)[:120])
+
+    with _STATE_LOCK:
+        STATE["lead_results"].append({
+            "action": "tool_loop_complete",
+            "agent": agent_label or "main",
+            "tool_calls": len(tool_log),
+            "findings_added": sum(1 for t in tool_log if t["name"] == "record_finding"),
+        })
+
+
+def _phase_llm_lead_json(lead_deadline, tok, tok2, authed, max_steps):
+    """Legacy JSON-action dispatch loop — used for NVIDIA/non-Anthropic providers."""
+    log("ok", "◆ LLM-led loop (JSON mode) · max " + str(max_steps) + " steps")
+    tried = set()
+    for _r in STATE.get("lead_results", []):
+        if isinstance(_r.get("k"), list):
+            tried.add(tuple(_r["k"]))
+    stale = 0
+    transport = 0
+
+    sys_p = (
+        "You are the LEAD BUG BOUNTER on target " + str(TARGET) + ". Reply STRICT JSON only.\n"
+        'Actions: {"action":"probe","path":"/path"} | '
+        '{"action":"request","method":"GET","url":"…","headers":{},"body":"…"} | '
+        '{"action":"test","endpoint":"…","class":"sqli|xss|ssti|ssrf|cors|redirect|idor|authz"} | '
+        '{"action":"remember","lead":"…","endpoint":"…"} | '
+        '{"action":"finding","severity":"c|h|m|l","title":"…","cls":"…","endpoint":"…","detail":"…","steps":"…"} | '
+        '{"action":"done","summary":"…"}\n'
+        "Only report findings you OBSERVED. 401/403 is a lead, not a vuln."
+    )
+
+    for step in range(max_steps):
+        if time.time() > lead_deadline:
+            log("warn", "⏱ LLM-led loop budget reached at step " + str(step))
+            break
+        check_pause()
+        STATE["stage"] = "LLM-led " + str(step + 1)
+        STATE["pct"] = min(94, 86 + int(step / max(1, max_steps) * 8))
+        flush()
+        state = _lead_digest()
+        usr = json.dumps(state, default=str)
+        plan = llm_json(sys_p, usr, max_tokens=1500, timeout=90, _model=MODEL_LEAD)
+        if plan is None:
+            transport += 1
+            log("warn", "→ LLM-led round " + str(step) + " no reply [" +
+                str(_LLM_LAST_ERR.get("e"))[:120] + "] — " + str(transport) + "/6")
+            if transport >= 6:
+                break
+            time.sleep(min(30, 5 * transport))
+            continue
+        transport = 0
+        if not isinstance(plan, dict):
+            stale += 1
+            if stale >= 3:
+                break
+            continue
+        stale = 0
+        act = (plan.get("action") or "").lower().strip()
+        if act in ("done", "stop"):
+            log("ok", "✓ agent stopped: " + str(plan.get("summary",""))[:150])
+            STATE["lead_results"].append({"step":step,"action":"done","summary":str(plan.get("summary",""))[:200]})
+            break
+        res = None
+        cur_key = None
+
+        if act == "probe":
+            path = str(plan.get("path") or plan.get("url") or "/").strip()
+            if not path.startswith("http"):
+                path = "http://" + TARGET.split("/")[0] + "/" + path.lstrip("/")
+            key = ("probe", path)
+            if key in tried:
+                res = {"ok": False, "err": "already tried"}
+            else:
+                tried.add(key); cur_key = key
+                res = _lead_fetch(path)
+                if isinstance(res, dict): res["k"] = list(key)
+                if res.get("ok") and res.get("status") not in (404, None):
+                    u = res.get("url")
+                    if u and not any(u == e["url"] for e in STATE["endpoints"]):
+                        from urllib.parse import urlparse as _up
+                        STATE["endpoints"].append({"url": u, "host": _up(u).netloc})
+                        STATE["stats"]["endpoints"] = len(STATE["endpoints"])
+                    _note_gated(u or path, res.get("status"), step)
+                log("cmd", "$ probe " + path + " → " + str(res.get("status") or res.get("err",""))[:80])
+
+        elif act == "request":
+            url = str(plan.get("url") or "").strip()
+            if not url:
+                res = {"ok": False, "err": "missing url"}
+            else:
+                key = ("req", str(plan.get("method","GET")).upper(), url, str(plan.get("body") or "")[:80])
+                if key in tried:
+                    res = {"ok": False, "err": "already sent"}
+                else:
+                    tried.add(key); cur_key = key
+                    res = _lead_fetch(url, method=str(plan.get("method","GET")),
+                                      body=plan.get("body"), headers=plan.get("headers") or {})
+                    if res.get("ok"):
+                        ep = str(plan.get("endpoint") or url).split("?")[0]
+                        if ep and not any(ep == e["url"] for e in STATE["endpoints"]):
+                            from urllib.parse import urlparse as _up
+                            STATE["endpoints"].append({"url": ep, "host": _up(ep).netloc})
+                            STATE["stats"]["endpoints"] = len(STATE["endpoints"])
+                        _note_gated(res.get("url") or url, res.get("status"), step)
+                    log("cmd", "$ " + str(plan.get("method","GET")).upper() + " " + url[:80] +
+                        " → " + str(res.get("status") or res.get("err",""))[:60])
+
+        elif act == "test":
+            ep = str(plan.get("endpoint") or "").strip()
+            cls = str(plan.get("class") or "").lower().strip()
+            if not ep or not cls:
+                res = {"ok": False, "err": "test needs endpoint and class"}
+            else:
+                key = ("test", ep, cls)
+                if key in tried:
+                    res = {"ok": False, "err": "already tested"}
+                else:
+                    tried.add(key); cur_key = key
+                    if cls in ("idor","authz") and not authed:
+                        res = {"ok": False, "err": "needs session"}
+                    else:
+                        log("cmd", "$ scan_cell [" + cls + "] " + ep[:80])
+                        before = len(STATE["findings"])
+                        try:
+                            scan_cell(ep, cls, tok, tok2)
+                        except Exception as _e:
+                            res = {"ok": False, "err": str(_e)[:100]}
+                        else:
+                            newf = STATE["findings"][before:]
+                            res = {"ok": True, "scanned": ep, "cls": cls,
+                                   "new_findings": [{"title": f.get("title"), "sev": f.get("sev")} for f in newf]}
+
+        elif act == "remember":
+            lead = str(plan.get("lead") or "").strip()
+            if lead:
+                STATE["leads"].append({"lead": lead, "endpoint": str(plan.get("endpoint") or ""), "step": step})
+                STATE["leads"] = STATE["leads"][-60:]
+                res = {"ok": True, "recorded": lead[:160]}
+            else:
+                res = {"ok": False, "err": "missing lead text"}
+
+        elif act == "finding":
+            title = str(plan.get("title") or "").strip()
+            detail = str(plan.get("detail") or plan.get("evidence") or "").strip()
+            endpoint = str(plan.get("endpoint") or plan.get("url") or "").strip()
+            if not title or len(detail) < 20 or not endpoint:
+                res = {"ok": False, "err": "missing title/evidence/endpoint"}
+            else:
+                sev = str(plan.get("severity") or plan.get("sev") or "m")
+                add_finding(sev, title, detail, endpoint, cls=str(plan.get("cls") or ""), verdict="", det=False)
+                res = {"ok": True, "accepted": title[:160]}
+        else:
+            res = {"ok": False, "err": "unknown action '" + str(act) + "'"}
+
+        if res is not None:
+            res["step"] = step
+            if "k" not in res and cur_key is not None:
+                res["k"] = list(cur_key)
+            STATE["lead_results"].append(res)
+            STATE["lead_results"] = STATE["lead_results"][-40:]
+            STATE.setdefault("lead_log", []).append({
+                "step": step, "act": act, "ok": res.get("ok"),
+                "detail": str(res.get("status") or res.get("err") or res.get("note") or "")[:100]})
+            STATE["lead_log"] = STATE["lead_log"][-80:]
+            flush()
+
+
 def phase_adaptive(deadline, max_cells=200):
     """Coverage-to-100% loop: cover EVERY applicable (endpoint × class) cell, ranked by ROI and
     boosted by the LLM leads, until the ledger is drained or the budget/time is hit. Classes are
@@ -879,7 +2380,7 @@ def phase_ai_direct(deadline, max_rounds=3):
         usr = json.dumps({"target": TARGET, "mode": MODE,
                           "findings": [{"title": f["title"], "endpoint": f.get("endpoint", ""), "cls": f.get("cls", "")} for f in STATE["findings"]],
                           "untested": untested[:60]})
-        d = llm_json(MODEL_CHEAP, sys_p, usr, max_tokens=1200, timeout=70)
+        d = llm_json(sys_p, usr, max_tokens=1200, timeout=70, _model=MODEL_CHEAP)
         if not isinstance(d, dict):
             d = {}
         tests = d.get("tests") or []
@@ -1111,14 +2612,17 @@ def phase_ai_judge():
              "scanner's raw evidence. Judge HONESTLY — scanners produce false positives. Reply STRICT JSON: "
              "{\"judgments\":[{\"i\":<index>,\"verdict\":\"confirmed|likely|false_positive\",\"drop\":bool,"
              "\"repro\":\"numbered reproducible steps grounded ONLY in the evidence; empty if not demonstrable\","
-             "\"impact\":\"concrete impact in 1-2 sentences\",\"remediation\":\"the fix\",\"cvss\":\"x.x\"}],"
+             "\"impact\":\"concrete impact in 1-2 sentences\",\"remediation\":\"the fix\",\"cvss\":\"x.x\","
+             "\"reason\":\"ONLY when drop=true: the concrete disproof — quote or name the specific piece of "
+             "evidence that contradicts the finding (e.g. payload HTML-escaped in the response body, endpoint only "
+             "302-redirects so nothing is ever rendered or queried). Empty when you keep it.\"}],"
              "\"chains\":[\"short multi-step chain across findings if any\"]}. Never invent evidence; if the evidence "
-             "doesn't support the finding set verdict=false_positive and drop=true.")
-    d = llm_json(MODEL_STRONG, sys_p, json.dumps({"target": TARGET, "findings": items}), max_tokens=3200, timeout=150)
+             "doesn't support the finding set verdict=false_positive, drop=true, and say WHY in \"reason\".")
+    d = llm_json(sys_p, json.dumps({"target": TARGET, "findings": items}), max_tokens=3200, timeout=150, _model=MODEL_STRONG)
     if not isinstance(d, dict):   # model may return a bare array / malformed JSON — don't crash the hunt
         log("warn", "→ AI judge unavailable (rate-limited/offline) — findings left as-is")
         stage("AI-judge", 98); return
-    drop = set(); kept = 0; conf = 0
+    drop = set(); kept = 0; conf = 0; reasons = {}
     for j in (d.get("judgments") or []):
         if not isinstance(j, dict):
             continue
@@ -1127,11 +2631,30 @@ def phase_ai_judge():
             continue
         f = STATE["findings"][i]
         if j.get("drop") or j.get("verdict") == "false_positive":
-            if f.get("_det"):   # tool-confirmed (e.g. sqlmap) — the judge enriches, it cannot drop it
-                f["detail"] = (f.get("detail", "") + " · note: AI judge flagged for review; tool evidence stands").strip(" ·")
+            reason = str(j.get("reason") or "").strip()
+            if f.get("_det") and len(reason) < 40:
+                # tool-confirmed and the judge offered no concrete disproof — a bare "false_positive"
+                # call must not silently discard sqlmap/OAST-grade evidence.
+                f["detail"] = (f.get("detail", "") +
+                               " · note: AI judge flagged for review without a concrete disproof; "
+                               "tool evidence stands").strip(" ·")
+                f["judge_disputed"] = True
                 kept += 1; conf += 1; continue
+            # quarantine instead of delete — dropped findings stay auditable (and recoverable) on disk
+            STATE.setdefault("dropped", []).append({
+                "title": f.get("title", ""), "cls": f.get("cls", ""), "sev": f.get("sev", ""),
+                "endpoint": f.get("endpoint", ""), "verdict": f.get("verdict", ""),
+                "reason": reason or "(no reason given)", "det": bool(f.get("_det")),
+                "evidence": (f.get("detail") or "")[:400],
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%S")})
+            STATE["dropped"] = STATE["dropped"][-120:]
+            reasons[i] = reason or "(no reason given)"
             drop.add(i); continue
-        if j.get("repro"): f["steps"] = j["repro"]
+        if j.get("repro"):
+            r = j["repro"]
+            # Nemotron hands back a list; the dashboard calls f.steps.trim()/split('\n'),
+            # so a raw array would throw TypeError in the report view
+            f["steps"] = "\n".join(str(x) for x in r) if isinstance(r, (list, tuple)) else str(r)
         if j.get("remediation"): f["remediation"] = j["remediation"]
         if j.get("impact"): f["detail"] = (f.get("detail", "") + " · impact: " + j["impact"]).strip(" ·")
         if j.get("cvss"): f["cvss"] = str(j["cvss"]) or f.get("cvss", "")
@@ -1146,7 +2669,11 @@ def phase_ai_judge():
     jc = [c for c in (d.get("chains") or []) if c]
     if jc:
         STATE["chain_hints"] = jc
-    log("warn" if drop else "ok", "✓ AI judge: " + str(kept) + " kept (" + str(conf) + " confirmed) · " + str(len(drop)) + " false-positive(s) dropped")
+    log("warn" if drop else "ok", "✓ AI judge: " + str(kept) + " kept (" + str(conf) + " confirmed) · " +
+        str(len(drop)) + " false-positive(s) quarantined → STATE[dropped]")
+    for k in sorted(drop):   # leave a visible trail — an operator should be able to see what was rejected and why
+        _f = STATE["findings"][k] if k < len(STATE["findings"]) else {}
+        log("out", "  ✗ rejected: " + str(_f.get("title"))[:70] + " — " + str(reasons.get(k, ""))[:140])
     flush(); stage("AI-judge", 98)
 
 
@@ -1339,7 +2866,7 @@ def phase_chain():
                 "{\"plans\":[{\"i\":<index>,\"plausible\":true|false,\"prove\":\"ONE concrete non-destructive step the operator "
                 "runs to confirm the missing edge\",\"cvss\":\"x.x\",\"impact\":\"one line\"}]}. plausible=false if the escalation "
                 "does not realistically follow. The step must be read-only / safe — never a destructive write.")
-        d = llm_json(MODEL_STRONG, sysp, json.dumps({"target": TARGET, "chains": items}), max_tokens=1600, timeout=140)
+        d = llm_json(sysp, json.dumps({"target": TARGET, "chains": items}), max_tokens=1600, timeout=140, _model=MODEL_STRONG)
         if not isinstance(d, dict):
             d = {}
         for p in (d.get("plans") or []):
@@ -1493,6 +3020,88 @@ def load_resume():
     return bool(prior.get("endpoints"))
 
 
+# finding class → an invariant type invariant-check can actually EXECUTE next run.
+# Anything unmapped lands as `technique`, which invariant-check only lists (it executes
+# deny/noaccess/rejects/allow/once) — useful as a hypothesis, but not as an oracle.
+TYPE_FOR_CLS = (
+    ("idor", "noaccess"), ("bola", "noaccess"), ("broken object", "noaccess"),
+    ("object-level", "noaccess"), ("auth bypass", "deny"), ("authz", "deny"),
+    ("bfla", "deny"), ("broken function", "deny"), ("function-level", "deny"),
+    ("privilege", "deny"), ("mass assignment", "rejects"), ("param/idor", "rejects"),
+    ("race", "once"), ("idempot", "once"),
+)
+
+
+def phase_learn():
+    """Close the learning loop — promote this hunt's confirmed, submit-worthy findings into learned
+    rules so the next hunt on a similar stack starts from real outcomes instead of static priors.
+
+    This is what keeps the corpus from going stale: skills seed the first prior, the engine's own
+    confirmed findings keep refining it. Idempotent (hunt-corpus --learn dedups on type|fam|url)."""
+    picks = [f for f in STATE["findings"]
+             if f.get("reco") == "submit" and (f.get("verdict") or "").lower() == "confirmed"]
+    cor = HERE / "hunt-corpus.py"
+    if not picks or not cor.exists():
+        return
+    stack = (_stack().split(",")[0] or "generic")
+    n = 0
+    for f in picks:
+        cls = (f.get("cls") or "").lower()
+        itype = "technique"
+        for k, v in TYPE_FOR_CLS:
+            if k in cls:
+                itype = v
+                break
+        ep = f.get("endpoint") or ""
+        path = _upd_path(ep)
+        fam = re.sub(r"[^a-z0-9]+", "", cls)[:24] or "misc"
+        note = (("confirmed " + (f.get("cls") or "issue") + " — " + str(f.get("title") or "")[:90] +
+                 " · retest this first on comparable endpoints of the same shape")[:220])
+        try:
+            out, err, rc = sh([sys.executable, str(cor), "--learn", "--type", itype,
+                               "--fam", fam, "--stack", stack, "--note", note, "--url", path], timeout=30)
+        except Exception:
+            continue
+        # rc==0 on a dedup skip too — count only rows that were actually written
+        if rc == 0 and "already present" not in out and "skipped" not in out:
+            n += 1
+    # memory store — the SITUATION (response shape, error string, endpoint pattern) so hunt N+1
+    # can recall it. corpus rules assert invariants; memory recalls technique that already worked.
+    mem = HERE / "hunt-memory.py"
+    if mem.exists():
+        for f in picks:
+            parts = [str(f.get("title") or ""), _upd_path(str(f.get("endpoint") or "")),
+                     str(f.get("detail") or "")[:400]]
+            txt = " ".join(x for x in parts if x).strip()
+            if len(txt) < 40:
+                continue
+            try:
+                out, err, rc = sh([sys.executable, str(mem), "--add", "--kind", "finding",
+                                   "--cls", str(_cls_key(f.get("cls"))), "--stack", stack,
+                                   "--program", str(PROGRAM or TARGET), "--reward",
+                                   str(f.get("bounty_est") or 0), "--text", txt], timeout=30)
+            except Exception:
+                continue
+            if rc == 0 and "already stored" not in out and "skipped" not in out:
+                n += 1
+    if n:
+        STATE["stats"]["learned"] = (STATE["stats"].get("learned") or 0) + n
+        log("ok", "✓ learning loop · " + str(n) + " new rule(s)/situation(s) → corpus (stack=" +
+            stack + " · " + str(len(picks)) + " confirmed finding(s) seen, rest already known)")
+        flush()
+
+
+def _upd_path(url):
+    """Endpoint → path used as the corpus hint, so a learned rule says WHERE it paid."""
+    try:
+        from urllib.parse import urlparse
+        p = urlparse(url)
+        return (p.path or "/") + ("?" + p.query if p.query else "")
+    except Exception:
+        return str(url or "")
+
+
+
 def main():
     if not TARGET:
         STATE["status"] = "error"; STATE["stage"] = "No target"; flush()
@@ -1505,7 +3114,7 @@ def main():
         pass
     try:
         resumed = load_resume() if RESUME else False
-        budget_sec = int(arg("--budget-sec", "1200") or 1200)
+        budget_sec = int(arg("--budget-sec", "2700") or 2700)  # default 45 min (was 20)
         deadline = time.time() + budget_sec
         if resumed:
             _RL["hit"] = False   # clear the pause flag — the operator says the limit has reset
@@ -1520,9 +3129,14 @@ def main():
             phase_scope()
             phase_recon()
             phase_surface()
+            phase_discover(deadline)  # ACTIVE discovery — unlinked paths + spec walk + BFS (katana can't see these)
             phase_spa_capture()     # SPA runtime API discovery (real browser) — folds XHR/fetch into the surface
-            phase_active()          # Layer 1 — deterministic sweep (recon + scan matrix + LLM leads)
+            phase_memory_recall()    # long-term memory — analogous past situations, before the LLM leads
+            # the LLM leads FIRST — it decides what to touch before any deterministic sweep runs, so the
+            # engine's actions follow the model's hypotheses rather than the model annotating a fixed grid.
+            phase_active()          # Layer 1 — deterministic sweep first; LLM gets real scan evidence
             phase_authed()
+            phase_llm_lead(deadline)  # LLM-led loop AFTER scan: reasons over what the scanner found AND missed
         else:
             log("out", "→ resume: skipping recon/surface (reusing mapped surface); continuing the hunt")
         # hunt phases — a pause checkpoint before each LLM-heavy one so a rate limit halts cleanly
@@ -1537,6 +3151,7 @@ def main():
         check_pause(); phase_ai_judge()              # Layer 3 — strong-model validation
         check_pause(); phase_chain()                 # Chain-to-Impact
         phase_economics()                            # Economics brain
+        phase_learn()                                # close the loop → learned rules for the NEXT hunt
         STATE["status"] = "done"
         stage("Done", 100)
         nf = len(STATE["findings"]); cov = STATE["coverage"]
