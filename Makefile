@@ -1,7 +1,7 @@
 # HUNTR verification gate. `make verify` is the Phase-0 robustness exit gate:
 # it must pass before anything ships. CI runs the same checks (.github/workflows/ci.yml).
 
-.PHONY: verify test e2e compile
+.PHONY: verify test e2e compile verify-hunt
 
 verify: compile test e2e ## full gate: byte-compile + unit/integration tests + browser E2E
 	@echo "verify: all checks passed"
@@ -15,3 +15,6 @@ test: ## unit + server-hardening integration tests
 e2e: ## browser E2E against a live server (auto-booted by Playwright)
 	cd e2e && (npm ci || npm install) && npx playwright install chromium >/dev/null 2>&1 || true
 	cd e2e && npx playwright test --reporter=line
+
+verify-hunt: ## slow: run the full autonomous loop (deterministic) against the planted-vuln lab
+	HUNT_RUN_SLOW=1 python3 -m unittest tests.test_autonomous_loop -v

@@ -106,6 +106,10 @@ MODE = arg("--mode", "grey")
 # stealth: throttle + lower concurrency + propagate the program UA so loud scanners don't get IP-blocked
 # on WAF-protected real targets. On by env HUNT_STEALTH=1 or --stealth.
 STEALTH = os.environ.get("HUNT_STEALTH") == "1" or "--stealth" in sys.argv
+# Deterministic-only mode: skip every LLM phase and run the 0-token scanners +
+# oracles + triage to completion. Fast, offline, needs no account — and makes the
+# autonomous loop reproducibly verifiable (CI/benchmark) independent of LLM quota.
+NO_LLM = os.environ.get("HUNT_NO_LLM") == "1" or "--no-llm" in sys.argv
 SCOPE_TYPES = [s for s in (arg("--scope-types", "web,api") or "").split(",") if s]
 HUNT_DIR = Path(os.environ.get("HUNT_DIR") or arg("--hunt-dir")
                 or (Path.home() / ".huntr" / "targets" / safe(TARGET) / ".hunt"))
@@ -184,6 +188,8 @@ def llm_call(system, user, max_tokens=1600, timeout=100, _model=None):
 
     _model: optional dict with 'provider' and 'model' keys (MODEL_LEAD / MODEL_STRONG / MODEL_CHEAP).
     When omitted the llm_client env config is used (NVIDIA default or HUNT_LLM_PROVIDER override)."""
+    if NO_LLM:
+        return None   # deterministic-only run: every LLM call fast-returns; phases degrade gracefully
     m = _model or {}
     text, err = None, None
     for attempt in range(4):
@@ -4947,25 +4953,28 @@ def main():
             # depth phases come AFTER, adding to coverage that is already secured.
             phase_plan()                                 # target-specific attack plan + flows (flexible)
             phase_adaptive(deadline)                     # 0-token deterministic coverage — plan-driven
-            if not resumed:
-                check_pause(); phase_llm_lead(deadline)  # LLM-led loop, AFTER deterministic coverage
-            check_pause(); phase_api_test(deadline)      # SPA-first — test captured runtime API
-            check_pause(); phase_ai_direct(deadline)     # Layer 2 — AI-directed (Haiku)
-            check_pause(); phase_exploit_agent(deadline) # Depth — LLM-driven exploitation
-            check_pause(); phase_oob(deadline)           # Blind/OOB fuzzing
+            if not NO_LLM:                               # LLM depth phases (skipped in deterministic-only mode)
+                if not resumed:
+                    check_pause(); phase_llm_lead(deadline)  # LLM-led loop, AFTER deterministic coverage
+                check_pause(); phase_api_test(deadline)      # SPA-first — test captured runtime API
+                check_pause(); phase_ai_direct(deadline)     # Layer 2 — AI-directed (Haiku)
+                check_pause(); phase_exploit_agent(deadline) # Depth — LLM-driven exploitation
+                check_pause(); phase_oob(deadline)           # Blind/OOB fuzzing
         phase_dedup()
         phase_fingerprint()
-        check_pause(); phase_verify()               # LLM re-verifies every finding: confirmed / dismissed / manual
-        check_pause(); phase_methodology(deadline)
-        check_pause(); phase_ai_judge()              # Layer 3 — strong-model validation
-        check_pause(); phase_chain()                 # Chain-to-Impact
+        if not NO_LLM:
+            check_pause(); phase_verify()               # LLM re-verifies every finding: confirmed / dismissed / manual
+            check_pause(); phase_methodology(deadline)
+            check_pause(); phase_ai_judge()              # Layer 3 — strong-model validation
+            check_pause(); phase_chain()                 # Chain-to-Impact
         phase_scenario()                             # "impossible scenario" engine — oracle-gated kill-chains
         phase_economics()                            # Economics brain
         phase_hard_triage()                          # FINAL authority: prove-it-or-lead; info-class capped
-        phase_learn()                                # close the loop → learned rules for the NEXT hunt
-        phase_auto_reports()                         # auto-generate AI reports for confirmed findings
-        check_pause(); phase_agentic_polish(deadline) # rigorous agents: re-verify + verified PoC + submission reports
-        phase_hard_triage()                          # run again LAST — polish cannot smuggle anything past the gate
+        if not NO_LLM:
+            phase_learn()                                # close the loop → learned rules for the NEXT hunt
+            phase_auto_reports()                         # auto-generate AI reports for confirmed findings
+            check_pause(); phase_agentic_polish(deadline) # rigorous agents: re-verify + verified PoC + submission reports
+            phase_hard_triage()                          # run again LAST — polish cannot smuggle anything past the gate
         STATE["status"] = "done"
         stage("Done", 100)
         nf = len(STATE["findings"]); cov = STATE["coverage"]
