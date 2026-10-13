@@ -1,40 +1,256 @@
 {
   "benchmark": "HUNTR core benchmark v1",
-  "generated": 1791175348.4731202,
+  "generated": 1791926082.239257,
   "aggregate": {
-    "suites": 2,
-    "overall_recall": 1.0,
-    "overall_ev_recall": 1.0,
-    "total_expected": 6,
-    "total_found": 6,
-    "total_findings": 10,
-    "noise_ratio": 1.67,
-    "unknown_submit_findings": 0
+    "suites": 1,
+    "overall_recall": 0.958,
+    "overall_proof_rate": 0.87,
+    "overall_ev_recall": 0.652,
+    "total_expected": 24,
+    "total_found": 23,
+    "total_proven": 20,
+    "total_findings": 103,
+    "noise_ratio": 4.48,
+    "unknown_submit_findings": 0,
+    "per_class": {
+      "sqli": {
+        "expected": 1,
+        "found": 1,
+        "proven": 1,
+        "fp": 0,
+        "find_rate": 1.0,
+        "proof_rate": 1.0,
+        "fp_rate": 0.0
+      },
+      "xss": {
+        "expected": 1,
+        "found": 1,
+        "proven": 1,
+        "fp": 0,
+        "find_rate": 1.0,
+        "proof_rate": 1.0,
+        "fp_rate": 0.0
+      },
+      "redirect": {
+        "expected": 1,
+        "found": 0,
+        "proven": 0,
+        "fp": 0,
+        "find_rate": 0.0,
+        "proof_rate": null,
+        "fp_rate": null
+      },
+      "ssti": {
+        "expected": 1,
+        "found": 1,
+        "proven": 1,
+        "fp": 0,
+        "find_rate": 1.0,
+        "proof_rate": 1.0,
+        "fp_rate": 0.0
+      },
+      "ssrf": {
+        "expected": 1,
+        "found": 1,
+        "proven": 1,
+        "fp": 0,
+        "find_rate": 1.0,
+        "proof_rate": 1.0,
+        "fp_rate": 0.0
+      },
+      "idor": {
+        "expected": 1,
+        "found": 1,
+        "proven": 0,
+        "fp": 0,
+        "find_rate": 1.0,
+        "proof_rate": 0.0,
+        "fp_rate": 0.0
+      },
+      "authz": {
+        "expected": 1,
+        "found": 1,
+        "proven": 1,
+        "fp": 0,
+        "find_rate": 1.0,
+        "proof_rate": 1.0,
+        "fp_rate": 0.0
+      },
+      "cors": {
+        "expected": 1,
+        "found": 1,
+        "proven": 1,
+        "fp": 0,
+        "find_rate": 1.0,
+        "proof_rate": 1.0,
+        "fp_rate": 0.0
+      },
+      "lfi": {
+        "expected": 1,
+        "found": 1,
+        "proven": 1,
+        "fp": 0,
+        "find_rate": 1.0,
+        "proof_rate": 1.0,
+        "fp_rate": 0.0
+      },
+      "nosqli": {
+        "expected": 1,
+        "found": 1,
+        "proven": 1,
+        "fp": 0,
+        "find_rate": 1.0,
+        "proof_rate": 1.0,
+        "fp_rate": 0.0
+      },
+      "crlf": {
+        "expected": 1,
+        "found": 1,
+        "proven": 1,
+        "fp": 0,
+        "find_rate": 1.0,
+        "proof_rate": 1.0,
+        "fp_rate": 0.0
+      },
+      "host-header": {
+        "expected": 1,
+        "found": 1,
+        "proven": 1,
+        "fp": 0,
+        "find_rate": 1.0,
+        "proof_rate": 1.0,
+        "fp_rate": 0.0
+      },
+      "clickjack": {
+        "expected": 1,
+        "found": 1,
+        "proven": 0,
+        "fp": 0,
+        "find_rate": 1.0,
+        "proof_rate": 0.0,
+        "fp_rate": 0.0
+      },
+      "cmdi": {
+        "expected": 1,
+        "found": 1,
+        "proven": 1,
+        "fp": 0,
+        "find_rate": 1.0,
+        "proof_rate": 1.0,
+        "fp_rate": 0.0
+      },
+      "prototype-pollution": {
+        "expected": 1,
+        "found": 1,
+        "proven": 1,
+        "fp": 0,
+        "find_rate": 1.0,
+        "proof_rate": 1.0,
+        "fp_rate": 0.0
+      },
+      "web-cache-deception": {
+        "expected": 1,
+        "found": 1,
+        "proven": 1,
+        "fp": 0,
+        "find_rate": 1.0,
+        "proof_rate": 1.0,
+        "fp_rate": 0.0
+      },
+      "mass-assignment": {
+        "expected": 1,
+        "found": 1,
+        "proven": 1,
+        "fp": 0,
+        "find_rate": 1.0,
+        "proof_rate": 1.0,
+        "fp_rate": 0.0
+      },
+      "ldap": {
+        "expected": 1,
+        "found": 1,
+        "proven": 1,
+        "fp": 0,
+        "find_rate": 1.0,
+        "proof_rate": 1.0,
+        "fp_rate": 0.0
+      },
+      "xpath": {
+        "expected": 1,
+        "found": 1,
+        "proven": 1,
+        "fp": 0,
+        "find_rate": 1.0,
+        "proof_rate": 1.0,
+        "fp_rate": 0.0
+      },
+      "csp": {
+        "expected": 1,
+        "found": 1,
+        "proven": 0,
+        "fp": 0,
+        "find_rate": 1.0,
+        "proof_rate": 0.0,
+        "fp_rate": 0.0
+      },
+      "oauth": {
+        "expected": 1,
+        "found": 1,
+        "proven": 1,
+        "fp": 0,
+        "find_rate": 1.0,
+        "proof_rate": 1.0,
+        "fp_rate": 0.0
+      },
+      "file-upload": {
+        "expected": 1,
+        "found": 1,
+        "proven": 1,
+        "fp": 0,
+        "find_rate": 1.0,
+        "proof_rate": 1.0,
+        "fp_rate": 0.0
+      },
+      "deserialization": {
+        "expected": 1,
+        "found": 1,
+        "proven": 1,
+        "fp": 0,
+        "find_rate": 1.0,
+        "proof_rate": 1.0,
+        "fp_rate": 0.0
+      },
+      "graphql": {
+        "expected": 1,
+        "found": 1,
+        "proven": 1,
+        "fp": 0,
+        "find_rate": 1.0,
+        "proof_rate": 1.0,
+        "fp_rate": 0.0
+      }
+    }
   },
   "results": [
     {
       "suite": "local-lab",
       "target": "127.0.0.1:8980",
-      "endpoints": 6,
-      "expected": 5,
-      "found": 5,
-      "total_findings": 9,
-      "recall": 1.0,
-      "precision": 0.556,
-      "noise_ratio": 1.8,
-      "ev_recall": 1.0,
-      "real_routed_to_submit": 5,
-      "dup_of_known": 4,
+      "endpoints": 64,
+      "expected": 24,
+      "found": 23,
+      "total_findings": 103,
+      "recall": 0.958,
+      "precision": 0.223,
+      "noise_ratio": 4.48,
+      "ev_recall": 0.652,
+      "real_routed_to_submit": 15,
+      "dup_of_known": 80,
       "truly_unknown": 0,
       "unknown_submit_findings": 0,
-      "chains": 3,
-      "chain_names": [
-        "anon \u2192 account takeover",
-        "anon \u2192 cloud role",
-        "anon \u2192 pii read"
-      ],
-      "pipeline_ev": 12272,
-      "coverage": 94,
+      "chains": 0,
+      "chain_names": [],
+      "pipeline_ev": 74862,
+      "coverage": 0,
       "status": "done",
       "detail": [
         {
@@ -45,7 +261,8 @@
           "found": true,
           "verdict": "confirmed",
           "reco": "submit",
-          "ev": 2658
+          "ev": 2658,
+          "proven": true
         },
         {
           "class": "xss",
@@ -55,17 +272,16 @@
           "found": true,
           "verdict": "confirmed",
           "reco": "submit",
-          "ev": 938
+          "ev": 938,
+          "proven": true
         },
         {
           "class": "redirect",
           "path": "/go",
           "param": "url",
           "sev": "m",
-          "found": true,
-          "verdict": "confirmed",
-          "reco": "submit",
-          "ev": 273
+          "found": false,
+          "proven": false
         },
         {
           "class": "ssti",
@@ -75,7 +291,8 @@
           "found": true,
           "verdict": "confirmed",
           "reco": "submit",
-          "ev": 2658
+          "ev": 2658,
+          "proven": true
         },
         {
           "class": "ssrf",
@@ -85,21 +302,490 @@
           "found": true,
           "verdict": "confirmed",
           "reco": "submit",
-          "ev": 273
+          "ev": 938,
+          "proven": true
+        },
+        {
+          "class": "idor",
+          "path": "/account",
+          "param": "uid",
+          "sev": "h",
+          "found": true,
+          "verdict": "info",
+          "reco": "needs-work",
+          "ev": 0,
+          "proven": false
+        },
+        {
+          "class": "authz",
+          "path": "/admin",
+          "param": "debug",
+          "sev": "c",
+          "found": true,
+          "verdict": "confirmed",
+          "reco": "submit",
+          "ev": 938,
+          "proven": true
+        },
+        {
+          "class": "cors",
+          "path": "/api/data",
+          "param": "",
+          "sev": "m",
+          "found": true,
+          "verdict": "likely",
+          "reco": "needs-work",
+          "ev": 2658,
+          "proven": true
+        },
+        {
+          "class": "lfi",
+          "path": "/download",
+          "param": "file",
+          "sev": "h",
+          "found": true,
+          "verdict": "confirmed",
+          "reco": "submit",
+          "ev": 938,
+          "proven": true
+        },
+        {
+          "class": "nosqli",
+          "path": "/lookup",
+          "param": "name",
+          "sev": "h",
+          "found": true,
+          "verdict": "confirmed",
+          "reco": "submit",
+          "ev": 938,
+          "proven": true
+        },
+        {
+          "class": "crlf",
+          "path": "/setlang",
+          "param": "lang",
+          "sev": "m",
+          "found": true,
+          "verdict": "likely",
+          "reco": "needs-work",
+          "ev": 273,
+          "proven": true
+        },
+        {
+          "class": "host-header",
+          "path": "/reset",
+          "param": "email",
+          "sev": "m",
+          "found": true,
+          "verdict": "likely",
+          "reco": "needs-work",
+          "ev": 273,
+          "proven": true
+        },
+        {
+          "class": "clickjack",
+          "path": "/",
+          "param": "",
+          "sev": "l",
+          "found": true,
+          "verdict": "info",
+          "reco": "needs-work",
+          "ev": 0,
+          "proven": false
+        },
+        {
+          "class": "cmdi",
+          "path": "/ping",
+          "param": "host",
+          "sev": "c",
+          "found": true,
+          "verdict": "confirmed",
+          "reco": "submit",
+          "ev": 2658,
+          "proven": true
+        },
+        {
+          "class": "prototype-pollution",
+          "path": "/merge",
+          "param": "",
+          "sev": "h",
+          "found": true,
+          "verdict": "confirmed",
+          "reco": "submit",
+          "ev": 938,
+          "proven": true
+        },
+        {
+          "class": "web-cache-deception",
+          "path": "/profile",
+          "param": "",
+          "sev": "m",
+          "found": true,
+          "verdict": "likely",
+          "reco": "needs-work",
+          "ev": 273,
+          "proven": true
+        },
+        {
+          "class": "mass-assignment",
+          "path": "/api/user",
+          "param": "",
+          "sev": "h",
+          "found": true,
+          "verdict": "confirmed",
+          "reco": "submit",
+          "ev": 938,
+          "proven": true
+        },
+        {
+          "class": "ldap",
+          "path": "/ldapsearch",
+          "param": "user",
+          "sev": "h",
+          "found": true,
+          "verdict": "confirmed",
+          "reco": "submit",
+          "ev": 938,
+          "proven": true
+        },
+        {
+          "class": "xpath",
+          "path": "/xpathsearch",
+          "param": "q",
+          "sev": "h",
+          "found": true,
+          "verdict": "confirmed",
+          "reco": "submit",
+          "ev": 938,
+          "proven": true
+        },
+        {
+          "class": "csp",
+          "path": "/cvp",
+          "param": "",
+          "sev": "l",
+          "found": true,
+          "verdict": "info",
+          "reco": "needs-work",
+          "ev": 0,
+          "proven": false
+        },
+        {
+          "class": "oauth",
+          "path": "/oauth/authorize",
+          "param": "redirect_uri",
+          "sev": "h",
+          "found": true,
+          "verdict": "confirmed",
+          "reco": "submit",
+          "ev": 938,
+          "proven": true
+        },
+        {
+          "class": "file-upload",
+          "path": "/upload",
+          "param": "",
+          "sev": "h",
+          "found": true,
+          "verdict": "confirmed",
+          "reco": "submit",
+          "ev": 938,
+          "proven": true
+        },
+        {
+          "class": "deserialization",
+          "path": "/deser",
+          "param": "",
+          "sev": "c",
+          "found": true,
+          "verdict": "confirmed",
+          "reco": "submit",
+          "ev": 2658,
+          "proven": true
+        },
+        {
+          "class": "graphql",
+          "path": "/graphql",
+          "param": "",
+          "sev": "m",
+          "found": true,
+          "verdict": "info",
+          "reco": "needs-work",
+          "ev": 273,
+          "proven": true
         }
       ],
       "unexpected": [
         {
-          "title": "SQL injection \u2014 id",
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/oauth/authorize",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/orders",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/tokens",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/admin",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/internal",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/admin/users",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/admin/settings",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/admin/config",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/admin/roles",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/admin/permissions",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/admin/audit",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/admin/logs",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/admin/stats",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "SSRF (blind) \u2014 ssrf_oast_callback",
+          "cls": "ssrf",
+          "endpoint": "http://127.0.0.1:8980/oauth/authorize?redirect_uri=/cb&response_type=code&client_id=lab",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/users",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/me",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/accounts",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/config",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/settings",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/search",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/products",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/items",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/health",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/status",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/v1",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/v2",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/graphql",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/docs",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/keys",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/upload",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/export",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/flags",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/debug",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Broken access control / auth bypass \u2014 authz_bypass_param",
+          "cls": "authz",
+          "endpoint": "http://127.0.0.1:8980/profile/users/list",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "SSRF \u2014 file",
+          "cls": "SSRF",
+          "endpoint": "http://127.0.0.1:8980/download?file=readme.txt",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "SQL injection \u2014 url",
           "cls": "SQLi",
-          "endpoint": "http://127.0.0.1:8980/product?id=1",
+          "endpoint": "http://127.0.0.1:8980/go?url=/product?id=1",
           "reco": "submit",
           "ev": 2658
         },
         {
-          "title": "Verified XSS \u2014 url",
-          "cls": "XSS",
+          "title": "SSRF (blind) \u2014 ssrf_oast_callback",
+          "cls": "ssrf",
           "endpoint": "http://127.0.0.1:8980/go?url=/product?id=1",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "SSRF \u2014 url",
+          "cls": "SSRF",
+          "endpoint": "http://127.0.0.1:8980/proxy?url=http://example.com",
           "reco": "submit",
           "ev": 938
         },
@@ -116,47 +802,287 @@
           "endpoint": "http://127.0.0.1:8980/product?id=1",
           "reco": "submit",
           "ev": 938
-        }
-      ],
-      "elapsed_sec": 255.3246409893036
-    },
-    {
-      "suite": "acunetix-aspnet",
-      "target": "testaspnet.vulnweb.com",
-      "endpoints": 276,
-      "expected": 1,
-      "found": 1,
-      "total_findings": 1,
-      "recall": 1.0,
-      "precision": 1.0,
-      "noise_ratio": 1.0,
-      "ev_recall": 1.0,
-      "real_routed_to_submit": 1,
-      "dup_of_known": 0,
-      "truly_unknown": 0,
-      "unknown_submit_findings": 0,
-      "chains": 1,
-      "chain_names": [
-        "anon \u2192 pii read"
-      ],
-      "pipeline_ev": 2658,
-      "coverage": 58,
-      "status": "done",
-      "detail": [
+        },
         {
-          "class": "sqli",
-          "path": "/ (any \u2014 ReadNews/Comments/...)",
-          "param": "id",
-          "sev": "c",
-          "match": "host",
-          "found": true,
-          "verdict": "confirmed",
+          "title": "Host-header injection \u2014 host_header_reflected",
+          "cls": "host-header",
+          "endpoint": "http://127.0.0.1:8980/reset",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/users",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/admin",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/me",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Verified XSS \u2014 url",
+          "cls": "XSS",
+          "endpoint": "http://127.0.0.1:8980/go?url=/product?id=1",
           "reco": "submit",
-          "ev": 2658
+          "ev": 938
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/orders",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/accounts",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Verified XSS \u2014 email",
+          "cls": "XSS",
+          "endpoint": "http://127.0.0.1:8980/reset?email=user@x.com",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/config",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Verified XSS \u2014 file",
+          "cls": "XSS",
+          "endpoint": "http://127.0.0.1:8980/download?file=readme.txt",
+          "reco": "submit",
+          "ev": 938
+        },
+        {
+          "title": "CRLF / header injection \u2014 crlf_header",
+          "cls": "crlf",
+          "endpoint": "http://127.0.0.1:8980/go?url=/product?id=1",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/settings",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/search",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/products",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/items",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/health",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/status",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "CRLF / header injection \u2014 crlf_header",
+          "cls": "crlf",
+          "endpoint": "http://127.0.0.1:8980/oauth/authorize?redirect_uri=/cb&response_type=code&client_id=lab",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/v1",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/v2",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/graphql",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/docs",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/login",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/tokens",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/keys",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/upload",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/export",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/flags",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/debug",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/internal",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/users/list",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/admin/users",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/admin/settings",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/admin/config",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/admin/roles",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/admin/permissions",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/admin/audit",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/admin/logs",
+          "reco": "needs-work",
+          "ev": 273
+        },
+        {
+          "title": "Web cache deception \u2014 wcd_cacheable_private",
+          "cls": "web-cache-deception",
+          "endpoint": "http://127.0.0.1:8980/profile/admin/stats",
+          "reco": "needs-work",
+          "ev": 273
         }
       ],
-      "unexpected": [],
-      "elapsed_sec": 687.5213353633881
+      "elapsed_sec": 560
     }
-  ]
+  ],
+  "trend_vs_last": {
+    "recall": 0.541,
+    "proof_rate": 0.07,
+    "ev_recall": -0.048
+  }
 }

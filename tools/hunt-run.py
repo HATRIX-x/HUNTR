@@ -3174,29 +3174,37 @@ def phase_adaptive(deadline, max_cells=99999):
         work.sort(key=lambda x: x[0])   # highest planner priority first
         log("ok", "↻ PLAN-DRIVEN sweep — " + str(len(work)) + " ranked cells (target-specific)" +
             ("" if authed_ok else " (unauth: idor skipped — no session)"))
+    # COVERAGE TOP-UP (always runs): this is a "cover EVERY applicable cell" loop, so a
+    # thin/degraded plan (e.g. HUNT_NO_LLM, where the planner can't enrich) must NOT be able
+    # to silently skip whole classes like cors/ssti/redirect. After the plan's ranked cells,
+    # append every applicable (ep × class) cell the plan didn't already queue and isn't TESTED.
+    from collections import defaultdict
+    queued = {(ep, cls) for _, ep, cls, _ in work}
+    bycls = defaultdict(list)
+    for e in STATE["endpoints"]:
+        ep = e["url"]
+        for cls in applicable_classes(ep):
+            if cls in TESTED.get(ep, set()) or (ep, cls) in queued:
+                continue
+            if cls == "idor" and not authed_ok:
+                continue  # IDOR/BOLA genuinely needs two identities; authz is proven unauth via the bypass matrix
+            bycls[cls].append(ep)
+    for cls in bycls:
+        bycls[cls].sort(key=lambda ep: 0 if any(le and le in ep.lower() for le in leadeps) else 1)
+    _SLOW = {"cmdi", "deserialization"}
+    def _rr(classes):
+        w = []
+        order = sorted(classes, key=lambda c: RANK.get(c, 9))
+        while any(bycls[c] for c in order):
+            for cls in order:
+                if bycls[cls]:
+                    w.append((RANK.get(cls, 9), bycls[cls].pop(0), cls, "GET"))
+        return w
+    topup = _rr([c for c in bycls if c not in _SLOW]) + _rr([c for c in bycls if c in _SLOW])
+    work += topup
+    if plan_targets:
+        log("ok", "+ coverage top-up — " + str(len(topup)) + " applicable cell(s) the plan didn't rank")
     else:
-        from collections import defaultdict
-        bycls = defaultdict(list)
-        for e in STATE["endpoints"]:
-            ep = e["url"]
-            for cls in applicable_classes(ep):
-                if cls in TESTED.get(ep, set()):
-                    continue
-                if cls == "idor" and not authed_ok:
-                    continue  # IDOR/BOLA genuinely needs two identities; authz is proven unauth via the bypass matrix
-                bycls[cls].append(ep)
-        for cls in bycls:
-            bycls[cls].sort(key=lambda ep: 0 if any(le and le in ep.lower() for le in leadeps) else 1)
-        _SLOW = {"cmdi", "deserialization"}
-        def _rr(classes):
-            w = []
-            order = sorted(classes, key=lambda c: RANK.get(c, 9))
-            while any(bycls[c] for c in order):
-                for cls in order:
-                    if bycls[cls]:
-                        w.append((RANK.get(cls, 9), bycls[cls].pop(0), cls, "GET"))
-            return w
-        work = _rr([c for c in bycls if c not in _SLOW]) + _rr([c for c in bycls if c in _SLOW])
         log("ok", "↻ adaptive coverage loop — " + str(len(work)) + " untested cells queued" +
             ("" if authed_ok else " (unauth: idor/authz skipped — no session)"))
     total = len(work)

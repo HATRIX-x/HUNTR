@@ -72,12 +72,12 @@ class AutonomousLoop(unittest.TestCase):
         logf = open(cls.hd / "run.log", "w")
         cls.proc = subprocess.Popen(
             [sys.executable, str(TOOLS / "hunt-run.py"), "--target", f"127.0.0.1:{cls.port}",
-             "--mode", "black", "--scope-types", "web,api", "--budget-sec", "300"],
+             "--mode", "black", "--scope-types", "web,api", "--budget-sec", "500"],
             stdout=logf, stderr=subprocess.STDOUT, env=env)
 
         # wait for the unattended run to finish (status done/stopped) or a hard cap
         cls.rj = None
-        deadline = time.time() + 600
+        deadline = time.time() + 900
         runf = cls.hd / "run.json"
         while time.time() < deadline:
             if runf.exists():
@@ -119,8 +119,10 @@ class AutonomousLoop(unittest.TestCase):
     def test_found_and_proved_real_bugs(self):
         finds = self.rj.get("findings", [])
         found = {_norm(f.get("cls")) for f in finds} & CORE_CLASSES
-        self.assertGreaterEqual(len(found), 3,
-                                f"expected >=3 core bug classes, got {sorted(found)}")
+        # coverage top-up makes the deterministic sweep cover every applicable cell;
+        # the high-rank core classes are reliably found well within the test budget.
+        self.assertGreaterEqual(len(found), 5,  # core classes are reliably found at the 500s budget (bench hits all 8)
+                                f"expected >=5 core bug classes, got {sorted(found)}")
         proven = [f for f in finds if f.get("verdict") in ("confirmed", "likely")
                   or f.get("reco") in ("submit", "lead")]
         self.assertGreaterEqual(len(proven), 3, "expected several proven/submit-ready findings")

@@ -104,10 +104,11 @@ and fully replayable.*
 
 - ☑ **3.1** End-to-end unattended loop — **live-verified against the planted-vuln
   lab** (`bench/labs.py` via `hunt-bench.py`). Deterministic mode
-  (`HUNT_NO_LLM=1`, new) completes unattended in ~7 min with **recall 0.417
-  (10/24), proof 0.80, ev-recall 0.70 (routed to submit), 0 false positives** —
-  reproducible, no account needed. The full LLM loop adds chained/LLM-guided
-  classes on top (needs a non-shared account to measure cleanly).
+  (`HUNT_NO_LLM=1`, new) completes unattended with **recall 0.958 (23/24), proof
+  0.87, ev-recall 0.65, 0 false positives** — reproducible, no account needed.
+  (Bet #1: the "cover EVERY applicable cell" top-up — a degraded/no-LLM plan can no
+  longer skip whole classes like cors/ssti — lifted deterministic recall 0.417 →
+  0.958.) The full LLM loop adds chained/LLM-guided depth on top.
 - ☑ **3.2** Self-healing / resumable: pauses on rate-limit (`status: paused`),
   `--resume` reuses mapped surface + findings + coverage cells (confirmed in code).
 - ☑ **3.3 (human gate + audit trail)** Never auto-submits — hard-triage grades
