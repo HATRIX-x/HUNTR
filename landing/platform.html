@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+
+<title>How HUNTR Works — The Autonomous Bug Bounty Pipeline</title>
+<meta name="description" content="How HUNTR works: pick an authorized target, the engine maps the attack surface and tests it class by class, validates every finding, and drafts a report-ready write-up. You review and submit — it never submits for you.">
+<meta name="keywords" content="bug bounty pipeline, autonomous pentest workflow, attack surface mapping, vulnerability validation, automated recon, report-ready findings, agentic security testing">
+<meta name="author" content="HUNTR">
+<meta name="robots" content="index, follow, max-image-preview:large">
+<link rel="canonical" href="https://huntr.run/platform.html">
+<meta name="theme-color" content="#0A0B0D">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="HUNTR">
+<meta property="og:title" content="How HUNTR Works — The Autonomous Bug Bounty Pipeline">
+<meta property="og:description" content="Pick a target, HUNTR maps and tests the surface, validates every finding, and drafts the report. You review and submit.">
+<meta property="og:url" content="https://huntr.run/platform.html">
+<meta property="og:image" content="https://huntr.run/og.png">
+<meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="How HUNTR Works — The Autonomous Bug Bounty Pipeline">
+<meta name="twitter:description" content="Surface → tested → validated → report-ready. You review and submit; HUNTR never submits for you.">
+<meta name="twitter:image" content="https://huntr.run/og.png">
+<script type="application/ld+json">
+{ "@context":"https://schema.org","@type":"HowTo","name":"How HUNTR hunts a target",
+  "step":[
+    {"@type":"HowToStep","name":"Pick","text":"Enter a target you're authorized to test and choose the scope — web, API, mobile, or source. The engine selects the methodology."},
+    {"@type":"HowToStep","name":"Hunt","text":"HUNTR maps the attack surface, tests it class by class, and validates every finding — dropping false positives before they reach you."},
+    {"@type":"HowToStep","name":"Send","text":"Each finding arrives report-ready with reproduction and impact drafted. You review, decide, and submit."}
+  ]
+}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800;900&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/site.css">
+<style>
+  .sub-hero{min-height:clamp(520px,72vh,760px); text-align:center;}
+  .sub-hero .inner{max-width:720px; margin:0 auto;}
+  .sub-hero .eyebrow{margin-inline:auto;}
+  .flow-tags{display:flex; flex-wrap:wrap; gap:10px; margin-top:28px; justify-content:center;}
+  .flow-tags span{font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--fg-2); border:1px solid var(--glass-brd); background:var(--glass); border-radius:999px; padding:8px 14px;}
+  .flow-tags b{color:var(--purple); font-weight:500;}
+</style>
+</head>
+<body>
+<div class="ambient" aria-hidden="true"><i class="a1"></i><i class="a2"></i><i class="a3"></i></div>
+<div class="bg-grid" aria-hidden="true"></div>
+<div class="grain" aria-hidden="true"></div>
+<div id="sprog" aria-hidden="true"></div>
+<div class="cursor" id="cursor" aria-hidden="true"><span class="ring"></span></div>
+<div class="cursor-dot" id="cursor-dot" aria-hidden="true"></div>
+
+<div class="rail"><div class="wrap">
+  <span><b class="live">● System online</b> &nbsp; Huntr-01</span>
+  <span class="r-hide">The pipeline · Surface → report</span>
+  <span class="r-hide">⌖ Target ready</span>
+</div></div>
+
+<nav><div class="wrap">
+  <a class="brand" href="/" aria-label="HUNTR home">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="11" fill="none" stroke="#A78BFA" stroke-width="2"/><path d="M16 1v7M16 24v7M1 16h7M24 16h7" stroke="#A78BFA" stroke-width="2"/><circle cx="16" cy="16" r="3" fill="#4ADE80"/></svg> HUNTR
+  </a>
+  <div class="nav-links">
+    <a href="/platform.html" data-path="/platform" class="n-hide">Platform</a>
+    <a href="/benchmark.html" data-path="/benchmark" class="n-hide">Benchmark</a>
+    <a href="/access.html" class="btn btn-primary">Request Access ►</a>
+  </div>
+</div></nav>
+
+<main id="top">
+
+  <!-- HERO — cinematic data-stream -->
+  <header class="page-hero sub-hero">
+    <div class="stage" aria-hidden="true"><canvas id="scene-stream"></canvas></div>
+    <div class="stage-mask veil" aria-hidden="true"></div>
+    <div class="wrap"><div class="inner">
+      <span class="eyebrow"><span class="d"></span> The pipeline</span>
+      <h1>One hunt. <span class="acc">End to end.</span></h1>
+      <p class="lede">Every test, verdict, and dropped false-positive flows through one engine toward a single lock: a short list of validated, report-ready vulnerabilities. Here's exactly how a hunt runs.</p>
+      <div class="flow-tags">
+        <span><b>01</b> Pick</span><span><b>02</b> Hunt</span><span><b>03</b> Send</span>
+      </div>
+    </div></div>
+  </header>
+
+  <!-- PIPELINE -->
+  <section id="pipeline">
+    <div class="wrap">
+      <div class="kick" data-reveal><span>Three steps</span></div>
+      <h2 data-reveal>Three steps.<br>The rest is automated.</h2>
+      <p class="sec-sub" data-reveal>No tool soup, no config maze. You pick the target, HUNTR works, you review what it hands back.</p>
+      <div class="pipe reveal-group">
+        <div class="pstep">
+          <div class="num">01</div><div class="tag">Pick</div>
+          <h3>Pick</h3>
+          <p>Enter a target you're authorized to test and choose the scope — web, API, mobile, source. Black, grey, or white box. The engine decides the methodology.</p>
+        </div>
+        <div class="pstep">
+          <div class="num">02</div><div class="tag">Hunt</div>
+          <h3>Hunt</h3>
+          <p>HUNTR maps the attack surface, tests it class by class, and validates every finding — dropping the false positives before they ever reach you.</p>
+        </div>
+        <div class="pstep">
+          <div class="num">03</div><div class="tag">Send</div>
+          <h3>Send</h3>
+          <p>Each finding arrives report-ready, reproduction and impact drafted. You review, decide, and submit. Nothing goes out without you.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- WHAT RUNS UNDER THE HOOD -->
+  <section id="engine">
+    <div class="wrap">
+      <div class="kick" data-reveal><span>Under the hood</span></div>
+      <h2 data-reveal>A real methodology —<br>not a single scan.</h2>
+      <p class="sec-sub" data-reveal>HUNTR runs the same workflow a strong human operator would, just faster and without fatigue.</p>
+      <div class="grid4 reveal-group">
+        <div class="cell">
+          <div class="ci"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg></div>
+          <div class="cl">Recon</div>
+          <h3>Map the surface</h3>
+          <p>Enumerates hosts, endpoints, parameters, and auth flows — building the real attack surface before a single payload is sent.</p>
+        </div>
+        <div class="cell">
+          <div class="ci"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3 7h7l-5.5 4 2 7-6.5-4.5L5.5 27l2-7L2 9h7z" transform="scale(0.8) translate(3,0)"/></svg></div>
+          <div class="cl">Test</div>
+          <h3>70+ vuln classes</h3>
+          <p>Drives targeted tests across injection, access-control, auth, SSRF, logic, client-side and more — chosen for the surface it found.</p>
+        </div>
+        <div class="cell">
+          <div class="ci"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg></div>
+          <div class="cl">Validate</div>
+          <h3>Drop the noise</h3>
+          <p>Every candidate is re-proven before it counts. False positives are discarded so your queue is signal, not a scanner dump.</p>
+        </div>
+        <div class="cell">
+          <div class="ci"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg></div>
+          <div class="cl">Draft</div>
+          <h3>Report-ready</h3>
+          <p>Reproduction steps and impact come written with each finding, in the format your program expects. You review and submit.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta-sec">
+    <div class="wrap">
+      <div class="kick" style="justify-content:center;" data-reveal><span>Early Access</span></div>
+      <h2 data-reveal>See it run on your targets.</h2>
+      <p class="sec-sub" style="margin-inline:auto;" data-reveal>Request early access and we'll reach out when your spot opens.</p>
+      <form class="wl-form center" data-wl novalidate data-reveal>
+        <input type="email" placeholder="you@domain.com" autocomplete="email" aria-label="Email address" required>
+        <button type="submit" class="btn btn-primary">Request Access ►</button>
+      </form>
+      <p class="wl-msg" role="status" style="text-align:center;"></p>
+    </div>
+  </section>
+
+</main>
+
+<footer><div class="wrap foot">
+  <a class="brand" href="/"><svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><circle cx="16" cy="16" r="11" fill="none" stroke="#A78BFA" stroke-width="2"/><path d="M16 1v7M16 24v7M1 16h7M24 16h7" stroke="#A78BFA" stroke-width="2"/><circle cx="16" cy="16" r="3" fill="#4ADE80"/></svg> HUNTR</a>
+  <div class="foot-nav"><a href="/">Home</a><a href="/platform.html">Platform</a><a href="/benchmark.html">Benchmark</a><a href="/access.html">Access</a></div>
+  <div class="fmeta"><span>It hunts. You decide.</span><span>© <span id="yr"></span> HUNTR</span></div>
+</div></footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lenis/1.1.13/lenis.min.js"></script>
+<script src="assets/site.js"></script>
+<script src="assets/canvas-stream.js"></script>
+</body>
+</html>

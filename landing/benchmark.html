@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+
+<title>HUNTR Benchmark — Measured Against Ground Truth</title>
+<meta name="description" content="HUNTR is measured, not just claimed: a benchmark of known-vulnerable targets with certain ground truth, spanning 25 vulnerability classes across 5 suites. 70+ classes hunted end-to-end. Zero auto-submissions.">
+<meta name="keywords" content="bug bounty benchmark, vulnerability detection benchmark, autonomous security evaluation, ground truth vulnerabilities, recall security testing, AI pentest accuracy">
+<meta name="author" content="HUNTR">
+<meta name="robots" content="index, follow, max-image-preview:large">
+<link rel="canonical" href="https://huntr.run/benchmark.html">
+<meta name="theme-color" content="#0A0B0D">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="HUNTR">
+<meta property="og:title" content="HUNTR Benchmark — Measured Against Ground Truth">
+<meta property="og:description" content="Known-vulnerable targets with certain answers. 25 vuln classes, 5 suites, 70+ classes hunted end-to-end, zero auto-submissions.">
+<meta property="og:url" content="https://huntr.run/benchmark.html">
+<meta property="og:image" content="https://huntr.run/og.png">
+<meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="HUNTR Benchmark — Measured Against Ground Truth">
+<meta name="twitter:description" content="Measured, not claimed: known-vulnerable targets with certain ground truth across 25 classes and 5 suites.">
+<meta name="twitter:image" content="https://huntr.run/og.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800;900&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/site.css">
+<style>
+  .sub-hero{min-height:clamp(520px,70vh,740px); text-align:center;}
+  .sub-hero .inner{max-width:760px; margin:0 auto;}
+  .sub-hero .eyebrow{margin-inline:auto;}
+  .suite-grid{display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-top:clamp(40px,5vw,60px);}
+  @media(max-width:820px){ .suite-grid{grid-template-columns:1fr;} }
+  .suite{background:var(--glass); border:1px solid var(--glass-brd); border-radius:12px; -webkit-backdrop-filter:var(--blur); backdrop-filter:var(--blur); box-shadow:var(--glass-hi); padding:clamp(24px,2.8vw,32px);}
+  .suite .st{font-family:'JetBrains Mono',monospace; font-size:10.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--fg-3);}
+  .suite h3{font-family:'Archivo',sans-serif; font-weight:800; text-transform:uppercase; font-size:1.1rem; margin:8px 0 10px;}
+  .suite p{color:var(--fg-2); font-size:.92rem; line-height:1.6;}
+  .classrow{display:flex; flex-wrap:wrap; gap:8px; margin-top:clamp(36px,4vw,52px);}
+  .classrow span{font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg-2); border:1px solid var(--glass-brd); background:var(--glass); border-radius:6px; padding:7px 11px;}
+  .note{margin-top:clamp(32px,4vw,44px); border-left:2px solid var(--purple); padding:14px 20px; background:var(--glass); border-radius:0 10px 10px 0; color:var(--fg-2); font-size:.95rem; line-height:1.7; max-width:68ch;}
+  .note b{color:var(--fg);}
+</style>
+</head>
+<body>
+<div class="ambient" aria-hidden="true"><i class="a1"></i><i class="a2"></i><i class="a3"></i></div>
+<div class="bg-grid" aria-hidden="true"></div>
+<div class="grain" aria-hidden="true"></div>
+<div id="sprog" aria-hidden="true"></div>
+<div class="cursor" id="cursor" aria-hidden="true"><span class="ring"></span></div>
+<div class="cursor-dot" id="cursor-dot" aria-hidden="true"></div>
+
+<div class="rail"><div class="wrap">
+  <span><b class="live">● System online</b> &nbsp; Huntr-01</span>
+  <span class="r-hide">Benchmark · Certain ground truth</span>
+  <span class="r-hide">⌖ Measured, not claimed</span>
+</div></div>
+
+<nav><div class="wrap">
+  <a class="brand" href="/" aria-label="HUNTR home">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="11" fill="none" stroke="#A78BFA" stroke-width="2"/><path d="M16 1v7M16 24v7M1 16h7M24 16h7" stroke="#A78BFA" stroke-width="2"/><circle cx="16" cy="16" r="3" fill="#4ADE80"/></svg> HUNTR
+  </a>
+  <div class="nav-links">
+    <a href="/platform.html" data-path="/platform" class="n-hide">Platform</a>
+    <a href="/benchmark.html" data-path="/benchmark" class="n-hide">Benchmark</a>
+    <a href="/access.html" class="btn btn-primary">Request Access ►</a>
+  </div>
+</div></nav>
+
+<main id="top">
+
+  <!-- HERO — shader mesh -->
+  <header class="page-hero sub-hero">
+    <div class="stage" aria-hidden="true"><canvas id="scene-mesh" data-intensity="1"></canvas></div>
+    <div class="stage-mask veil" aria-hidden="true"></div>
+    <div class="wrap"><div class="inner">
+      <span class="eyebrow"><span class="d"></span> The benchmark</span>
+      <h1>Measured. <span class="acc">Not claimed.</span></h1>
+      <p class="lede" style="margin-inline:auto;">Anyone can say their tool finds bugs. HUNTR is scored against known-vulnerable targets where the answers are certain — so "it works" is a number, not a vibe.</p>
+    </div></div>
+  </header>
+
+  <!-- PROOF BAND -->
+  <section id="proof" aria-label="HUNTR at a glance">
+    <div class="wrap">
+      <div class="proof-grid reveal-group">
+        <div class="pstat">
+          <div class="pstat-n" data-count="70" data-suffix="+">0</div>
+          <div class="pstat-l">Vulnerability classes</div>
+          <div class="pstat-s">Hunted end-to-end — recon to validated report.</div>
+        </div>
+        <div class="pstat">
+          <div class="pstat-n" data-count="30" data-suffix="">0</div>
+          <div class="pstat-l">Ground-truth bugs</div>
+          <div class="pstat-s">Planted across 5 suites with certain answers.</div>
+        </div>
+        <div class="pstat zero">
+          <div class="pstat-n" data-count="0" data-suffix="">0</div>
+          <div class="pstat-l">Auto-submissions</div>
+          <div class="pstat-s">You review and send. Every finding, every time.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- HOW THE BENCHMARK WORKS -->
+  <section id="suites">
+    <div class="wrap">
+      <div class="kick" data-reveal><span>The method</span></div>
+      <h2 data-reveal>Certain answers.<br>No grading on a curve.</h2>
+      <p class="sec-sub" data-reveal>Each target has planted, known vulnerabilities — so recall and false-positive rate are measured against truth, not estimated. The suite spans local labs and authorized public test sites.</p>
+      <div class="suite-grid reveal-group">
+        <div class="suite"><div class="st">Suite 01 · Local lab</div><h3>Planted bugs</h3><p>A black-box web + API lab with known SQLi, XSS, SSTI, SSRF, IDOR, authz, CORS, LFI, NoSQLi and more — ground truth certain.</p></div>
+        <div class="suite"><div class="st">Suite 02 · Auth lab</div><h3>Access control</h3><p>Dedicated auth and authorization targets: BFLA, broken access control, and privilege boundaries under grey-box conditions.</p></div>
+        <div class="suite"><div class="st">Suite 03 · ASP.NET</div><h3>Framework depth</h3><p>A stack-specific target to prove the engine adapts its methodology to the framework it actually finds.</p></div>
+        <div class="suite"><div class="st">Suites 04–05 · Public</div><h3>Authorized test sites</h3><p>Industry-standard intentionally-vulnerable sites (vulnweb) used to validate against widely-known baselines.</p></div>
+        <div class="suite"><div class="st">Scoring</div><h3>Recall + FP rate</h3><p>Did it find the planted bug? Did it avoid crying wolf? Both are scored — a money-weighted, false-positive-penalized score.</p></div>
+        <div class="suite"><div class="st">Control</div><h3>Deterministic mode</h3><p>A no-LLM deterministic path makes core recall reproducible run to run — the same inputs give the same measured result.</p></div>
+      </div>
+
+      <div class="classrow reveal-group">
+        <span>sqli</span><span>xss</span><span>ssti</span><span>ssrf</span><span>idor</span><span>authz</span><span>bfla</span><span>cors</span><span>lfi</span><span>nosqli</span><span>crlf</span><span>xpath</span><span>ldap</span><span>cmdi</span><span>oauth</span><span>graphql</span><span>deserialization</span><span>mass-assignment</span><span>prototype-pollution</span><span>host-header</span><span>web-cache-deception</span><span>file-upload</span><span>clickjack</span><span>csp</span><span>redirect</span>
+      </div>
+
+      <div class="note" data-reveal><b>Straight talk:</b> HUNTR is pre-launch. These numbers describe what the engine does on a controlled benchmark with certain ground truth — they are capability, not customer case studies. Real-world disclosed findings land here as they're published. We'd rather show you a reproducible benchmark than a logo wall we haven't earned.</div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta-sec">
+    <div class="wrap">
+      <div class="kick" style="justify-content:center;" data-reveal><span>Early Access</span></div>
+      <h2 data-reveal>Put it on a real target.</h2>
+      <p class="sec-sub" style="margin-inline:auto;" data-reveal>Request early access and run HUNTR against the programs you're authorized to test.</p>
+      <form class="wl-form center" data-wl novalidate data-reveal>
+        <input type="email" placeholder="you@domain.com" autocomplete="email" aria-label="Email address" required>
+        <button type="submit" class="btn btn-primary">Request Access ►</button>
+      </form>
+      <p class="wl-msg" role="status" style="text-align:center;"></p>
+    </div>
+  </section>
+
+</main>
+
+<footer><div class="wrap foot">
+  <a class="brand" href="/"><svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><circle cx="16" cy="16" r="11" fill="none" stroke="#A78BFA" stroke-width="2"/><path d="M16 1v7M16 24v7M1 16h7M24 16h7" stroke="#A78BFA" stroke-width="2"/><circle cx="16" cy="16" r="3" fill="#4ADE80"/></svg> HUNTR</a>
+  <div class="foot-nav"><a href="/">Home</a><a href="/platform.html">Platform</a><a href="/benchmark.html">Benchmark</a><a href="/access.html">Access</a></div>
+  <div class="fmeta"><span>It hunts. You decide.</span><span>© <span id="yr"></span> HUNTR</span></div>
+</div></footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lenis/1.1.13/lenis.min.js"></script>
+<script src="assets/site.js"></script>
+<script src="assets/canvas-mesh.js"></script>
+</body>
+</html>
