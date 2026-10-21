@@ -56,6 +56,19 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <noscript>
           <style>{`[data-reveal]{opacity:1!important;transform:none!important;clip-path:none!important}`}</style>
         </noscript>
+        {/* Cloudflare Web Analytics (cookieless) */}
+        <script
+          type="module"
+          src="https://static.cloudflareinsights.com/beacon.min.js"
+          data-cf-beacon='{"token": "4184f15001294b0bb008fb1a29108d24"}'
+        />
+        {/* Microsoft Clarity — heatmaps + session replays */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              '(function(c,l,a,r,i,t,y){c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);})(window,document,"clarity","script","yy6i7wft44");',
+          }}
+        />
       </head>
       <body className="grain" style={{ background: "#0A0B0D" }}>
         <div className="aurora" aria-hidden="true">

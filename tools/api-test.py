@@ -43,6 +43,10 @@ def req(url, method, data):
     h = {"User-Agent": UA}
     if COOKIE: h["Cookie"] = COOKIE
     if TOKEN: h["Authorization"] = TOKEN if " " in TOKEN else "Bearer " + TOKEN
+    try:  # program auth header(s) e.g. X-FilesAPI-Auth
+        import os as _os
+        for _k,_v in (json.loads(_os.environ.get("HUNT_AUTH_HEADERS","") or "{}") or {}).items(): h.setdefault(_k,_v)
+    except Exception: pass
     body = None
     if data is not None and method in ("POST", "PUT", "PATCH"):
         body = data.encode(); h["Content-Type"] = "application/x-www-form-urlencoded"

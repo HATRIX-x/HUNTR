@@ -34,8 +34,24 @@
   --mono:'JetBrains Mono',ui-monospace,monospace;
 }
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
-html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;-webkit-font-smoothing:antialiased;}
-body{overflow:hidden;display:flex;flex-direction:column;}
+html,body{height:100%;background:#000;color:var(--text);font-family:var(--sans);font-size:14px;-webkit-font-smoothing:antialiased;}
+body{overflow:hidden;display:flex;flex-direction:column;position:relative;
+  background:
+    radial-gradient(130% 95% at 18% -20%, rgba(139,92,246,.17), transparent 55%),
+    radial-gradient(90% 85% at 100% 70%, rgba(74,222,128,.09), transparent 55%),
+    radial-gradient(85% 70% at 82% -8%, rgba(167,139,250,.12), transparent 58%),
+    linear-gradient(180deg,#0A0A0F 0%,#07070A 55%,#050506 100%);
+}
+/* ─── living background: slow-drifting purple + green blobs, pure transform/opacity (cheap, GPU) — matches the site's aurora ─── */
+#bg-fx{position:fixed;inset:0;z-index:0;overflow:hidden;pointer-events:none;}
+#bg-fx .blob{position:absolute;border-radius:50%;filter:blur(90px);opacity:.55;will-change:transform;}
+#bg-fx .b1{width:560px;height:560px;left:-120px;top:-160px;background:radial-gradient(circle,rgba(139,92,246,.32),transparent 70%);animation:drift1 26s ease-in-out infinite alternate;}
+#bg-fx .b2{width:620px;height:620px;right:-180px;top:10%;background:radial-gradient(circle,rgba(74,222,128,.16),transparent 70%);animation:drift2 32s ease-in-out infinite alternate;}
+#bg-fx .b3{width:680px;height:680px;left:30%;bottom:-260px;background:radial-gradient(circle,rgba(167,139,250,.18),transparent 70%);animation:drift3 38s ease-in-out infinite alternate;}
+@keyframes drift1{0%{transform:translate(0,0) scale(1);}100%{transform:translate(60px,50px) scale(1.12);}}
+@keyframes drift2{0%{transform:translate(0,0) scale(1);}100%{transform:translate(-50px,40px) scale(1.08);}}
+@keyframes drift3{0%{transform:translate(0,0) scale(1);}100%{transform:translate(30px,-40px) scale(1.1);}}
+#topbar,#main{position:relative;z-index:1;}
 ::selection{background:rgba(139,124,246,.28);}
 ::-webkit-scrollbar{width:9px;height:9px;}
 ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.09);border-radius:5px;border:2px solid transparent;background-clip:padding-box;}
@@ -47,10 +63,17 @@ button,input,select,textarea{font-family:inherit;}
 
 /* ─── topbar ─── */
 #topbar{
-  height:48px;flex-shrink:0;display:flex;align-items:center;gap:14px;padding:0 18px;
+  height:48px;flex-shrink:0;display:flex;align-items:center;gap:14px;padding:0 18px;position:relative;
   background:rgba(10,10,13,.90);backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px);
   border-bottom:1px solid var(--border);z-index:100;
 }
+/* thin animated progress rail glued to the topbar's bottom edge — real signal (run.pct), not decoration */
+#tb-progress{position:absolute;left:0;right:0;bottom:-1px;height:2px;background:transparent;overflow:hidden;z-index:101;}
+#tb-progress-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--accent),#C4B5FD,var(--accent));
+  background-size:200% 100%;border-radius:0 2px 2px 0;transition:width .6s cubic-bezier(.16,1,.3,1),opacity .3s;opacity:0;}
+#tb-progress-fill.run{opacity:1;animation:tbShimmer 2.2s linear infinite;}
+#tb-progress-fill.done{opacity:1;background:linear-gradient(90deg,var(--green),#6EE7B7);animation:none;}
+@keyframes tbShimmer{to{background-position:-200% 0;}}
 #logo{font-weight:700;letter-spacing:2.5px;font-size:13px;color:var(--text);flex-shrink:0;}
 #logo em{color:var(--accent);font-style:normal;}
 .tb-sep{width:1px;height:16px;background:var(--border2);flex-shrink:0;}
@@ -61,6 +84,7 @@ button,input,select,textarea{font-family:inherit;}
 #sdot.err{background:var(--c);}
 @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(139,124,246,.45);}70%{box-shadow:0 0 0 6px rgba(139,124,246,0);}100%{box-shadow:0 0 0 0 rgba(139,124,246,0);}}
 #stext{font-size:12.5px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;}
+#cost-meter{font-family:var(--mono);font-size:11px;color:var(--text3);font-variant-numeric:tabular-nums;flex-shrink:0;padding-left:4px;border-left:1px solid var(--border);margin-left:4px;}
 #stext b{color:var(--text);font-weight:600;}
 #tb-right{margin-left:auto;display:flex;gap:7px;align-items:center;flex-shrink:0;}
 .tb-btn{
@@ -76,8 +100,19 @@ button,input,select,textarea{font-family:inherit;}
 #main{flex:1;min-height:0;position:relative;overflow:hidden;}
 
 /* ═══ SCOPE VIEW ═══ */
-#scope-view{height:100%;overflow-y:auto;display:flex;flex-direction:column;align-items:center;}
-.sv-inner{width:100%;max-width:660px;padding:56px 24px 80px;display:flex;flex-direction:column;gap:20px;}
+#scope-view{height:100%;overflow-y:auto;}
+/* two-pane shell: the scope form is the only thing that matters on arrival, so it gets the
+   dominant column; portfolio/recent hunts live in a slim side rail instead of stacking below
+   the fold — same "content + persistent rail" shape as the hunt view, so the app doesn't
+   switch layout language between the start screen and everything after it. */
+.sv-shell{width:100%;max-width:1060px;margin:0 auto;padding:56px 24px 80px;display:flex;gap:44px;align-items:flex-start;}
+.sv-main{flex:1;min-width:0;max-width:620px;display:flex;flex-direction:column;gap:20px;}
+.sv-side{width:296px;flex-shrink:0;position:sticky;top:40px;}
+@media(max-width:900px){
+  .sv-shell{flex-direction:column;gap:32px;max-width:660px;}
+  .sv-main{max-width:none;}
+  .sv-side{width:100%;position:static;}
+}
 .sv-hero{text-align:center;margin-bottom:6px;}
 .sv-hero h1{font-size:26px;font-weight:700;letter-spacing:5px;color:var(--text);}
 .sv-hero h1 em{color:var(--accent);font-style:normal;}
@@ -98,11 +133,13 @@ button,input,select,textarea{font-family:inherit;}
 .sp-head{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;color:var(--text2);}
 .sp-head .sp-ok{color:var(--green);font-weight:600;}
 .sp-head .sp-deny{color:var(--c);}
+.sp-head .sp-ambig{color:#FBBF24;}
 .sp-head .sp-spin{color:var(--text3);}
 .sp-head .sp-hint{color:var(--text3);font-style:normal;}
 .sp-list{display:flex;flex-direction:column;gap:5px;max-height:190px;overflow:auto;}
 .sp-row{display:flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12.5px;color:var(--text);}
 .sp-row.deny{color:var(--text2);opacity:.85;}
+.sp-row.ambig{color:var(--text2);}
 .sp-pill{flex-shrink:0;font-size:9.5px;font-weight:700;letter-spacing:.6px;padding:2px 6px;border-radius:5px;
   text-transform:uppercase;width:52px;text-align:center;}
 .sp-pill.web{background:rgba(139,124,246,.16);color:#B9AEFB;}
@@ -110,12 +147,18 @@ button,input,select,textarea{font-family:inherit;}
 .sp-pill.mobile{background:rgba(52,211,153,.15);color:#6EE7B7;}
 .sp-pill.source{background:rgba(255,255,255,.07);color:var(--text2);}
 .sp-pill.other,.sp-pill.deny{background:rgba(244,63,94,.14);color:#FDA4AF;}
+.sp-pill.ambig{background:rgba(251,191,36,.14);color:#FBBF24;width:auto;padding:2px 7px;}
 .sp-asset{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.sp-note{flex-shrink:0;margin-left:auto;padding-left:10px;font-size:10.5px;color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:46%;}
 .sp-meta{display:flex;flex-wrap:wrap;gap:6px;padding-top:4px;border-top:1px solid var(--border);}
 .sp-chip{font-family:var(--mono);font-size:10.5px;padding:3px 8px;border-radius:6px;
   background:rgba(255,255,255,.05);color:var(--text2);border:1px solid var(--border);}
 .sp-chip.warn{background:rgba(251,146,60,.12);color:#FDBA74;border-color:rgba(251,146,60,.28);}
 .sp-foot{font-family:var(--mono);font-size:10px;color:var(--text3);}
+.sp-loading{display:flex;align-items:center;gap:14px;padding:18px 4px;}
+.sp-loading-txt{display:flex;flex-direction:column;gap:4px;}
+#sp-loading-title{font-family:var(--mono);font-size:13px;color:var(--text);}
+.sp-loading-sub{font-family:var(--mono);font-size:11px;color:var(--text3);font-variant-numeric:tabular-nums;}
 #scope-ta::placeholder{color:var(--text3);}
 .f-row{display:flex;gap:12px;}
 .f-group{display:flex;flex-direction:column;gap:6px;flex:1;}
@@ -173,23 +216,24 @@ button,input,select,textarea{font-family:inherit;}
 #intake-btn:hover{background:rgba(167,139,250,.18);border-color:rgba(167,139,250,.5);}
 #intake-btn:active{transform:translateY(1px);}
 #adv-btn{
-  width:100%;height:40px;margin-top:2px;background:transparent;border:1px solid var(--border2);border-radius:11px;
-  color:var(--text3);font-size:12px;font-weight:500;letter-spacing:.3px;cursor:pointer;
-  display:flex;align-items:center;justify-content:center;gap:8px;transition:all .14s;
+  width:100%;height:42px;padding:0 15px;background:var(--surface);border:1px solid var(--border2);border-radius:11px;
+  color:var(--text2);font-size:12.5px;font-weight:600;letter-spacing:.1px;cursor:pointer;font-family:inherit;
+  display:flex;align-items:center;gap:8px;transition:all .14s;
 }
-#adv-btn:hover{color:var(--text2);border-color:var(--border3);background:rgba(255,255,255,.015);}
-.adv-chev{font-size:9px;transition:transform .2s;color:var(--text3);}
+#adv-btn:hover{color:var(--text);border-color:var(--border3);background:var(--surface2);}
+#adv-btn.on{color:var(--text);border-color:var(--accent-bd);}
+.adv-btn-lbl{white-space:nowrap;}
+.adv-chev{font-size:9px;margin-left:auto;transition:transform .2s;color:var(--text3);flex-shrink:0;}
 #adv-btn.on .adv-chev{transform:rotate(180deg);}
-#adv-panel{display:none;flex-direction:column;gap:14px;padding:18px;background:var(--surface);border:1px solid var(--border);border-radius:12px;}
+#adv-panel{display:none;flex-direction:column;gap:14px;padding:18px;margin-top:-6px;background:var(--surface);border:1px solid var(--border);border-radius:12px;}
 #adv-panel.on{display:flex;}
-.adv-head{font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--text3);margin-bottom:-2px;}
-.adv-mode-note{font-weight:400;text-transform:none;letter-spacing:0;color:var(--text3);opacity:.75;}
+.adv-mode-note{font-weight:400;font-size:11.5px;color:var(--text3);opacity:.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .f-checks{display:flex;gap:26px;}
 .f-check{display:flex;align-items:center;gap:8px;}
 .f-check input{width:15px;height:15px;accent-color:var(--accent);cursor:pointer;}
 .f-check label{font-size:13px;color:var(--text2);cursor:pointer;}
 /* recent */
-#recent{display:none;flex-direction:column;gap:9px;margin-top:10px;}
+#recent{display:none;flex-direction:column;gap:9px;}
 #recent.on{display:flex;}
 .recent-lbl{font-size:10px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--text3);padding-left:2px;}
 .rr{display:flex;align-items:center;gap:13px;padding:13px 16px;background:var(--surface);border:1px solid var(--border);border-radius:11px;cursor:pointer;transition:all .13s;}
@@ -202,16 +246,43 @@ button,input,select,textarea{font-family:inherit;}
 .rr-n.has{color:var(--text);}
 .rr-n.none{color:var(--text3);}
 .rr-ago{font-size:11.5px;color:var(--text3);flex-shrink:0;font-variant-numeric:tabular-nums;}
+.rr-del{flex-shrink:0;width:20px;height:20px;padding:0;border:none;border-radius:6px;background:transparent;
+  color:var(--text3);font-size:12px;line-height:1;cursor:pointer;opacity:.4;transition:all .13s;
+  display:flex;align-items:center;justify-content:center;}
+.rr-del:hover{opacity:1;color:var(--c);background:rgba(244,63,94,.14);}
+.rr-rehunt{flex-shrink:0;width:20px;height:20px;padding:0;border:none;border-radius:6px;background:transparent;
+  color:var(--text3);font-size:13px;line-height:1;cursor:pointer;opacity:.4;transition:all .13s;
+  display:flex;align-items:center;justify-content:center;}
+.rr-rehunt:hover{opacity:1;color:var(--accent,#8B7CF6);background:var(--accent-bg,rgba(139,124,246,.13));}
+/* portfolio — cross-target rollup shown above the recent-hunts list */
+#portfolio-stats{display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;}
+.pf-tile{flex:1;min-width:84px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 14px;}
+.pf-tile .v{font-size:19px;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums;line-height:1.2;}
+.pf-tile .l{font-size:9.5px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--text3);margin-top:2px;}
+.pf-tile.crit .v{color:var(--c);}
+#recent-list{max-height:280px;overflow:hidden;position:relative;}
+#recent-list.all{max-height:none;overflow:visible;}
+#recent-list:not(.all)::after{content:'';position:absolute;left:0;right:0;bottom:0;height:40px;background:linear-gradient(transparent,var(--bg));pointer-events:none;}
+#recent-more{width:100%;margin-top:8px;height:32px;background:transparent;border:1px solid var(--border2);border-radius:8px;color:var(--text2);font-size:12px;cursor:pointer;transition:all .13s;}
+#recent-more:hover{color:var(--text);border-color:var(--border3);background:rgba(255,255,255,.04);}
 
 /* ═══ HUNT VIEW ═══ */
-#hunt-view{display:none;flex-direction:column;height:100%;}
+#hunt-view{display:none;flex-direction:column;height:100%;position:relative;}
 #hunt-view.on{display:flex;}
 
-/* view toggle (Findings | Graph) */
-#view-toggle{display:flex;background:var(--surface2);border:1px solid var(--border2);border-radius:8px;padding:2px;margin-right:4px;}
-.vt-btn{height:24px;padding:0 12px;background:transparent;border:none;border-radius:6px;color:var(--text3);font-size:11.5px;font-weight:500;cursor:pointer;transition:all .13s;}
-.vt-btn:hover{color:var(--text2);}
-.vt-btn.on{background:var(--accent-bg);color:var(--accent2);}
+/* shell: left icon rail + swappable view + persistent right insights rail —
+   replaces the old top pill toggle so the 4 views share one consistent frame
+   instead of each one independently deciding how to use (or waste) its width. */
+.hunt-shell{flex:1;min-height:0;display:flex;}
+#view-rail{width:72px;flex-shrink:0;display:flex;flex-direction:column;gap:2px;padding:12px 6px;border-right:1px solid var(--border);}
+.vr-btn{position:relative;display:flex;flex-direction:column;align-items:center;gap:4px;padding:10px 2px;border:none;background:transparent;border-radius:9px;color:var(--text3);cursor:pointer;transition:all .13s;font-family:inherit;}
+.vr-btn:hover{color:var(--text2);background:rgba(255,255,255,.045);}
+.vr-btn.on{color:var(--accent2);background:var(--accent-bg);}
+.vr-btn.on::before{content:'';position:absolute;left:-6px;top:9px;bottom:9px;width:3px;border-radius:2px;background:var(--accent);}
+.vr-ic{font-size:17px;line-height:1;}
+.vr-lbl{font-size:9px;font-weight:600;letter-spacing:.3px;}
+.vr-badge{position:absolute;top:2px;right:6px;min-width:15px;height:15px;padding:0 3px;border-radius:8px;background:var(--c);color:#fff;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center;line-height:1;}
+.view-stack{flex:1;min-width:0;min-height:0;position:relative;display:flex;flex-direction:column;overflow:hidden;}
 
 /* findings toolbar (#4 filters + search, #1 export) */
 #find-toolbar{display:flex;align-items:center;gap:10px;max-width:960px;margin:0 auto;padding:14px 24px 0;}
@@ -219,8 +290,10 @@ button,input,select,textarea{font-family:inherit;}
   font-size:12.5px;padding:0 12px;outline:none;transition:border-color .15s;}
 #find-search:focus{border-color:var(--accent-bd);}
 .fsev-chips{display:flex;gap:4px;}
-.fsev{width:26px;height:28px;border-radius:7px;border:1px solid var(--border2);background:transparent;color:var(--text3);
-  font-size:11px;font-weight:700;cursor:pointer;transition:all .12s;}
+.fsev{min-width:26px;height:28px;padding:0 6px;border-radius:7px;border:1px solid var(--border2);background:transparent;color:var(--text3);
+  font-size:11px;font-weight:700;cursor:pointer;transition:all .12s;display:inline-flex;align-items:center;gap:1px;}
+.fsev-n{font-size:9px;font-weight:700;opacity:.6;font-variant-numeric:tabular-nums;}
+.fsev.on .fsev-n{opacity:.85;}
 .fsev.on.c{color:var(--c);border-color:var(--c-bd);background:var(--c-bg);}
 .fsev.on.h{color:var(--h);border-color:var(--h-bd);background:var(--h-bg);}
 .fsev.on.m{color:var(--m);border-color:var(--m-bd);background:var(--m-bg);}
@@ -248,9 +321,14 @@ button,input,select,textarea{font-family:inherit;}
   font-family:var(--mono);font-size:12px;padding:11px 13px;line-height:1.7;outline:none;resize:vertical;}
 .m-ta:focus{border-color:var(--accent-bd);}
 .m-ta.deny{border-color:rgba(244,63,94,.22);}
-.m-btn{height:36px;padding:0 18px;border-radius:9px;font-size:13px;font-weight:600;cursor:pointer;border:none;margin-top:16px;}
+.m-btn{height:36px;padding:0 18px;border-radius:9px;font-size:13px;font-weight:600;cursor:pointer;border:1px solid transparent;margin-top:16px;transition:all .13s;}
 .m-btn.p{background:var(--accent);color:#0A0A0D;}
 .m-btn.p:hover{filter:brightness(1.08);}
+.m-btn.s{background:transparent;border-color:var(--border2);color:var(--text2);}
+.m-btn.s:hover{color:var(--text);border-color:var(--border3);background:rgba(255,255,255,.04);}
+.m-btn.danger{background:rgba(244,63,94,.12);border-color:rgba(244,63,94,.35);color:var(--c);}
+.m-btn.danger:hover{background:rgba(244,63,94,.2);border-color:rgba(244,63,94,.5);}
+.m-btn:disabled{opacity:.5;cursor:wait;}
 .m-row{display:flex;gap:10px;align-items:center;}
 .m-diff-grp{margin-bottom:16px;}
 .m-diff-grp .n{font-size:13px;font-weight:600;margin-bottom:8px;}
@@ -275,6 +353,22 @@ button,input,select,textarea{font-family:inherit;}
 
 /* findings pane (primary) */
 #find-pane{flex:1;min-height:0;overflow-y:auto;}
+/* right rail — coverage/cost/brain, persistent across every view (not just
+   Findings) so Graph/Surface/Coverage stop reading as half-empty pages too;
+   hidden below 1280px, where the content column is already the better use
+   of the space. */
+#hunt-rail{display:none;width:270px;flex-shrink:0;overflow-y:auto;padding:20px 18px 40px;
+  border-left:1px solid var(--border);gap:22px;flex-direction:column;}
+@media(min-width:1280px){#hunt-rail{display:flex;}}
+.rail-card .gi-h{margin-top:0;}
+.rail-mini-stats{display:flex;gap:8px;margin-bottom:10px;}
+.rail-mini-stat{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:9px 10px;cursor:pointer;transition:border-color .13s,background .13s;}
+.rail-mini-stat:hover{border-color:var(--border3);background:var(--surface2);}
+.rail-mini-stat .n{font-size:17px;font-weight:700;color:var(--text);line-height:1;font-variant-numeric:tabular-nums;}
+.rail-mini-stat .k{font-size:9px;font-weight:600;letter-spacing:.4px;text-transform:uppercase;color:var(--text3);margin-top:4px;}
+.rail-cost-row{display:flex;justify-content:space-between;align-items:baseline;font-size:11.5px;color:var(--text2);padding:4px 0;border-top:1px solid var(--border);}
+.rail-cost-row:first-of-type{border-top:none;}
+.rail-cost-row b{font-family:var(--mono);color:var(--text);font-weight:600;}
 
 /* surface map — refined site tree */
 #surface-pane{flex:1;min-height:0;display:flex;flex-direction:column;}
@@ -288,6 +382,61 @@ button,input,select,textarea{font-family:inherit;}
 #surface-detail{flex:1;overflow:auto;padding:22px 26px;}
 #sd-empty{display:block;}
 
+/* coverage ledger — endpoint × vuln-class grid */
+#coverage-pane{flex:1;min-height:0;display:flex;flex-direction:column;}
+#cov-top{flex-shrink:0;display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:1px solid var(--border);}
+#cov-filter{flex:1;max-width:460px;height:34px;background:var(--surface);border:1px solid var(--border2);border-radius:9px;
+  color:var(--text);font-family:var(--mono);font-size:12.5px;padding:0 14px;outline:none;transition:border-color .15s,box-shadow .15s;}
+#cov-filter:focus{border-color:var(--accent-bd);box-shadow:0 0 0 3px var(--accent-bg);}
+#cov-legend{display:flex;gap:14px;flex-shrink:0;}
+.cov-lg{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text3);}
+.cov-dot{display:inline-block;width:8px;height:8px;border-radius:50%;flex-shrink:0;}
+.cov-dot.finding{background:var(--h);box-shadow:0 0 6px 0 var(--h);}
+.cov-dot.tested{background:var(--green);opacity:.55;}
+.cov-dot.untested{background:var(--text3);opacity:.3;}
+#cov-body{flex:1;overflow:auto;padding:14px 18px 32px;}
+.cov-table-wrap{border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--surface);
+  box-shadow:0 1px 0 0 rgba(255,255,255,.02) inset;}
+.cov-table{border-collapse:separate;border-spacing:0;font-size:11.5px;width:100%;}
+.cov-table th,.cov-table td{padding:0;}
+.cov-ep-col{position:sticky;left:0;background:var(--surface);z-index:2;font-family:var(--mono);color:var(--text2);
+  padding:0 14px 0 14px !important;max-width:380px;height:32px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  border-right:1px solid var(--border);border-bottom:1px solid var(--border);font-size:11.5px;}
+.cov-corner{position:sticky;left:0;top:0;z-index:4;background:var(--elevated)!important;
+  font-size:9.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--text3)!important;
+  font-family:var(--sans)!important;vertical-align:bottom!important;padding-bottom:10px!important;}
+.cov-cls-hd{font-family:var(--mono);color:var(--text2);font-size:10px;letter-spacing:.2px;font-weight:600;
+  writing-mode:vertical-rl;transform:rotate(180deg);padding:10px 0 12px !important;height:168px;max-height:168px;
+  vertical-align:bottom;position:sticky;top:0;background:var(--elevated);z-index:1;border-bottom:1px solid var(--border2);
+  border-left:1px solid var(--border);white-space:nowrap;overflow:visible;}
+.cov-cls-hd span{display:inline-block;}
+.cov-cell{width:30px;height:32px;text-align:center;border-left:1px solid var(--border);border-bottom:1px solid var(--border);
+  position:relative;transition:background .1s;}
+.cov-cell.tested{background:rgba(52,211,153,.07);}
+.cov-cell.finding{background:var(--CBG,rgba(255,138,61,.14));}
+.cov-cell .cov-dot{margin:0 auto;}
+.cov-row:nth-child(even) .cov-ep-col{background:rgba(255,255,255,.012);}
+.cov-row:nth-child(even) .cov-cell{background-color:rgba(255,255,255,.012);}
+.cov-row:nth-child(even) .cov-cell.tested{background-color:rgba(52,211,153,.09);}
+.cov-row:nth-child(even) .cov-cell.finding{background-color:var(--CBG2,rgba(255,138,61,.16));}
+.cov-row:hover .cov-ep-col{color:var(--text);background:var(--surface2)!important;}
+.cov-row:hover .cov-cell{outline:1px solid var(--border3);outline-offset:-1px;}
+.cov-empty{padding:40px;text-align:center;color:var(--text3);font-size:13px;}
+.cov-stats{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;}
+.cov-stat{background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:9px 14px;min-width:92px;}
+.cov-stat .n{font-size:17px;font-weight:700;color:var(--text);line-height:1;font-variant-numeric:tabular-nums;}
+.cov-stat .k{font-size:9px;font-weight:600;letter-spacing:.4px;text-transform:uppercase;color:var(--text3);margin-top:4px;}
+
+/* supervisor activity feed — recent EV-ranked dispatches, including "gave up" moments */
+#sup-feed{margin:0 0 10px;padding:8px 12px;background:var(--surface);border:1px solid var(--border);border-radius:10px;}
+.sup-feed-h{font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--text3);margin-bottom:6px;display:flex;align-items:center;gap:7px;}
+.sup-feed-h .dot{width:6px;height:6px;border-radius:50%;background:var(--accent2);box-shadow:0 0 6px 0 var(--accent2);}
+.sup-row{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:11.5px;color:var(--text2);padding:3px 0;}
+.sup-row .ic{flex-shrink:0;width:14px;text-align:center;}
+.sup-row.ok .ic{color:var(--green);}
+.sup-row.fail .ic{color:var(--h);}
+.sup-row .k{color:var(--text3);}
+
 .st-row{position:relative;display:flex;align-items:center;gap:7px;height:30px;padding:0 10px 0 var(--pad,10px);cursor:pointer;
   white-space:nowrap;border-radius:7px;margin:1px 4px;transition:background .1s;}
 .st-row:hover{background:rgba(255,255,255,.045);}
@@ -297,7 +446,7 @@ button,input,select,textarea{font-family:inherit;}
 .st-ico{flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;}
 .st-host-badge{width:16px;height:16px;border-radius:4px;background:linear-gradient(135deg,#38BDF8,#2563eb);
   color:#fff;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-family:var(--sans);}
-.st-folder{color:var(--text3);font-size:12px;}
+.st-folder{width:6px;height:6px;border-radius:2px;background:var(--text3);opacity:.55;flex-shrink:0;}
 .st-leaf{width:5px;height:5px;border-radius:50%;background:var(--text3);flex-shrink:0;}
 .st-name{font-family:var(--mono);font-size:12.5px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;}
 .st-row.host-row{height:34px;margin-top:6px;}
@@ -335,9 +484,20 @@ button,input,select,textarea{font-family:inherit;}
 .sd-fm{font-size:10.5px;color:var(--text3);}
 .sd-acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;}
 
-/* graph pane */
-#graph-pane{flex:1;min-height:0;position:relative;overflow:hidden;background:
-  radial-gradient(circle at 50% 40%, rgba(139,124,246,.05), transparent 60%), var(--bg);}
+/* graph pane — a slow-drifting multi-hue nebula behind the neural graph, instead of a flat panel */
+@keyframes nebula-drift{
+  0%{background-position:45% 38%, 80% 90%, 12% 18%, 0 0;}
+  50%{background-position:58% 55%, 62% 75%, 28% 30%, 0 0;}
+  100%{background-position:45% 38%, 80% 90%, 12% 18%, 0 0;}
+}
+#graph-pane{flex:1;min-height:0;position:relative;overflow:hidden;
+  background:
+    radial-gradient(circle at 18% 15%, rgba(139,92,246,.09), transparent 55%),
+    radial-gradient(circle at 85% 82%, rgba(74,222,128,.055), transparent 52%),
+    radial-gradient(circle at 78% 10%, rgba(167,139,250,.05), transparent 50%),
+    #0A0B0D;
+  background-size:220% 220%,220% 220%,220% 220%,100% 100%;
+  animation:nebula-drift 30s ease-in-out infinite;}
 #graph-canvas{position:absolute;inset:0;width:100%;height:100%;cursor:grab;}
 #graph-canvas:active{cursor:grabbing;}
 #graph-legend{position:absolute;left:14px;bottom:14px;display:flex;flex-wrap:wrap;gap:12px;
@@ -345,11 +505,8 @@ button,input,select,textarea{font-family:inherit;}
   border-radius:9px;font-size:10.5px;color:var(--text2);pointer-events:none;}
 .gl-item{display:flex;align-items:center;gap:5px;}
 .gl-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
-.gl-dot.t{background:#A78BFA;} .gl-dot.h{background:#9AA4B2;} .gl-dot.e{background:#464D59;border:1px solid #5a626e;}
-.gl-dot.c{background:#FF3B5C;} .gl-dot.f{background:#FF8A3D;} .gl-dot.ch{background:#34D399;}
-#graph-pane{background:
-  radial-gradient(circle at 50% 42%, rgba(139,124,246,.07), transparent 55%),
-  radial-gradient(circle at 80% 90%, rgba(56,189,248,.05), transparent 50%), #07070A !important;}
+.gl-dot.t{background:#A78BFA;box-shadow:0 0 6px 0 #A78BFA;} .gl-dot.h{background:#60A5FA;} .gl-dot.e{background:#64748B;border:1px solid #808b9c;}
+.gl-dot.c{background:#FF3B5C;} .gl-dot.f{background:#FF8A3D;} .gl-dot.ch{background:#2DD4BF;}
 #graph-tip{position:absolute;pointer-events:none;display:none;max-width:300px;z-index:20;
   padding:7px 10px;background:rgba(28,28,34,.92);backdrop-filter:blur(8px);border:1px solid var(--border2);border-radius:8px;
   font-size:11.5px;color:var(--text);box-shadow:0 8px 30px -8px rgba(0,0,0,.6);}
@@ -359,6 +516,14 @@ button,input,select,textarea{font-family:inherit;}
   color:var(--accent2);font-size:12px;font-weight:600;cursor:pointer;transition:all .13s;}
 #graph-insights-btn:hover{background:var(--accent-bg);border-color:var(--accent-bd);}
 #graph-insights-btn.on{background:var(--accent-bg);border-color:var(--accent-bd);}
+#graph-toolbar{position:absolute;top:12px;right:12px;z-index:25;display:flex;align-items:center;gap:4px;
+  height:30px;padding:0 6px;background:rgba(19,19,24,.8);backdrop-filter:blur(8px);border:1px solid var(--border2);border-radius:8px;}
+.gtb-btn{height:24px;min-width:24px;padding:0 7px;border:1px solid transparent;background:transparent;border-radius:6px;
+  color:var(--text2);font-size:14px;font-weight:600;cursor:pointer;transition:all .12s;line-height:1;}
+.gtb-btn.wide{font-size:11.5px;padding:0 9px;}
+.gtb-btn:hover{color:var(--text);background:rgba(255,255,255,.07);}
+#graph-zoom-lbl{font-size:10.5px;color:var(--text3);font-variant-numeric:tabular-nums;min-width:34px;text-align:center;}
+.gtb-sep{width:1px;height:16px;background:var(--border2);margin:0 2px;}
 #graph-insights{position:absolute;top:52px;left:12px;bottom:56px;width:300px;max-width:78vw;z-index:24;
   background:rgba(17,17,21,.93);backdrop-filter:blur(16px);border:1px solid var(--border2);border-radius:12px;
   overflow-y:auto;display:none;box-shadow:0 18px 50px -20px rgba(0,0,0,.7);}
@@ -375,7 +540,18 @@ button,input,select,textarea{font-family:inherit;}
 .gi-tx .gi-mono{font-family:var(--mono);font-size:10.5px;color:var(--text2);}
 .gi-sc{flex-shrink:0;font-size:9.5px;color:var(--text3);font-variant-numeric:tabular-nums;}
 .gi-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
+.gi-bar-wrap{flex:1;height:5px;background:var(--surface2);border-radius:3px;overflow:hidden;}
+.gi-bar{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));border-radius:3px;}
 .gi-empty{color:var(--text3);font-size:12px;padding:20px 4px;text-align:center;}
+/* momentum — real endpoints-tested/min velocity, not a fake meter. idle=grey, warm=accent,
+   hot=flame gradient; thresholds are presentation bands over a real rate, not invented data. */
+.mom-row{display:flex;justify-content:space-between;align-items:baseline;margin-top:12px;}
+.mom-lbl{font-size:9.5px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--text3);}
+.mom-val{font-family:var(--mono);font-size:11px;color:var(--text2);font-variant-numeric:tabular-nums;}
+.mom-bar-wrap{height:5px;border-radius:3px;background:var(--surface2);overflow:hidden;margin-top:6px;}
+.mom-bar{display:block;height:100%;border-radius:3px;background:var(--text3);transition:width .6s ease,background .3s;}
+.mom-bar.warm{background:linear-gradient(90deg,var(--accent),var(--accent2));}
+.mom-bar.hot{background:linear-gradient(90deg,#FB923C,#F43F5E);box-shadow:0 0 8px rgba(244,63,94,.45);}
 #graph-hint{position:absolute;top:12px;left:50%;transform:translateX(-50%);font-size:10.5px;color:var(--text3);
   background:rgba(19,19,24,.7);backdrop-filter:blur(6px);padding:5px 12px;border-radius:20px;border:1px solid var(--border);
   pointer-events:none;opacity:.8;}
@@ -415,10 +591,12 @@ button,input,select,textarea{font-family:inherit;}
 .gd-btn.p:hover{background:rgba(139,124,246,.2);}
 .gd-btn.s{background:transparent;border-color:var(--border2);color:var(--text2);}
 .gd-btn.s:hover{color:var(--text);border-color:var(--border3);background:rgba(255,255,255,.04);}
-#find-list{max-width:960px;margin:0 auto;padding:24px 24px 48px;display:flex;flex-direction:column;gap:11px;}
+/* matches #find-toolbar's max-width/centering so the list lines up under the search bar
+   instead of hugging the pane's left edge while the toolbar sits centered above it */
+#find-list{max-width:960px;margin:0 auto;padding:24px 28px 48px;display:grid;grid-template-columns:repeat(auto-fill,minmax(min(460px,100%),1fr));gap:12px;align-items:start;}
 
 /* group header */
-.grp{display:flex;align-items:center;gap:10px;margin:14px 2px 4px;}
+.grp{grid-column:1/-1;display:flex;align-items:center;gap:10px;margin:14px 2px 4px;}
 .grp:first-child{margin-top:0;}
 .grp-ln{height:1px;flex:1;background:var(--border);}
 .grp-lbl{font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--text3);}
@@ -427,10 +605,16 @@ button,input,select,textarea{font-family:inherit;}
 .grp.ok .grp-ct{background:rgba(52,211,153,.12);color:var(--green);}
 
 /* finding card */
-.fc{position:relative;background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;transition:border-color .14s,background .14s;}
+.fc{position:relative;background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;transition:border-color .14s,background .14s,transform .14s;}
+/* confirmed findings are the actual output of a hunt — give them the full row instead of
+   squeezing them into a grid column sized for the (usually larger) needs-verification pile */
+.fc.wide{grid-column:1/-1;}
 .fc::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--sev);}
 .fc.c{--sev:var(--c);} .fc.h{--sev:var(--h);} .fc.m{--sev:var(--m);} .fc.l{--sev:var(--l);} .fc.i{--sev:var(--i);}
-.fc:hover{border-color:var(--border2);}
+.fc:hover{border-color:var(--border2);transform:translateY(-1px);}
+/* entrance motion for cards/groups as they're rendered — staggered via inline animation-delay */
+@keyframes fxIn{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:translateY(0);}}
+.fx-in{animation:fxIn .4s cubic-bezier(.16,1,.3,1) both;}
 .fc.nr{opacity:.9;}
 .fc.nr::before{opacity:.5;}
 .fc-head{display:flex;align-items:center;gap:13px;padding:15px 16px 15px 19px;cursor:pointer;user-select:none;}
@@ -445,7 +629,19 @@ button,input,select,textarea{font-family:inherit;}
 .fc-title{font-size:14.5px;font-weight:560;color:var(--text);line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .fc-ep{font-family:var(--mono);font-size:11.5px;color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .fc-tag{font-size:9.5px;font-weight:600;letter-spacing:.4px;text-transform:uppercase;padding:3px 8px;border-radius:5px;background:var(--surface2);color:var(--text3);border:1px solid var(--border);flex-shrink:0;}
+/* trust badge — how the finding was actually verified, not just its severity */
+.fc-trust{font-size:9px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;padding:3px 7px;border-radius:5px;border:1px solid;flex-shrink:0;display:inline-flex;align-items:center;gap:3px;}
+.fc-trust.proven{color:var(--green);background:rgba(52,211,153,.1);border-color:rgba(52,211,153,.3);}
+.fc-trust.reverified{color:var(--accent2);background:var(--accent-bg);border-color:var(--accent-bd);}
+.fc-trust.disputed{color:var(--h);background:var(--h-bg);border-color:var(--h-bd);cursor:help;}
+.fc-trust.llm{color:var(--text3);background:var(--surface2);border-color:var(--border);}
 .fc-chev{color:var(--text3);font-size:11px;flex-shrink:0;transition:transform .2s;width:16px;text-align:center;}
+/* pipeline stepper — Confirmed → Verified → Exploited → Reported, derived from finding state */
+.fc-pipe{display:flex;align-items:center;gap:4px;padding:12px 0 2px;flex-wrap:wrap;}
+.fc-pipe-step{display:flex;align-items:center;gap:5px;font-size:10.5px;font-weight:600;color:var(--text3);padding:4px 8px;border-radius:5px;background:var(--surface2);border:1px solid var(--border);}
+.fc-pipe-step.done{color:var(--green);border-color:rgba(52,211,153,.3);}
+.fc-pipe-step.active{color:var(--text2);}
+.fc-pipe-sep{width:12px;height:1px;background:var(--border);flex-shrink:0;}
 .fc.open .fc-chev{transform:rotate(180deg);}
 /* card body */
 .fc-body{display:none;padding:2px 19px 4px;}
@@ -459,7 +655,7 @@ button,input,select,textarea{font-family:inherit;}
 .fc-step-n{flex-shrink:0;width:19px;height:19px;border-radius:50%;background:var(--surface2);color:var(--text3);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;margin-top:1px;font-family:var(--mono);}
 .fc-code{font-family:var(--mono);font-size:12px;background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:4px 7px;color:var(--accent2);word-break:break-all;}
 /* actions */
-.fc-acts{display:flex;align-items:center;gap:8px;padding:14px 0 16px;border-top:1px solid var(--border);}
+.fc-acts{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:14px 0 16px;border-top:1px solid var(--border);}
 .fc-btn{height:32px;padding:0 14px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;transition:all .13s;border:1px solid;display:flex;align-items:center;gap:6px;}
 .fc-btn.verify{background:var(--accent-bg);border-color:var(--accent-bd);color:var(--accent2);}
 .fc-btn.verify:hover{background:rgba(139,124,246,.2);}
@@ -488,6 +684,41 @@ button,input,select,textarea{font-family:inherit;}
 .es-check{font-size:40px;}
 .es-check.ok{color:var(--green);}
 .es-check.none{color:var(--text3);}
+/* progress ring around the stage icon — real STATE['pct'] from the engine, not decorative.
+   Fires a brief "cleared" flourish when the active phase actually changes (recon→exploit etc.),
+   a real detected transition, not a timed loop. */
+#es-icon{position:relative;width:64px;height:64px;display:flex;align-items:center;justify-content:center;}
+.es-pct-ring{position:absolute;inset:0;width:64px;height:64px;transform:rotate(-90deg);}
+.es-pct-track{fill:none;stroke:var(--border2);stroke-width:3;}
+.es-pct-fill{fill:none;stroke:var(--accent);stroke-width:3;stroke-linecap:round;
+  stroke-dasharray:175.93;stroke-dashoffset:175.93;
+  transition:stroke-dashoffset .6s cubic-bezier(.4,0,.2,1),stroke .3s,filter .3s;}
+#es-icon-inner{position:relative;z-index:1;display:flex;align-items:center;justify-content:center;}
+@keyframes stageClearPop{0%{transform:scale(1);}40%{transform:scale(1.22);}100%{transform:scale(1);}}
+@keyframes stageClearGlow{0%{stroke:var(--green);filter:drop-shadow(0 0 7px rgba(52,211,153,.85));}100%{stroke:var(--accent);filter:none;}}
+#es-icon.cleared #es-icon-inner{animation:stageClearPop .5s cubic-bezier(.34,1.56,.64,1);}
+#es-icon.cleared .es-pct-fill{animation:stageClearGlow .7s ease-out;}
+
+/* ─── per-stage animated SVG icons — each stage of the hunt gets its own motion, not one generic ring ─── */
+.si{width:54px;height:54px;color:var(--accent);filter:drop-shadow(0 0 10px rgba(139,124,246,.35));}
+.si-radar-sweep{transform-origin:27px 27px;animation:siSpin 2.4s linear infinite;}
+.si-radar-dot{animation:siBlip 2.4s linear infinite;}
+@keyframes siSpin{to{transform:rotate(360deg);}}
+@keyframes siBlip{0%,100%{opacity:.15;}8%{opacity:1;}22%{opacity:.15;}}
+.si-bolt{animation:siFlicker 1.1s ease-in-out infinite;transform-origin:center;}
+@keyframes siFlicker{0%,100%{opacity:1;filter:drop-shadow(0 0 6px rgba(251,191,36,.7));}45%{opacity:.5;}50%{opacity:1;}72%{opacity:.7;}}
+.si-node{animation:siPulse 1.8s ease-in-out infinite;transform-origin:center;}
+@keyframes siPulse{0%,100%{opacity:.35;r:2.4;}50%{opacity:1;r:3.4;}}
+.si-link{stroke-dasharray:5 4;animation:siFlow 1.4s linear infinite;}
+@keyframes siFlow{to{stroke-dashoffset:-18;}}
+.si-chainlink{animation:siChainPulse 1.6s ease-in-out infinite;}
+@keyframes siChainPulse{0%,100%{opacity:.45;}50%{opacity:1;}}
+.si-doc-line{stroke-dasharray:22;stroke-dashoffset:22;animation:siType 2.2s ease-in-out infinite;}
+@keyframes siType{0%{stroke-dashoffset:22;}45%{stroke-dashoffset:0;}80%{stroke-dashoffset:0;opacity:1;}100%{stroke-dashoffset:0;opacity:.25;}}
+.si-shield-check{stroke-dasharray:24;stroke-dashoffset:24;animation:siDraw 2.4s ease-in-out infinite;}
+@keyframes siDraw{0%{stroke-dashoffset:24;}40%{stroke-dashoffset:0;}85%{stroke-dashoffset:0;opacity:1;}100%{stroke-dashoffset:0;opacity:.3;}}
+.si-cross{animation:siRingPulse 1.8s ease-out infinite;transform-origin:center;}
+@keyframes siRingPulse{0%{transform:scale(.85);opacity:1;}100%{transform:scale(1.25);opacity:0;}}
 
 /* ─── terminal drawer (bottom) ─── */
 #term-panel{flex-shrink:0;border-top:1px solid var(--border2);background:#08080A;}
@@ -536,9 +767,47 @@ button,input,select,textarea{font-family:inherit;}
 #toast.no{border-color:var(--c-bd);}
 #toast.no::before{content:'✗ ';color:var(--c);}
 
+/* combo banner — fires on a REAL new entry in run.chains (detected in doPoll), never on a timer */
+#combo-toast{position:fixed;left:50%;top:112px;transform:translateX(-50%) translateY(-10px) scale(.95);
+  padding:11px 20px;border-radius:12px;background:linear-gradient(165deg,rgba(45,212,191,.18),rgba(19,19,24,.95));
+  border:1px solid rgba(45,212,191,.4);opacity:0;pointer-events:none;z-index:310;
+  display:flex;align-items:center;gap:11px;box-shadow:0 16px 44px -14px rgba(45,212,191,.55);
+  transition:opacity .22s,transform .22s;}
+#combo-toast.show{opacity:1;transform:translateX(-50%) translateY(0) scale(1);}
+#combo-toast .ct-ic{font-size:19px;color:#2DD4BF;filter:drop-shadow(0 0 7px rgba(45,212,191,.8));}
+#combo-toast .ct-title{font-size:13.5px;font-weight:800;letter-spacing:.3px;color:#fff;}
+#combo-toast .ct-sub{font-size:11px;font-weight:500;color:var(--text2);margin-top:1px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
 @media(max-width:640px){
   #find-list{padding:16px;}
   .fc-ep{white-space:normal;}
+  /* icon rail collapses to icon-only, toolbar wraps, and the card header
+     drops title+endpoint to their own full-width row — a 72px fixed nav
+     plus a one-line card header both assume desktop width, and silently
+     crush the title down to 2-3 chars otherwise. */
+  #view-rail{width:48px;padding:10px 4px;}
+  .vr-lbl{display:none;}
+  .vr-ic{font-size:18px;}
+  #find-toolbar{flex-wrap:wrap;row-gap:8px;}
+  #find-search{flex:1 1 100%;}
+  .fc-head{flex-wrap:wrap;row-gap:6px;}
+  .fc-idx{order:1;}
+  .fc-badge{order:2;}
+  .fc-trust,.fc-tag{order:3;margin-left:auto;}
+  .fc-chev{order:4;}
+  .fc-main{order:5;flex:1 1 100%;}
+  /* graph toolbar would otherwise collide with the insights button and the
+     centered hint strip on a narrow canvas — drop the hint, shrink the toolbar */
+  #graph-hint{display:none;}
+  #graph-toolbar{top:auto;bottom:12px;right:12px;}
+  #graph-legend{max-width:calc(100% - 28px);}
+  /* the vertical class headers + wide endpoint column eat the whole screen before
+     any data is visible on a phone — shrink both so the grid is usable, not a wall */
+  .cov-ep-col{max-width:150px;}
+  .cov-cls-hd{height:108px;font-size:9px;}
+  .cov-cell{width:26px;}
+  .cov-stats{gap:7px;}
+  .cov-stat{min-width:0;flex:1 1 40%;padding:8px 10px;}
 }
 /* smart-intake summary card */
 .ik-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:12px 0;}
@@ -550,9 +819,21 @@ button,input,select,textarea{font-family:inherit;}
 .ik-chip{display:inline-block;padding:2px 8px;border-radius:10px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);font-size:11px;margin:2px 2px 2px 0;color:var(--text,#EAECEF);}
 .ik-cap{font-size:9.5px;letter-spacing:.4px;text-transform:uppercase;color:#E7C983;border:1px solid rgba(231,201,131,.35);border-radius:6px;padding:1px 5px;margin-left:4px;}
 .ik-chip.warn{background:rgba(231,201,131,.14);border-color:rgba(231,201,131,.45);color:#E7C983;}
+#session-banner,#llm-banner{display:flex;align-items:center;justify-content:center;gap:4px;padding:8px 16px;
+  background:var(--c-bg,rgba(244,63,94,.12));border-bottom:1px solid var(--c-bd,rgba(244,63,94,.30));
+  color:var(--c,#F43F5E);font-size:12.5px;font-weight:500;}
+#session-banner .tb-btn{color:var(--c,#F43F5E);border-color:var(--c-bd,rgba(244,63,94,.30));}
+#circuit-banner{display:flex;align-items:center;justify-content:center;padding:7px 16px;
+  background:rgba(231,201,131,.14);border-bottom:1px solid rgba(231,201,131,.35);
+  color:#E7C983;font-size:12px;}
+.cr-verdict{font-weight:600;margin-top:8px;}
+.cr-verdict.ok{color:var(--green,#34D399);}
+.cr-verdict.no{color:#E7C983;}
+.cr-detail{opacity:.65;margin-top:3px;font-size:11.5px;}
 </style>
 </head>
 <body>
+<div id="bg-fx"><div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div></div>
 
 <div id="topbar">
   <div id="logo">HUNTR<em>.</em></div>
@@ -560,31 +841,33 @@ button,input,select,textarea{font-family:inherit;}
   <div id="status-wrap">
     <div id="sdot"></div>
     <span id="stext">ready</span>
+    <span id="cost-meter" hidden title=""></span>
   </div>
   <div id="tb-right">
-    <div id="view-toggle" hidden>
-      <button class="vt-btn on" id="vt-find" onclick="showView('findings')">Findings</button>
-      <button class="vt-btn" id="vt-graph" onclick="showView('graph')">Graph</button>
-      <button class="vt-btn" id="vt-surface" onclick="showView('surface')">Surface</button>
-    </div>
     <button class="tb-btn accent"  id="tb-verifyall" hidden onclick="verifyAll()">⟳ Verify all</button>
-    <button class="tb-btn accent"  id="tb-plan"      hidden onclick="openPlan()">✦ Plan</button>
-    <button class="tb-btn accent"  id="tb-zeroday"   hidden onclick="openZeroday()">◎ Zero-day</button>
     <button class="tb-btn"         id="tb-chain"     hidden onclick="runAgent('/api/hunt/chain',{},'chaining findings')">⛓ Chain</button>
-    <button class="tb-btn"         id="tb-diff"      hidden onclick="openDiff()">Δ Diff</button>
     <button class="tb-btn"         id="tb-scope"     hidden onclick="openScope()">⚙ Scope</button>
+    <button class="tb-btn"         id="tb-creds"     hidden onclick="openCreds()">🔑 Creds</button>
     <button class="tb-btn danger"  id="tb-pause"  hidden onclick="ctl('pause')">⏸ Pause</button>
     <button class="tb-btn danger"  id="tb-stop"   hidden onclick="ctl('stop')">■ Stop</button>
     <button class="tb-btn accent"  id="tb-resume" hidden onclick="ctl('resume')">▷ Resume</button>
     <button class="tb-btn"         id="tb-new"    hidden onclick="showScope()">+ New hunt</button>
   </div>
+  <div id="tb-progress"><div id="tb-progress-fill"></div></div>
 </div>
+<div id="session-banner" hidden>
+  <span id="session-banner-txt"></span>
+  <button class="tb-btn" style="margin-left:10px" onclick="openCreds()">🔑 Update credentials</button>
+</div>
+<div id="circuit-banner" hidden></div>
+<div id="llm-banner" hidden></div>
 
 <div id="main">
 
   <!-- ═══ SCOPE ═══ -->
   <div id="scope-view">
-    <div class="sv-inner">
+    <div class="sv-shell">
+     <div class="sv-main">
       <div class="sv-hero">
         <h1>HUNTR<em>.</em></h1>
         <p>drop a scope &middot; get confirmed findings</p>
@@ -617,10 +900,15 @@ button,input,select,textarea{font-family:inherit;}
       <div class="sv-actions">
         <button id="hunt-btn" onclick="startHunt()"><span class="btn-ico">⚡</span>Start hunt</button>
       </div>
-      <!-- Credentials: shown automatically only for Grey/White box (modes that use
-           creds); hidden for Black box, which hunts with no credentials. -->
+      <!-- Credentials & run options: collapsed by default so the form doesn't open with six
+           fields in front of the one thing most hunts need (the scope box). The toggle is only
+           shown for Grey/White box (modes that use creds) — Black box has nothing to configure. -->
+      <button id="adv-btn" type="button" onclick="toggleAdv()" hidden>
+        <span class="adv-btn-lbl">Credentials &amp; run options</span>
+        <span class="adv-mode-note" id="adv-mode-note"></span>
+        <span class="adv-chev">▾</span>
+      </button>
       <div id="adv-panel">
-        <div class="adv-head">Credentials &amp; run options <span class="adv-mode-note" id="adv-mode-note"></span></div>
         <div class="f-row">
           <div class="f-group">
             <span class="f-label">Auth token</span>
@@ -636,6 +924,10 @@ button,input,select,textarea{font-family:inherit;}
             <span class="f-label">Auth header <span style="opacity:.5">· for header-based APIs</span></span>
             <input class="f-input" id="f-authhdr" type="text" placeholder="X-FilesAPI-Auth: a249baf3…  (one per line)">
           </div>
+          <div class="f-group narrow" style="min-width:130px;max-width:150px">
+            <span class="f-label">CDP port <span style="opacity:.5">· SPA localStorage auth</span></span>
+            <input class="f-input" id="f-cdp" type="number" placeholder="9222" min="1024" max="65535">
+          </div>
         </div>
         <div class="f-row">
           <div class="f-group">
@@ -646,36 +938,68 @@ button,input,select,textarea{font-family:inherit;}
             <span class="f-label">Budget (hrs)</span>
             <input class="f-input" id="f-budget" type="number" value="24" min="1" max="72">
           </div>
+          <div class="f-group narrow">
+            <span class="f-label">Max spend ($) <span style="opacity:.5">· 0 = no cap</span></span>
+            <input class="f-input" id="f-costcap" type="number" value="0" min="0" step="1">
+          </div>
         </div>
         <div class="f-checks">
           <div class="f-check"><input type="checkbox" id="f-stealth"><label for="f-stealth">Stealth mode</label></div>
           <div class="f-check"><input type="checkbox" id="f-single"><label for="f-single">Single host only</label></div>
         </div>
       </div>
+     </div>
+     <aside class="sv-side">
       <div id="recent">
-        <div class="recent-lbl">Recent hunts</div>
+        <div class="recent-lbl">Portfolio</div>
+        <div id="portfolio-stats"></div>
         <div id="recent-list"></div>
+        <button id="recent-more" hidden onclick="this.hidden=true;document.getElementById('recent-list').classList.add('all');">Show all targets</button>
       </div>
+     </aside>
     </div>
   </div>
 
   <!-- ═══ HUNT ═══ -->
   <div id="hunt-view">
+   <div class="hunt-shell">
+    <nav id="view-rail">
+      <button class="vr-btn on" id="vr-find" onclick="showView('findings')" title="Findings">
+        <span class="vr-ic">⚑</span><span class="vr-lbl">Find</span><span class="vr-badge" id="vr-find-badge" hidden></span>
+      </button>
+      <button class="vr-btn" id="vr-graph" onclick="showView('graph')" title="Graph">
+        <span class="vr-ic">◈</span><span class="vr-lbl">Graph</span>
+      </button>
+      <button class="vr-btn" id="vr-surface" onclick="showView('surface')" title="Surface">
+        <span class="vr-ic">▦</span><span class="vr-lbl">Surf</span>
+      </button>
+      <button class="vr-btn" id="vr-coverage" onclick="showView('coverage')" title="Coverage">
+        <span class="vr-ic">▤</span><span class="vr-lbl">Cov</span>
+      </button>
+    </nav>
+    <div class="view-stack">
     <div id="find-pane">
       <div id="find-toolbar">
         <input id="find-search" placeholder="search findings…" oninput="S.fQuery=this.value.toLowerCase();S.findSig='';renderFindings(S.findings)" autocomplete="off">
         <div class="fsev-chips">
-          <button class="fsev c on" data-s="c" onclick="toggleSevFilter('c')">C</button>
-          <button class="fsev h on" data-s="h" onclick="toggleSevFilter('h')">H</button>
-          <button class="fsev m on" data-s="m" onclick="toggleSevFilter('m')">M</button>
-          <button class="fsev l on" data-s="l" onclick="toggleSevFilter('l')">L</button>
-          <button class="fsev i on" data-s="i" onclick="toggleSevFilter('i')">I</button>
+          <button class="fsev c on" data-s="c" onclick="toggleSevFilter('c')">C<span class="fsev-n" id="fsev-n-c"></span></button>
+          <button class="fsev h on" data-s="h" onclick="toggleSevFilter('h')">H<span class="fsev-n" id="fsev-n-h"></span></button>
+          <button class="fsev m on" data-s="m" onclick="toggleSevFilter('m')">M<span class="fsev-n" id="fsev-n-m"></span></button>
+          <button class="fsev l on" data-s="l" onclick="toggleSevFilter('l')">L<span class="fsev-n" id="fsev-n-l"></span></button>
+          <button class="fsev i on" data-s="i" onclick="toggleSevFilter('i')">I<span class="fsev-n" id="fsev-n-i"></span></button>
         </div>
         <button id="fshow-fp" class="ftgl" onclick="S.showFP=!S.showFP;this.classList.toggle('on',S.showFP);S.findSig='';renderFindings(S.findings)">dismissed</button>
         <button id="fexport" class="ftgl" onclick="exportSubmission()">⎘ Export</button>
       </div>
+      <div id="sup-feed" hidden></div>
       <div id="find-empty">
-        <div id="es-icon"><div class="es-ring"></div></div>
+        <div id="es-icon">
+          <svg class="es-pct-ring" viewBox="0 0 64 64">
+            <circle class="es-pct-track" cx="32" cy="32" r="28"></circle>
+            <circle class="es-pct-fill" id="es-pct-fill" cx="32" cy="32" r="28"></circle>
+          </svg>
+          <div id="es-icon-inner"><div class="es-ring"></div></div>
+        </div>
         <div style="text-align:center;display:flex;flex-direction:column;gap:6px;">
           <div class="es-phase" id="es-phase">Initializing…</div>
           <div class="es-sub" id="es-sub">mapping the attack surface</div>
@@ -696,6 +1020,13 @@ button,input,select,textarea{font-family:inherit;}
       </div>
       <div id="graph-tip"></div>
       <button id="graph-insights-btn" onclick="toggleInsights()">✦ Insights</button>
+      <div id="graph-toolbar">
+        <button class="gtb-btn" onclick="graphZoom(1.25)" title="Zoom in">+</button>
+        <button class="gtb-btn" onclick="graphZoom(0.8)" title="Zoom out">–</button>
+        <span id="graph-zoom-lbl">100%</span>
+        <span class="gtb-sep"></span>
+        <button class="gtb-btn wide" onclick="graphFit()" title="Fit the whole graph in view">⤢ Fit</button>
+      </div>
       <div id="graph-insights"><div id="gi-body"></div></div>
       <div id="graph-detail"><div id="gd-body"></div></div>
       <div id="graph-hint">drag to move · scroll to zoom · hover to focus · click for details · <a onclick="graphReset()" style="color:var(--accent2);cursor:pointer;pointer-events:auto">reset layout</a></div>
@@ -711,6 +1042,26 @@ button,input,select,textarea{font-family:inherit;}
         <div id="surface-detail"><div id="sd-empty">select an endpoint</div><div id="sd-body"></div></div>
       </div>
     </div>
+
+    <!-- coverage ledger — endpoint × vuln-class grid, so "how thorough was this" is a picture, not a % -->
+    <div id="coverage-pane" style="display:none">
+      <div id="cov-top">
+        <input id="cov-filter" placeholder="filter path / host…" oninput="renderCoverage()" autocomplete="off" spellcheck="false">
+        <span id="cov-legend">
+          <span class="cov-lg"><i class="cov-dot finding"></i>finding</span>
+          <span class="cov-lg"><i class="cov-dot tested"></i>tested, clean</span>
+          <span class="cov-lg"><i class="cov-dot untested"></i>untested</span>
+        </span>
+      </div>
+      <div id="cov-body"></div>
+    </div>
+    </div>
+    <div id="hunt-rail">
+      <div id="rail-coverage"></div>
+      <div id="rail-cost"></div>
+      <div id="rail-brain"></div>
+    </div>
+   </div>
 
     <div id="term-panel">
       <div id="term-bar" onclick="toggleTerm()">
@@ -785,8 +1136,19 @@ async function boot(autoResume){
   const targets=(d.targets||[]).sort((a,b)=>(b.updated||0)-(a.updated||0));
   if(!targets.length) return;
   document.getElementById('recent').classList.add('on');
+  // portfolio rollup — this IS the cross-hunt story: a bounty hunter juggles dozens of targets,
+  // not one, and seeing "47 findings across 12 hunts" beats re-deriving it by opening each one.
+  const scoped=targets.filter(t=>t.scope);
+  const totalFindings=scoped.reduce((s,t)=>s+(t.nfind||t.findings||0),0);
+  const running=scoped.filter(t=>t.status==='running').length;
+  const stats=document.getElementById('portfolio-stats');
+  stats.innerHTML=[
+    [scoped.length,'targets'],
+    [totalFindings,'findings'],
+    [running,'running'],
+  ].map(([v,l])=>`<div class="pf-tile${l==='findings'&&v?' crit':''}"><div class="v">${v}</div><div class="l">${l}</div></div>`).join('');
   const list=document.getElementById('recent-list'); list.innerHTML='';
-  targets.slice(0,6).forEach(t=>{
+  targets.forEach(t=>{
     const name=t.raw_scope||t.target;
     const n=t.nfind||t.findings||0;
     const sc=t.status==='running'?'run':(t.status==='done'?'done':'');
@@ -796,10 +1158,16 @@ async function boot(autoResume){
       `<div class="rr-dot ${sc}"></div>`+
       `<div class="rr-name" title="${esc(name)}">${esc(name.split('\n')[0].slice(0,80))}</div>`+
       `<div class="rr-n ${n?'has':'none'}">${n?n+' finding'+(n>1?'s':''):'clean'}</div>`+
-      `<div class="rr-ago">${t.updated?timeAgo(t.updated):''}</div>`;
+      `<div class="rr-ago">${t.updated?timeAgo(t.updated):''}</div>`+
+      // One-click re-hunt right from the list — previously the only way was to open the target
+      // first and find the (differently-labeled, status-gated) toolbar button inside it.
+      (t.status!=='running'?`<button class="rr-rehunt" title="Re-hunt this target" onclick="event.stopPropagation();doRehuntFromList('${jesc(t.target)}','${jesc(name)}')">⟳</button>`:'')+
+      `<button class="rr-del" title="Delete this target" onclick="event.stopPropagation();confirmDeleteTarget('${jesc(t.target)}','${jesc(name)}')">✕</button>`;
     row.onclick=()=>resumeHunt(name,t.target);
     list.appendChild(row);
   });
+  document.getElementById('recent-more').hidden = targets.length<=6;
+  list.classList.toggle('all', targets.length<=6);
   // Auto-resume a live hunt ONLY on initial page load — never when the user deliberately opened the
   // scope page via "New hunt" (that would bounce them straight back and trap them on the hunt view).
   if(autoResume){
@@ -808,10 +1176,43 @@ async function boot(autoResume){
   }
 }
 
+/* ─── delete target ─── */
+function confirmDeleteTarget(targetId,name){
+  openModal(`<div class="m-title">Delete target?</div>
+    <div class="m-sub">This permanently removes <b>${esc(name)}</b> — findings, scope, graph, everything on disk. This can't be undone.</div>
+    <div class="m-row">
+      <button class="m-btn s" onclick="closeModal()">Cancel</button>
+      <button class="m-btn danger" id="del-confirm-btn" onclick="doDeleteTarget('${jesc(targetId)}')">Delete</button>
+    </div>`);
+}
+async function doDeleteTarget(targetId){
+  const btn=document.getElementById('del-confirm-btn');
+  if(btn){ btn.disabled=true; btn.textContent='Deleting…'; }
+  let r=null;
+  try{
+    const resp=await fetch(API+'/api/hunt/delete',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({target:targetId}),signal:AbortSignal.timeout(8000)});
+    r=await resp.json().catch(()=>null);
+  }catch(e){}
+  if(r&&r.ok){
+    closeModal(); flash('target deleted','ok');
+    if(S.target===targetId) showScope();
+    boot(false);
+  }else{
+    flash((r&&r.error)||'delete failed','no');
+    if(btn){ btn.disabled=false; btn.textContent='Delete'; }
+  }
+}
+
 /* ─── start / resume ─── */
 // ── live scope preview ────────────────────────────────────────────────
-// As you type/paste, hit the deterministic parser (enrich:false → instant, no LLM)
-// and render exactly what will be hunted + what's excluded, before spending a hunt.
+// As you type/paste, hit the deterministic parser (enrich:false → instant, no LLM) ONLY to
+// learn the page SHAPE (a bare host/URL list vs a full program page). A bare host list has no
+// in/out ambiguity to resolve — its deterministic parse IS the answer, shown instantly. A full
+// program page's deterministic in/out split is NOT shown — it's a position-based guess that can
+// be badly wrong (e.g. an "out of scope" blurb earlier in the page swallowing the real, eligible
+// Assets table into deny) — so for that shape we go straight to a loading state and show ONLY
+// HUNTR's real classification once it lands. No intermediate "0 in scope" flash.
 let _spTimer=null, _spSeq=0;
 function scopePreviewDebounced(){ clearTimeout(_spTimer); _spTimer=setTimeout(scopePreview, 320); }
 async function scopePreview(){
@@ -825,44 +1226,78 @@ async function scopePreview(){
   if(seq!==_spSeq) return;            // a newer keystroke already superseded this
   const sc=r&&r.scope;
   if(!sc){ pv.innerHTML='<div class="sp-head"><span class="sp-spin">couldn’t parse — is the engine up?</span></div>'; return; }
-  renderScopePreview(sc);
-  maybeAutoEnrich(sc, raw);           // a full program page auto-enriches (no button)
+  if(sc.shape==='program_page'){
+    // Don't render the deterministic split at all for a program page — go straight to loading.
+    if(!_enriching) showScopeLoading();
+    maybeAutoEnrich(sc, raw);
+    return;
+  }
+  renderScopePreview(sc);              // bare host/URL list: deterministic parse is final, show now
 }
 
-// When a whole program page is pasted, the AI enrich runs automatically in the
-// background (once per distinct paste) to pull rewards/rules/caps/policy — no
-// manual button. Degrades silently if the model is unavailable/rate-limited.
+// When a whole program page is pasted, HUNTR classifies in/out-of-scope for real in the
+// background (once per distinct paste) — reading the full page (not guessing from keyword
+// position) and pulling rewards/rules/caps/policy in the same pass. No manual button. Falls back
+// to the deterministic parse (shown with a clear warning) only if this genuinely fails.
+// NOTE: deliberately not gated on the deterministic pass having found targets — that gate was a
+// deadlock that let a 0-in-scope misparse go uncorrected (nothing ever re-ran to fix it).
 let _enrichedHash=null, _enriching=false;
+function showScopeLoading(){
+  const pv=document.getElementById('scope-preview');
+  const t0=performance.now();
+  pv.innerHTML='<div class="sp-loading"><div class="es-ring" style="width:28px;height:28px;border-width:2px"></div>'
+    +'<div class="sp-loading-txt"><div id="sp-loading-title">HUNTR is reading the scope…</div>'
+    +'<div class="sp-loading-sub" id="sp-loading-sub">0s elapsed</div></div></div>';
+  const tick=()=>{ const el=document.getElementById('sp-loading-sub'); if(!el) return;
+    el.textContent=Math.round((performance.now()-t0)/1000)+'s elapsed (usually 30–60s on a full page)'; };
+  const tickId=setInterval(tick,1000);
+  pv.dataset.tickId=tickId;            // stashed so maybeAutoEnrich can clear it when done
+}
 async function maybeAutoEnrich(sc, raw){
-  if(!sc || sc.shape!=='program_page' || !(sc.targets||[]).length) return;
+  if(!sc || sc.shape!=='program_page') return;
   if(_enriching || _enrichedHash===sc.source_hash) return;
   _enriching=true;
   const pv=document.getElementById('scope-preview');
-  const n0=document.createElement('div'); n0.className='sp-foot'; n0.id='sp-enriching';
-  n0.textContent='⌻ AI reading the program page for rewards, rules & caps…';
-  pv.appendChild(n0);
   let r=null; try{ r=await apiLong('/api/scope/parse',{text:raw}); }catch(e){}   // enrich on (default)
+  if(pv.dataset.tickId){ clearInterval(parseInt(pv.dataset.tickId)); delete pv.dataset.tickId; }
   _enriching=false;
   const es=r&&r.scope;
   const cur=(document.getElementById('scope-ta').value||'').trim();
-  if(!es || cur!==raw){ const n=document.getElementById('sp-enriching'); if(n) n.remove(); return; }
+  if(cur!==raw) return;   // superseded by newer keystrokes — a later call owns the UI now, not an error
+  if(!es){   // genuine failure (timeout/rate-limit/model down) — fall back to the deterministic
+             // parse (better than nothing) with a clear warning, instead of a frozen spinner
+    renderScopePreview(sc);
+    const pvEl=document.getElementById('scope-preview');
+    const warn=document.createElement('div'); warn.className='sp-foot'; warn.style.color='#FBBF24';
+    warn.textContent='⚠ HUNTR classification failed/timed out — showing the raw deterministic parse above (unverified — double-check before starting)';
+    pvEl.insertBefore(warn, pvEl.firstChild);
+    return;
+  }
   _enrichedHash=es.source_hash;
   S.intake=es;                                    // carry full program context into the hunt
+  S._intakeRaw=raw;  // which pasted text this classification matches — startHunt() checks before trusting it
   const pf=document.getElementById('f-prog');
   if(pf && !pf.value.trim() && es.program) pf.value=es.program;   // auto-fill program name
-  renderScopePreview(es);                         // show enriched chips + ✦ AI-enriched badge
+  renderScopePreview(es);                         // show the real classification + chips
 }
 function renderScopePreview(sc){
   const pv=document.getElementById('scope-preview');
   const E=(s)=>esc(s==null?'':String(s));
-  const ins=(sc.in_scope||[]), outs=(sc.out_of_scope||[]);
-  if(!ins.length && !outs.length){
+  const ins=(sc.in_scope||[]), outs=(sc.out_of_scope||[]), amb=(sc.ambiguous||[]);
+  if(!ins.length && !outs.length && !amb.length){
     pv.innerHTML='<div class="sp-head"><span class="sp-spin">no assets detected yet — paste hosts or a program page</span></div>'; return;
   }
+  const classifier=sc.asset_classifier||'';
+  const byAI=classifier && classifier!=='deterministic';
   const head=`<div class="sp-head"><span class="sp-ok">✓ ${ins.length} in scope</span>`
     + (outs.length?` · <span class="sp-deny">${outs.length} out of scope</span>`:'')
-    + (sc.enriched?' · <span style="color:var(--accent)">✦ AI-enriched</span>':'')+`</div>`;
-  const rows=ins.map(a=>`<div class="sp-row"><span class="sp-pill ${E(a.type)}">${E(a.type)}</span><span class="sp-asset">${E(a.asset)}</span></div>`).join('')
+    + (amb.length?` · <span class="sp-ambig">${amb.length} unclear — review</span>`:'')
+    + (byAI?' · <span style="color:var(--accent)">✦ classified by HUNTR</span>'
+          : sc.enriched?' · <span style="color:var(--accent)">✦ HUNTR-enriched</span>':'')+`</div>`;
+  const rows=ins.map(a=>`<div class="sp-row"><span class="sp-pill ${E(a.type)}">${E(a.type)}</span><span class="sp-asset">${E(a.asset)}</span>`
+      +(a.note?`<span class="sp-note" title="${E(a.note)}">· known: ${E(a.note).slice(0,54)}</span>`:'')+`</div>`).join('')
+    + amb.map(o=>`<div class="sp-row ambig"><span class="sp-pill ambig">unclear</span><span class="sp-asset">${E(o.asset)}</span>`
+      +(o.reason?`<span class="sp-note" title="${E(o.reason)}">· ${E(o.reason).slice(0,54)}</span>`:'')+`</div>`).join('')
     + outs.map(o=>`<div class="sp-row deny"><span class="sp-pill deny">deny</span><span class="sp-asset">${E(o.asset)}</span></div>`).join('');
   const chips=[];
   if(sc.rewards) chips.push(`<span class="sp-chip">${E(sc.rewards).slice(0,48)}</span>`);
@@ -870,7 +1305,9 @@ function renderScopePreview(sc){
   if(sc.poc_required) chips.push(`<span class="sp-chip warn">PoC required</span>`);
   if(sc.ua_required) chips.push(`<span class="sp-chip">UA ${E(sc.ua_required)}</span>`);
   const meta=chips.length?`<div class="sp-meta">${chips.join('')}</div>`:'';
-  const foot=`<div class="sp-foot">${sc.enriched?'enriched by AI':'parsed deterministically'} · ${ins.filter(a=>a.type==='web'||a.type==='api').length} will be hunted</div>`;
+  const classLabel=byAI?'classified by HUNTR':(sc.enriched?'enriched by HUNTR':'parsed deterministically');
+  const foot=`<div class="sp-foot">${classLabel} · ${ins.filter(a=>a.type==='web'||a.type==='api').length} will be hunted`
+    + (amb.length?` · ${amb.length} held back pending review (never auto-hunted)`:'')+`</div>`;
   pv.innerHTML=head+`<div class="sp-list">${rows}</div>`+meta+foot;
 }
 
@@ -879,7 +1316,7 @@ async function smartIntake(){
   const raw=ta.value.trim();
   if(!raw){ ta.focus(); ta.placeholder='⬆ Paste the FULL program page here first, then click ✦ Confirm & summarize'; try{setStatus('','paste a program page first');}catch(e){} return; }
   const b=document.getElementById('intake-btn'); b.disabled=true; b.textContent='⠋ summarizing…';
-  openModal('<div class="m-title">✦ Smart intake</div><div class="m-sub">⠋ Haiku 5.5 reading the program page…</div>');
+  openModal('<div class="m-title">✦ Smart intake</div><div class="m-sub">⠋ HUNTR reading the program page…</div>');
   // apiLong (210s): the CLI LLM (Haiku 5.5 via claude -p) takes 15-60s on a full program page; the
   // normal api() 8s timeout aborts it mid-parse ("Intake failed" / server BrokenPipe).
   let resp=null; try{ resp=await apiLong('/api/scope/parse',{text:raw}); }catch(e){}
@@ -920,6 +1357,7 @@ function applyIntake(){
   // KEEP the full summary — the hunt uses it: out_of_scope → deny list, rate_limit → throttle,
   // rules/focus/caps/poc/ai → stored with the hunt so the sweep, triage and reports respect them.
   S.intake=r;
+  S._intakeRaw=(document.getElementById('scope-ta').value||'').trim();  // textarea was just rewritten to tgts, above
   const nDeny=intakeDeny(r,(document.getElementById('scope-ta').value||'').split(/[\s,]+/)).length, nRule=(r.rules||[]).length;
   closeModal();
   flash(`Scope applied · ${nDeny} out-of-scope → deny · ${nRule} rules kept`,'ok');
@@ -952,8 +1390,10 @@ async function startHunt(){
     session_token:document.getElementById('f-tok').value.trim(),
     cookie:document.getElementById('f-cookie').value.trim(),
     auth_header:(document.getElementById('f-authhdr')||{}).value?document.getElementById('f-authhdr').value.trim():'',
+    cdp_port:parseInt((document.getElementById('f-cdp')||{}).value||'0')||0,
     ua:document.getElementById('f-ua').value.trim(),
     budget_sec:Math.max(3600,(parseInt(document.getElementById('f-budget').value)||24)*3600),
+    cost_cap_usd:Math.max(0,parseFloat((document.getElementById('f-costcap')||{}).value)||0),
     stealth:document.getElementById('f-stealth').checked,
     single_host:document.getElementById('f-single').checked,
     scope_types:['web','api','source'],
@@ -961,6 +1401,11 @@ async function startHunt(){
   // carry the intake summary into the hunt: deny list (stay in scope), rate limit, and the full
   // program context (rewards/rules/focus/caps/poc/ai) so the sweep, triage and reports honor it.
   if(S.intake){
+    // If S.intake was classified from THIS exact pasted text (the auto-enrich preview already ran
+    // Haiku 5.5 over it — scope_ingest._classify_scope_llm), hand it to the server as-is so Start
+    // doesn't silently re-derive scope with the fast/no-LLM fallback and regress to the naive
+    // position-based split (which can land on 0 targets on a page like this). See [[scope-classifier-haiku]].
+    if(S._intakeRaw===scope && (S.intake.targets||[]).length) body.scope_obj=S.intake;
     body.scope_deny=intakeDeny(S.intake, scope.split(/[\s,]+/));
     const rl=String(S.intake.rate_limit||'').match(/[\d.]+/); if(rl) body.rate_rps=parseFloat(rl[0]);
     body.program_meta=S.intake;
@@ -976,18 +1421,29 @@ async function startHunt(){
   reset(scope,slug); showHunt(); poll();
 }
 function resumeHunt(raw,slug){ reset(raw,slug); showHunt(); poll(); }
+async function doRehuntFromList(target,name){
+  // resumeHunt() alone only NAVIGATES into the hunt view and starts polling — it never actually
+  // relaunches a finished/stalled/stopped process. Without this, re-hunting a target from the list
+  // was a two-step trip (open it, THEN find the status-gated toolbar button inside). One click here
+  // does both: trigger the relaunch (reusing existing scope/creds/surface, same as the toolbar
+  // Resume/Re-hunt button) and open the hunt view to watch it.
+  const r=await api('/api/hunt/control',{target,action:'resume'});
+  if(r&&r.ok){ flash('re-hunting '+name.split('\n')[0].slice(0,40),'ok'); resumeHunt(name,target); }
+  else flash((r&&r.error)||'could not start — is it already running?','no');
+}
 
 function reset(raw,slug){
   S.target=slug; S.rawScope=raw; S.status=null;
   S.cLog=0; S.findings=[]; S.findSig=''; S.expanded=new Set();
   S.termUserSet=false; S.autoFlipped=false;
   S.chatHist=[]; S.inputHist=[]; S.inputIdx=-1; S.chatBusy=false;
+  S.lastChainCount=null; S.momSamples=[]; _lastRingKind=undefined; _lastIconStage=null;
   document.getElementById('term-log').innerHTML='';
   document.getElementById('term-input').disabled=false;
   logLine('out','HUNTR terminal — type to ask about findings, /help for commands');
   document.getElementById('find-list').innerHTML='';
   // start: findings empty state + terminal open (watch it work)
-  showEmpty('Initializing…','mapping the attack surface',null);
+  showEmpty('Initializing…','mapping the attack surface',null,'scope');
   setTerm(true);
 }
 
@@ -995,27 +1451,28 @@ function showHunt(){
   document.getElementById('scope-view').style.display='none';
   document.getElementById('hunt-view').classList.add('on');
   document.getElementById('tb-new').removeAttribute('hidden');
-  document.getElementById('view-toggle').removeAttribute('hidden');
-  document.getElementById('tb-plan').removeAttribute('hidden');
-  document.getElementById('tb-zeroday').removeAttribute('hidden');
-  document.getElementById('tb-diff').removeAttribute('hidden');
   document.getElementById('tb-scope').removeAttribute('hidden');
+  document.getElementById('tb-creds').removeAttribute('hidden');
   notifyInit();
 }
 function showScope(){
   stopPoll();
-  S.intake=null;   // fresh scope page: don't inherit a previous program's deny-list / meta
+  S.intake=null; S._intakeRaw=null;   // fresh scope page: don't inherit a previous program's deny-list / meta
+  _lastIconStage=null;
   document.getElementById('hunt-view').classList.remove('on');
   document.getElementById('scope-view').style.display='flex';
   graphStop(); S.view='findings';
-  document.getElementById('view-toggle').setAttribute('hidden','');
   document.getElementById('find-pane').style.display='';
   document.getElementById('graph-pane').style.display='none';
   document.getElementById('surface-pane').style.display='none';
-  document.getElementById('vt-find').classList.add('on');
-  document.getElementById('vt-graph').classList.remove('on');
-  document.getElementById('vt-surface').classList.remove('on');
-  ['tb-verifyall','tb-plan','tb-zeroday','tb-chain','tb-diff','tb-scope','tb-pause','tb-stop','tb-resume','tb-new'].forEach(id=>document.getElementById(id).setAttribute('hidden',''));
+  document.getElementById('vr-find').classList.add('on');
+  document.getElementById('vr-graph').classList.remove('on');
+  document.getElementById('vr-surface').classList.remove('on');
+  document.getElementById('vr-coverage').classList.remove('on');
+  ['tb-verifyall','tb-chain','tb-scope','tb-creds','tb-pause','tb-stop','tb-resume','tb-new'].forEach(id=>document.getElementById(id).setAttribute('hidden',''));
+  document.getElementById('session-banner').setAttribute('hidden','');
+  document.getElementById('circuit-banner').setAttribute('hidden','');
+  document.getElementById('llm-banner').setAttribute('hidden','');
   setStatus('','ready');
   boot();
 }
@@ -1038,11 +1495,22 @@ async function doPoll(){
   }
   S.pollFails=0;
   S.status=run.status;
+  S.run=run;
   renderHeader(run);
+  renderSessionAlert(run.session_alert);
+  renderCircuitBanner(run.circuit_open);
+  renderLlmBanner(run.llm_alert);
   renderLogs(run.logs||[]);
   renderFindings(run.findings||[]);
+  renderCostMeter(run);
+  renderSupervisorFeed(run);
+  renderHuntRail(run);
+  checkCombo(run);
+  S.brainTick=(S.brainTick||0)+1;
+  if(S.brainTick%10===1) refreshBrainRail();
   notifyCheck(run);
   if(S.view==='graph') graphSync(run);
+  else if(S.view==='coverage') renderCoverage();
   // auto-flip: once done, collapse terminal so findings own the screen
   if(['done','stopped','error','stalled'].includes(run.status)){
     stopPoll();
@@ -1057,6 +1525,8 @@ function renderHeader(run){
   const f=run.findings||[];
   const cOK=f.filter(x=>CONFIRMED.includes(x.verdict)).length;
   const cNR=f.filter(x=>REVIEW.includes(x.verdict)).length;
+  const vb=document.getElementById('vr-find-badge');
+  if(vb){ if(cOK){vb.hidden=false;vb.textContent=cOK>99?'99+':cOK;} else vb.hidden=true; }
   const stage=(run.stage||'hunting').toLowerCase();
   const sdot=document.getElementById('sdot');
   const stext=document.getElementById('stext');
@@ -1075,21 +1545,36 @@ function renderHeader(run){
   }else if(st==='done'){
     sdot.classList.add('done');
     stext.innerHTML=`<b>${esc(nm)}</b> · done${tail||' · clean'}`;
-    pp.setAttribute('hidden','');ps.setAttribute('hidden','');pr.setAttribute('hidden','');
+    // BUG FIX (2026-10-21): a finished hunt hid Pause/Stop/Resume entirely — once a hunt reached
+    // "done" there was no way to run it again short of "+ New hunt" and re-pasting the whole scope
+    // from scratch. The server's resume/relaunch path already handles "done" (it's in the same
+    // cur_status tuple as paused/stopped/error, reusing the existing scope/creds and prior
+    // findings) — the UI just never offered the button for this one status. Relabel it "Re-hunt"
+    // here since the semantics read differently than resuming an interrupted run.
+    pp.setAttribute('hidden','');ps.setAttribute('hidden','');
+    pr.removeAttribute('hidden'); pr.textContent='⟳ Re-hunt';
   }else if(st==='paused'){
-    stext.innerHTML=`<b>${esc(nm)}</b> · paused${tail}`;
-    pp.setAttribute('hidden','');ps.removeAttribute('hidden');pr.removeAttribute('hidden');
+    const prLbl={'rate-limit':'paused · account rate limit','cost-cap':'paused · spend cap reached'}[run.paused_reason];
+    stext.innerHTML=`<b>${esc(nm)}</b> · ${prLbl||'paused'}${tail}`;
+    pp.setAttribute('hidden','');ps.removeAttribute('hidden');pr.removeAttribute('hidden');pr.textContent='▷ Resume';
   }else if(st==='stalled'){
     sdot.classList.add('err');
     stext.innerHTML=`<b>${esc(nm)}</b> · stalled — process exited; click Resume${tail}`;
-    pp.setAttribute('hidden','');ps.setAttribute('hidden','');pr.removeAttribute('hidden');
+    pp.setAttribute('hidden','');ps.setAttribute('hidden','');pr.removeAttribute('hidden');pr.textContent='▷ Resume';
     document.getElementById('tb-livedot').classList.remove('run');
   }else if(st==='stopped'||st==='error'){
     sdot.classList.add('err');
     stext.innerHTML= st==='error'?`<b>${esc(nm)}</b> · error`:`<b>${esc(nm)}</b> · stopped${tail}`;
-    pp.setAttribute('hidden','');ps.setAttribute('hidden','');pr.removeAttribute('hidden');
+    pp.setAttribute('hidden','');ps.setAttribute('hidden','');pr.removeAttribute('hidden');pr.textContent='▷ Resume';
   }
   S.stage = stage;
+  // progress rail — real signal from STATE['pct'], not decorative
+  const pf=document.getElementById('tb-progress-fill');
+  pf.classList.remove('run','done');
+  if(st==='running'){ pf.style.width=Math.max(4,run.pct||0)+'%'; pf.classList.add('run'); }
+  else if(st==='done'){ pf.style.width='100%'; pf.classList.add('done'); }
+  else if(st==='paused'||st==='stalled'){ pf.style.width=(run.pct||0)+'%'; }
+  else { pf.style.width='0%'; }
   // show "Verify all" when the hunt isn't running and there are unconfirmed, non-dismissed findings
   const unver = f.filter(x=>!CONFIRMED.includes(x.verdict) && x.verdict!=='false_positive').length;
   const va=document.getElementById('tb-verifyall');
@@ -1097,6 +1582,38 @@ function renderHeader(run){
   const ch=document.getElementById('tb-chain');
   if(f.length>=2 && st!=='running') ch.removeAttribute('hidden'); else ch.setAttribute('hidden','');
   document.getElementById('es-phase').textContent = st==='running' ? capitalize(stage) : (st||'');
+  // Keep the per-stage SVG in sync too. showEmpty() (which first picks the icon) only runs from
+  // renderFindings(), which is deduped on FINDINGS content — so while findings stay empty across
+  // an entire phase (e.g. all of Recon), that cache never invalidates and the icon freezes on
+  // whatever it was at the very first empty render, even as this stage text keeps updating every
+  // poll. renderHeader() has no such cache, so it owns keeping the icon honest instead.
+  if(st==='running' && document.getElementById('find-empty').classList.contains('on') && _lastIconStage!==stage){
+    _lastIconStage=stage;
+    setStageIcon(stageIconKind(stage));
+  }
+  updateStageRing(run.pct||0);
+}
+let _lastIconStage=null;
+
+/* ─── stage icon + progress ring (shared by renderHeader and showEmpty) ───
+   setStageIcon swaps only #es-icon-inner so the ring SVG never gets wiped by innerHTML,
+   and fires the "cleared" flourish on a REAL detected phase transition (icon kind changed
+   since last call) — never on a timer. */
+let _lastRingKind=undefined;
+function setStageIcon(kind){
+  const inner=document.getElementById('es-icon-inner'); if(!inner) return;
+  inner.innerHTML = kind ? SI[kind] : '<div class="es-ring"></div>';
+  const box=document.getElementById('es-icon');
+  if(box && kind && _lastRingKind!==undefined && _lastRingKind!==kind){
+    box.classList.remove('cleared'); void box.offsetWidth; box.classList.add('cleared');
+  }
+  _lastRingKind=kind;
+}
+const ES_RING_C=175.93;  // 2·π·28, the ring's radius — must match the SVG circle
+function updateStageRing(pct){
+  const fill=document.getElementById('es-pct-fill'); if(!fill) return;
+  const p=Math.max(0,Math.min(100,pct));
+  fill.style.strokeDashoffset = ES_RING_C*(1-p/100);
 }
 
 /* ─── findings ─── */
@@ -1113,6 +1630,12 @@ function renderFindings(findings){
   if(s===S.findSig) return;
   S.findSig=s;
 
+  // severity distribution on the filter chips, computed from ALL non-dismissed findings
+  // (not the active filter) so the counts stay a stable map of what's actually there
+  const counts={c:0,h:0,m:0,l:0,i:0};
+  findings.forEach(f=>{ if(f.verdict==='false_positive')return; const sv=(f.sev||'i').toLowerCase(); if(sv in counts) counts[sv]++; });
+  Object.keys(counts).forEach(sv=>{ const el=document.getElementById('fsev-n-'+sv); if(el) el.textContent=counts[sv]||''; });
+
   let conf=findings.map((f,i)=>({f,i})).filter(x=>CONFIRMED.includes(x.f.verdict)&&passFilter(x.f)).sort((a,b)=>rank(a.f)-rank(b.f));
   let rev =findings.map((f,i)=>({f,i})).filter(x=>REVIEW.includes(x.f.verdict)&&passFilter(x.f)).sort((a,b)=>rank(a.f)-rank(b.f));
   const fp = S.showFP ? findings.map((f,i)=>({f,i})).filter(x=>x.f.verdict==='false_positive'&&passFilter(x.f)).sort((a,b)=>rank(a.f)-rank(b.f)) : [];
@@ -1124,18 +1647,18 @@ function renderFindings(findings){
     const anyFilter = S.fQuery || S.sevFilter.size<5;
     if(anyFilter) showEmpty('No matches', 'adjust the filters or search', 'none');
     else if(S.status==='running' || S.status===null)
-      showEmpty(capitalize(S.stage||'Hunting'), 'no findings yet — surface still being tested', 'spin');
+      showEmpty(capitalize(S.stage||'Hunting'), 'no findings yet — surface still being tested', 'spin', S.stage);
     else
       showEmpty('No findings', 'the surface came back clean', 'none');
     return;
   }
 
   document.getElementById('find-empty').classList.remove('on');
-  list.style.display='flex';
+  list.style.display='grid';
   list.innerHTML='';
   if(conf.length){
     list.appendChild(group('Confirmed',conf.length,true));
-    conf.forEach(x=>list.appendChild(card(x.f,x.i,false)));
+    conf.forEach(x=>list.appendChild(card(x.f,x.i,false,true)));
   }
   if(rev.length){
     list.appendChild(group('Needs verification',rev.length,false));
@@ -1152,33 +1675,122 @@ function toggleSevFilter(s){
   S.findSig=''; renderFindings(S.findings);
 }
 
-function showEmpty(phase,sub,icon){
+/* ─── per-stage animated SVGs — each phase of the hunt gets its own motion ─── */
+const SI = {
+  // radar: sweeping line + blipping dot — surface mapping / recon-family stages
+  radar: `<svg class="si" viewBox="0 0 54 54" fill="none"><circle cx="27" cy="27" r="20" stroke="currentColor" stroke-opacity=".25"/><circle cx="27" cy="27" r="13" stroke="currentColor" stroke-opacity=".3"/><circle cx="27" cy="27" r="6" stroke="currentColor" stroke-opacity=".35"/>
+    <g class="si-radar-sweep"><path d="M27 27 L27 7 A20 20 0 0 1 44 17 Z" fill="currentColor" fill-opacity=".22"/><line x1="27" y1="27" x2="27" y2="7" stroke="currentColor" stroke-width="1.6"/></g>
+    <circle class="si-radar-dot" cx="36" cy="17" r="2.2" fill="currentColor"/></svg>`,
+  // target crosshair with an outward-pulsing lock ring — scope / targeting
+  target: `<svg class="si" viewBox="0 0 54 54" fill="none"><circle cx="27" cy="27" r="16" stroke="currentColor" stroke-opacity=".3"/><circle class="si-cross" cx="27" cy="27" r="16" stroke="currentColor" stroke-width="1.4"/>
+    <circle cx="27" cy="27" r="3.2" fill="currentColor"/><line x1="27" y1="4" x2="27" y2="13" stroke="currentColor" stroke-width="1.6"/><line x1="27" y1="41" x2="27" y2="50" stroke="currentColor" stroke-width="1.6"/>
+    <line x1="4" y1="27" x2="13" y2="27" stroke="currentColor" stroke-width="1.6"/><line x1="41" y1="27" x2="50" y2="27" stroke="currentColor" stroke-width="1.6"/></svg>`,
+  // flickering lightning bolt — active exploitation / fuzzing stages
+  bolt: `<svg class="si si-bolt" viewBox="0 0 54 54" fill="none"><path d="M30 5 L14 30 H25 L21 49 L41 23 H29 Z" fill="currentColor" fill-opacity=".85" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>`,
+  // neural net — pulsing nodes + flowing links — LLM reasoning / judging / economics
+  brain: `<svg class="si" viewBox="0 0 54 54" fill="none">
+    <line class="si-link" x1="14" y1="16" x2="27" y2="27" stroke="currentColor" stroke-opacity=".5"/><line class="si-link" x1="40" y1="16" x2="27" y2="27" stroke="currentColor" stroke-opacity=".5" style="animation-delay:.2s"/>
+    <line class="si-link" x1="14" y1="40" x2="27" y2="27" stroke="currentColor" stroke-opacity=".5" style="animation-delay:.4s"/><line class="si-link" x1="40" y1="40" x2="27" y2="27" stroke="currentColor" stroke-opacity=".5" style="animation-delay:.6s"/>
+    <circle class="si-node" cx="14" cy="16" r="3" fill="currentColor" style="animation-delay:0s"/><circle class="si-node" cx="40" cy="16" r="3" fill="currentColor" style="animation-delay:.3s"/>
+    <circle class="si-node" cx="14" cy="40" r="3" fill="currentColor" style="animation-delay:.6s"/><circle class="si-node" cx="40" cy="40" r="3" fill="currentColor" style="animation-delay:.9s"/>
+    <circle class="si-node" cx="27" cy="27" r="4.4" fill="currentColor" style="animation-delay:.15s"/></svg>`,
+  // chain links with a traveling pulse — chaining low-sev findings into impact
+  chain: `<svg class="si" viewBox="0 0 54 54" fill="none"><g class="si-chainlink"><rect x="8" y="20" width="18" height="14" rx="7" stroke="currentColor" stroke-width="2.2"/></g>
+    <g class="si-chainlink" style="animation-delay:.4s"><rect x="28" y="20" width="18" height="14" rx="7" stroke="currentColor" stroke-width="2.2"/></g>
+    <g class="si-chainlink" style="animation-delay:.8s"><rect x="18" y="20" width="18" height="14" rx="7" stroke="currentColor" stroke-width="2.2" fill="currentColor" fill-opacity=".12"/></g></svg>`,
+  // code brackets scanning — source audit
+  code: `<svg class="si" viewBox="0 0 54 54" fill="none"><path d="M20 15 L8 27 L20 39" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M34 15 L46 27 L34 39" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <line class="si-doc-line" x1="24" y1="34" x2="30" y2="20" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>`,
+  // shield with a drawing checkmark — proof / verification
+  shield: `<svg class="si" viewBox="0 0 54 54" fill="none"><path d="M27 6 L44 13 V26 C44 37 37 45 27 49 C17 45 10 37 10 26 V13 Z" stroke="currentColor" stroke-width="2" stroke-opacity=".5"/>
+    <path class="si-shield-check" d="M18 27 L24 33 L37 19" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  // document with typing lines — drafting reports
+  doc: `<svg class="si" viewBox="0 0 54 54" fill="none"><path d="M15 6 H33 L41 14 V48 H15 Z" stroke="currentColor" stroke-width="1.8" stroke-opacity=".5"/><path d="M33 6 V14 H41" stroke="currentColor" stroke-width="1.8" stroke-opacity=".5"/>
+    <line class="si-doc-line" x1="20" y1="24" x2="36" y2="24" stroke="currentColor" stroke-width="2"/><line class="si-doc-line" x1="20" y1="31" x2="36" y2="31" stroke="currentColor" stroke-width="2" style="animation-delay:.3s"/>
+    <line class="si-doc-line" x1="20" y1="38" x2="30" y2="38" stroke="currentColor" stroke-width="2" style="animation-delay:.6s"/></svg>`,
+};
+// stage name (lowercased, as python's stage() sends it) → icon kind. Falls back to the generic ring.
+const STAGE_ICON_MAP = [
+  [/^scope|init/, 'target'],
+  [/recon|surface|discover|fingerprint|mobile|spa-capture/, 'radar'],
+  [/exploit|api-test|oob-fuzz|race|authed|hunt/, 'bolt'],
+  [/llm-led|ai-direct|ai-judge|economics|scenarios|agent-polish|plan/, 'brain'],
+  [/chain/, 'chain'],
+  [/source audit/, 'code'],
+  [/validate/, 'shield'],
+  [/reports/, 'doc'],
+];
+function stageIconKind(stageKey){
+  const s=(stageKey||'').toLowerCase();
+  for(const [re,kind] of STAGE_ICON_MAP) if(re.test(s)) return kind;
+  return null;
+}
+
+function showEmpty(phase,sub,icon,stageKey){
   const e=document.getElementById('find-empty');
   e.classList.add('on');
   document.getElementById('find-list').style.display='none';
   document.getElementById('es-phase').textContent=phase;
   document.getElementById('es-sub').textContent=sub;
-  const ic=document.getElementById('es-icon');
-  if(icon==='none') ic.innerHTML='<div class="es-check none">○</div>';
-  else if(icon==='ok') ic.innerHTML='<div class="es-check ok">✓</div>';
-  else ic.innerHTML='<div class="es-ring"></div>';
+  const inner=document.getElementById('es-icon-inner');
+  if(icon==='none'){ inner.innerHTML='<div class="es-check none">○</div>'; _lastRingKind=undefined; }
+  else if(icon==='ok'){ inner.innerHTML='<div class="es-check ok">✓</div>'; _lastRingKind=undefined; }
+  else setStageIcon(stageIconKind(stageKey!==undefined?stageKey:phase));
+  updateStageRing((S.run&&S.run.pct)||0);
 }
 
 function group(label,count,ok){
   const g=document.createElement('div');
-  g.className='grp'+(ok?' ok':'');
+  g.className='grp fx-in'+(ok?' ok':'');
   g.innerHTML=`<span class="grp-lbl">${label}</span><span class="grp-ct">${count}</span><div class="grp-ln"></div>`;
   return g;
 }
 
-function card(f,idx,isNR){
+// trust tier — never let a finding's own narration be the last word on how sure we are.
+// proven: a deterministic oracle (CDP/HTTP) mechanically confirmed it — the trust boundary this
+// whole engine is built around. reverified: survived an INDEPENDENT second LLM judge pass that
+// could have disagreed. disputed: that second pass DID disagree and the verdict was downgraded —
+// previously only visible as a line in the terminal log. llm: confirmed, but only by the one
+// judge that proposed it — the weakest real tier, one step above "needs review".
+function trustTier(f){
+  const proven = f._det===true || (f.proof && f.proof.proven===true);
+  if(proven) return {cls:'proven', label:'⚙ proven', title:'Confirmed by a deterministic oracle — not an LLM judgment call.'};
+  if(f.adversarial_checked && f.verdict==='confirmed') return {cls:'reverified', label:'✓✓ re-verified', title:'Survived an independent second judge pass before being trusted.'};
+  if(f.adversarial_checked && f.verdict!=='confirmed') return {cls:'disputed', label:'⚠ disputed', title:'The adversarial re-check disagreed and this was downgraded: '+(f.judge_reason||'no reason given')};
+  if(f.verdict==='confirmed') return {cls:'llm', label:'LLM-confirmed', title:'Confirmed by one judge pass — not yet independently re-checked or oracle-proven.'};
+  return null;
+}
+function trustBadge(f){
+  const t=trustTier(f);
+  return t ? `<span class="fc-trust ${t.cls}" title="${esc(t.title)}">${t.label}</span>` : '';
+}
+// pipeline stepper — same stages phase_supervisor's EV-ranked dispatch chases, read straight off
+// the finding's own fields so it always matches what actually happened, not a separate log.
+function pipelineSteps(f){
+  if(f.verdict!=='confirmed') return '';
+  const steps=[
+    {label:'Confirmed', done:true},
+    {label:'Verified',  done: f._det===true || (f.proof&&f.proof.proven===true) || !!f.adversarial_checked},
+    {label:'Exploited', done: !!f.poc},
+    {label:'Reported',  done: !!f.report},
+  ];
+  if((f.cls||'').toLowerCase()!=='info') steps.splice(3,0,{label:'Impact', done: !!f.impact_proven});
+  return `<div class="fc-pipe">`+steps.map((s,i)=>
+    (i? `<span class="fc-pipe-sep"></span>`:'')+
+    `<span class="fc-pipe-step${s.done?' done':' active'}">${s.done?'✓':'○'} ${esc(s.label)}</span>`
+  ).join('')+`</div>`;
+}
+
+function card(f,idx,isNR,wide){
   const sev=(f.sev||'i').toLowerCase();
   const el=document.createElement('div');
-  el.className=`fc ${sev}${isNR?' nr':''}${S.expanded.has(idx)?' open':''}`;
+  el.className=`fc fx-in ${sev}${isNR?' nr':''}${wide?' wide':''}${S.expanded.has(idx)?' open':''}`;
+  el.style.animationDelay=(Math.min(idx,8)*28)+'ms';
   el.dataset.idx=idx;
 
   const steps=normSteps(f.steps);
-  let body='<div class="fc-body">';
+  let body='<div class="fc-body">'+pipelineSteps(f);
   if(f.detail) body+=sec('What it is',`<div class="fc-sec-txt">${esc(f.detail)}</div>`);
   if(f.vuln_detail) body+=sec('Vulnerability',`<div class="fc-sec-txt">${esc(f.vuln_detail)}</div>`);
   if(f.impact_text||f.reco) body+=sec('Impact',`<div class="fc-sec-txt">${esc(f.impact_text||f.reco)}</div>`);
@@ -1192,6 +1804,7 @@ function card(f,idx,isNR){
     <button class="fc-btn agent" onclick="event.stopPropagation();runAgent('/api/hunt/report',{fi:${idx}},'drafting report for #${idx}')">✎ Draft report</button>
     <button class="fc-btn copy" onclick="event.stopPropagation();copyReport(${idx})">Copy</button>`;
   if(f.endpoint) body+=`<button class="fc-btn no" onclick="event.stopPropagation();openEvidence('${jesc(f.endpoint)}')">⛋ Evidence</button>`;
+  if(f.verdict==='confirmed') body+=`<button class="fc-btn no" onclick="event.stopPropagation();shareProof(${idx})">⇗ Share proof</button>`;
   if(isNR) body+=`<button class="fc-btn ok" onclick="event.stopPropagation();triage(${idx},'confirmed')">✓ Confirm</button>
     <button class="fc-btn no" onclick="event.stopPropagation();triage(${idx},'false_positive')">✗ Dismiss</button>`;
   body+=`</div></div>`;
@@ -1201,10 +1814,10 @@ function card(f,idx,isNR){
       <span class="fc-idx">#${idx}</span>
       <span class="fc-badge">${SVLBL[sev]||sev}</span>
       <div class="fc-main">
-        <div class="fc-title">${esc(f.title||'(untitled)')}</div>
-        ${f.endpoint?`<div class="fc-ep">${esc(f.endpoint)}</div>`:''}
+        <div class="fc-title" title="${esc(f.title||'')}">${esc(f.title||'(untitled)')}</div>
+        ${f.endpoint?`<div class="fc-ep" title="${esc(f.endpoint)}">${esc(f.endpoint)}</div>`:''}
       </div>
-      ${isNR?'<span class="fc-tag">unverified</span>':''}
+      ${isNR?'<span class="fc-tag">unverified</span>':trustBadge(f)}
       <span class="fc-chev">▾</span>
     </div>`+body;
   return el;
@@ -1317,6 +1930,139 @@ function renderLogs(logs){
   if(atBot && S.termOpen) log.scrollTop=log.scrollHeight;
 }
 
+/* ─── cost meter ─── shows real $ under an API key, an honest call count under the subscription
+   (there's no per-call billing to show there, and claiming one would be fabricating data). */
+function renderCostMeter(run){
+  const el=document.getElementById('cost-meter');
+  const calls=run.llm_calls||0;
+  if(!calls){ el.hidden=true; return; }
+  const cost=run.cost_usd||0;
+  el.hidden=false;
+  if(cost>0){
+    el.textContent='$'+cost.toFixed(cost<1?3:2)+' · '+calls+' calls';
+    el.title=(run.llm_input_tokens||0).toLocaleString()+' in / '+(run.llm_output_tokens||0).toLocaleString()+' out tokens this hunt';
+  }else{
+    el.textContent=calls+' LLM calls · subscription';
+    el.title='Running on the Pro/Max subscription — no per-call token billing exists to meter.';
+  }
+}
+
+/* ─── supervisor activity feed ─── recent EV-ranked dispatches from phase_supervisor(), including
+   the "gave up after N attempts" moments that were previously only a line in the raw terminal log. */
+function renderSupervisorFeed(run){
+  const el=document.getElementById('sup-feed');
+  const log=run.supervisor_log||[];
+  if(!log.length){ el.hidden=true; return; }
+  el.hidden=false;
+  const recent=log.slice(-6).reverse();
+  const KIND_LABEL={verify:'verifying',exploit:'building PoC for',report:'drafting report for',postexploit:'escalating impact on',chain:'chaining'};
+  el.innerHTML='<div class="sup-feed-h"><span class="dot"></span>Supervisor activity</div>'+
+    recent.map(r=>{
+      const target=r.finding!=null?('F'+r.finding):'findings';
+      const verb=KIND_LABEL[r.kind]||r.kind;
+      const giveUp = !r.ok && r.attempt>=2;
+      const text = giveUp
+        ? `gave up ${verb} ${target} after ${r.attempt} attempts`
+        : `${r.ok?'':'retrying '}${verb} ${target}`;
+      return `<div class="sup-row ${r.ok?'ok':'fail'}"><span class="ic">${r.ok?'✓':(giveUp?'✗':'⟳')}</span><span>${esc(text)}</span></div>`;
+    }).join('');
+}
+
+/* ─── right rail ─── always-visible coverage/cost summary so a sparse hunt (1-2
+   findings) doesn't read as a half-empty page; brain priority refreshed on its
+   own slower cadence since it shells out hunt-brain.py, unlike the free fields below. */
+function renderHuntRail(run){
+  const rc=document.getElementById('rail-coverage'), rcost=document.getElementById('rail-cost');
+  if(!rc) return;
+  const tested=run.tested||{}, eps=run.endpoints||[];
+  const testedN=Object.keys(tested).length, totalN=Math.max(eps.length,testedN);
+  const pct=totalN ? Math.round(testedN/totalN*100) : 0;
+  const f=run.findings||[];
+  const sevN={c:0,h:0,m:0,l:0,i:0};
+  f.forEach(x=>{ if(x.verdict!=='false_positive') sevN[x.sev||'i']=(sevN[x.sev||'i']||0)+1; });
+  const mom = run.status==='running' ? momentumHtml(testedN) : '';
+  rc.innerHTML=`<div class="gi-h">◱ Coverage</div>
+    <div class="rail-mini-stats">
+      <div class="rail-mini-stat" onclick="showView('coverage')"><div class="n">${testedN}<span style="font-size:11px;color:var(--text3);font-weight:500;">/${totalN||'?'}</span></div><div class="k">endpoints</div></div>
+      <div class="rail-mini-stat" onclick="showView('coverage')"><div class="n">${pct}%</div><div class="k">tested</div></div>
+    </div>
+    <div class="gi-bar-wrap" style="height:6px;margin-bottom:12px;cursor:pointer;" onclick="showView('coverage')"><span class="gi-bar" style="width:${pct}%"></span></div>
+    <div class="gi-sub" style="margin-bottom:0;">${['c','h','m','l'].filter(s=>sevN[s]).map(s=>`<span style="color:var(--${s});font-weight:700;">${sevN[s]}</span> ${({c:'crit',h:'high',m:'med',l:'low'})[s]}`).join(' · ')||'no confirmed findings yet'}</div>
+    ${mom}`;
+  const calls=run.llm_calls||0, cost=run.cost_usd||0;
+  rcost.innerHTML=`<div class="gi-h">◇ LLM usage</div>`+
+    (!calls ? `<div class="gi-empty" style="padding:8px 2px;text-align:left;">no LLM calls yet this hunt</div>` :
+    `<div class="rail-cost-row"><span>calls</span><b>${calls}</b></div>`+
+    (cost>0
+      ? `<div class="rail-cost-row"><span>spend</span><b>$${cost.toFixed(cost<1?3:2)}</b></div>`
+      : `<div class="rail-cost-row"><span>billing</span><b title="running on the Pro/Max subscription">subscription</b></div>`)+
+    `<div class="rail-cost-row"><span>tokens in/out</span><b>${(run.llm_input_tokens||0).toLocaleString()}/${(run.llm_output_tokens||0).toLocaleString()}</b></div>`);
+}
+// momentum — endpoints-tested/min over a rolling 60s window, derived from the same
+// run.tested count the coverage stat above already uses. Not a fake meter: it's a real
+// rate, just displayed with a hot-streak color band instead of a plain number.
+function momentumHtml(testedN){
+  const now=Date.now();
+  S.momSamples=S.momSamples||[];
+  S.momSamples.push({t:now,n:testedN});
+  while(S.momSamples.length>1 && now-S.momSamples[0].t>60000) S.momSamples.shift();
+  const first=S.momSamples[0];
+  const dtMin=(now-first.t)/60000;
+  const rate = dtMin>0.08 ? Math.max(0,(testedN-first.n)/dtMin) : 0;  // too short a window is noise, not signal
+  const CAP=20;  // bar fills at 20 endpoints/min — fast for a single-threaded test loop
+  const barW=Math.min(100,Math.round(rate/CAP*100));
+  const band = rate>=14?'hot' : rate>0.4?'warm' : '';
+  return `<div class="mom-row"><span class="mom-lbl">⚡ momentum</span><span class="mom-val">${rate.toFixed(1)}/min</span></div>
+    <div class="mom-bar-wrap"><span class="mom-bar ${band}" style="width:${barW}%"></span></div>`;
+}
+async function refreshBrainRail(){
+  const rb=document.getElementById('rail-brain');
+  if(!rb || !S.target) return;
+  const brain=await api('/api/hunt/brain?target='+encodeURIComponent(S.target));
+  const html=renderBrainSection(brain);
+  rb.innerHTML=html || `<div class="gi-h">◆ Brain priority</div><div class="gi-empty" style="padding:8px 2px;text-align:left;">not enough cross-hunt history on this stack yet</div>`;
+}
+
+/* ─── coverage ledger ─── endpoint × vuln-class grid from STATE["tested"], which already carries
+   exactly this shape (endpoint -> list of classes actually scanned) — just never had a picture. */
+function renderCoverage(){
+  const run=S.run||{}; const body=document.getElementById('cov-body');
+  const tested=run.tested||{}; const q=(document.getElementById('cov-filter').value||'').toLowerCase();
+  let eps=Object.keys(tested).filter(e=>!q||e.toLowerCase().includes(q));
+  if(!eps.length){ body.innerHTML='<div class="cov-empty">'+(Object.keys(tested).length?'no endpoints match that filter':'no coverage data yet — still mapping the surface')+'</div>'; return; }
+  const clsSet=new Set(); eps.forEach(e=>(tested[e]||[]).forEach(c=>clsSet.add(c)));
+  const classes=[...clsSet].sort();
+  if(!classes.length){ body.innerHTML='<div class="cov-empty">no vuln classes tested yet</div>'; return; }
+  // findings by endpoint+class, worst severity wins the cell
+  const findByCell={};
+  (run.findings||[]).forEach(f=>{ if(f.verdict==='false_positive'||!f.endpoint||!f.cls) return;
+    const k=f.endpoint+'|'+f.cls.toLowerCase();
+    if(!findByCell[k] || SVRANK[(f.sev||'i')]<SVRANK[findByCell[k].sev||'i']) findByCell[k]=f; });
+  eps=eps.slice(0,150);
+  let testedCells=0, findingCells=0; const total=eps.length*classes.length;
+  eps.forEach(ep=>{ const done=tested[ep]||[]; done.forEach(c=>{ testedCells++; if(findByCell[ep+'|'+c]) findingCells++; }); });
+  let h=`<div class="cov-stats">
+    <div class="cov-stat"><div class="n">${eps.length}</div><div class="k">endpoints</div></div>
+    <div class="cov-stat"><div class="n">${classes.length}</div><div class="k">classes probed</div></div>
+    <div class="cov-stat"><div class="n">${total?Math.round(testedCells/total*100):0}%</div><div class="k">cells tested</div></div>
+    <div class="cov-stat"><div class="n" style="color:${findingCells?'var(--h)':'var(--text)'}">${findingCells}</div><div class="k">hit cells</div></div>
+  </div>`;
+  h+='<div class="cov-table-wrap"><table class="cov-table"><thead><tr><th class="cov-ep-col cov-corner">endpoint \\ class</th>'+
+    classes.map(c=>`<th class="cov-cls-hd"><span>${esc(c)}</span></th>`).join('')+'</tr></thead><tbody>';
+  eps.forEach(ep=>{
+    const done=new Set(tested[ep]||[]);
+    h+='<tr class="cov-row"><td class="cov-ep-col" title="'+esc(ep)+'">'+esc(ep.length>52?ep.slice(0,50)+'…':ep)+'</td>'+
+      classes.map(c=>{
+        const k=ep+'|'+c; const f=findByCell[k];
+        if(f) return `<td class="cov-cell finding" title="${esc((f.title||c)+' · '+(SVLBL[f.sev||'i']||f.sev))}" style="--CBG:${hexA(SEVC[f.sev||'i']||SEVC.i,.16)};--CBG2:${hexA(SEVC[f.sev||'i']||SEVC.i,.22)}"><span class="cov-dot finding" style="background:${SEVC[f.sev||'i']||SEVC.i};box-shadow:0 0 6px 0 ${SEVC[f.sev||'i']||SEVC.i}"></span></td>`;
+        if(done.has(c)) return `<td class="cov-cell tested" title="tested, no finding"><span class="cov-dot tested"></span></td>`;
+        return `<td class="cov-cell" title="not yet tested"></td>`;
+      }).join('')+'</tr>';
+  });
+  h+='</tbody></table></div>';
+  body.innerHTML=h;
+}
+
 /* ─── terminal drawer ─── */
 function setTerm(open){
   S.termOpen=open;
@@ -1424,6 +2170,8 @@ function handleSlash(text){
       logLine('out','  /auth [user:pass] auto-authenticate (register+login on its own, or with creds)');
       logLine('out','  /bypass <url>    walk through a 403/404/500 (doors not walls)');
       logLine('out','  /plan · /zeroday graph-driven attack plan · novel zero-day hypotheses');
+      logLine('out','  /baseline        save current surface+findings as the diff baseline');
+      logLine('out','  /diff            what changed since the baseline (new/gone endpoints, new findings)');
       logLine('out','session:');
       logLine('out','  /session <ck>    load a session cookie for authenticated tests (stays local)');
       logLine('out','  /session2 <ck>   load a SECOND account to diff for access bugs');
@@ -1453,6 +2201,8 @@ function handleSlash(text){
       runAgent('/api/hunt/bypass',{url:arg,status:403},'bypassing '+arg.slice(0,40)); break; }
     case 'zeroday': openZeroday(); break;
     case 'plan': openPlan(); break;
+    case 'diff': openDiff(); break;
+    case 'baseline': markBaseline(); break;
     case 'recon': runAgent('/api/hunt/recon',{focus:arg||''},'expanding recon'+(arg?' ('+arg+')':'')); break;
     case 'authtest': case 'idor':
       if(!S.sessionCookie){ logLine('err','authtest needs a session — set one with /session <cookie> first'); }
@@ -1470,7 +2220,16 @@ function handleSlash(text){
 /* ─── controls ─── */
 async function ctl(action){
   if(!S.target) return;
-  await api('/api/hunt/control',{target:S.target,action});
+  const body={target:S.target,action};
+  if(action==='resume' && S.run && S.run.paused_reason==='cost-cap'){
+    // resuming with the SAME cap would just re-trip it on the next LLM call (cost_usd already
+    // ≥ cap) — ask what to raise it to instead of looping pause→resume→pause.
+    const cur=(S.run.cost_usd||0);
+    const ans=prompt('Spend cap reached ($'+cur.toFixed(2)+' spent). Raise the cap to continue (or 0 for no cap):', (Math.ceil(cur*2))+'');
+    if(ans===null) return;   // cancelled — stay paused
+    const v=parseFloat(ans); if(!isNaN(v)) body.cost_cap_usd=Math.max(0,v);
+  }
+  await api('/api/hunt/control',body);
   if(action==='stop') stopPoll();
   if(action==='resume'){ S.cLog=0; document.getElementById('term-log').innerHTML=''; S.autoFlipped=false; poll(); }
 }
@@ -1500,15 +2259,34 @@ function copyReport(idx){
   });
 }
 
+// standalone, shareable proof page for ONE finding — a real link to hand a client, attach to a
+// bounty submission, or drop in Slack, grounded in the same trust tiers the dashboard itself shows.
+function shareProof(idx){
+  const url=location.origin+'/proof?target='+encodeURIComponent(S.target)+'&fi='+idx;
+  const done=()=>flash('Proof link copied — opens without the dashboard','ok');
+  navigator.clipboard.writeText(url).then(done).catch(()=>{
+    const ta=Object.assign(document.createElement('textarea'),{value:url,style:'position:fixed;opacity:0'});
+    document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);done();
+  });
+}
+
 /* ─── advanced ─── */
-// Credentials panel is shown automatically for the modes that actually use creds
-// (Grey/White box) and hidden for Black box — no manual "Advanced" toggle.
+// Credentials & run options are collapsed by default (toggleAdv) so the form doesn't open
+// with six fields in front of the one thing most hunts need. The toggle itself is only shown
+// for Grey/White box (modes that actually use creds) — Black box has nothing to configure.
 function updateModeUI(){
   const mode=(document.getElementById('f-mode')||{}).value||'grey';
-  const show=(mode==='grey'||mode==='white');
-  document.getElementById('adv-panel').classList.toggle('on',show);
+  const needsCreds=(mode==='grey'||mode==='white');
+  const btn=document.getElementById('adv-btn');
+  btn.hidden=!needsCreds;
+  if(!needsCreds){ document.getElementById('adv-panel').classList.remove('on'); btn.classList.remove('on'); }
   const note=document.getElementById('adv-mode-note');
-  if(note) note.textContent=show?'· '+mode+' box uses credentials':'';
+  if(note) note.textContent=needsCreds?'· '+mode+' box uses credentials':'';
+}
+function toggleAdv(){
+  const open=!document.getElementById('adv-panel').classList.contains('on');
+  document.getElementById('adv-panel').classList.toggle('on',open);
+  document.getElementById('adv-btn').classList.toggle('on',open);
 }
 /* ─── custom dropdown ─── */
 function ddToggle(ev,id){
@@ -1530,20 +2308,26 @@ document.addEventListener('click',()=>document.querySelectorAll('.f-dd.open').fo
 
 /* ═══ LIVE GRAPH (self-contained force-directed canvas) ═══ */
 // node-TYPE colors (structural web — kept neutral so findings pop)
-const NC={ target:'#A78BFA', host:'#9AA4B2', endpoint:'#464D59', chain:'#34D399' };
+const NC={ target:'#A78BFA', host:'#60A5FA', endpoint:'#5B6472', chain:'#2DD4BF' };
+// small curated accent set for host hubs — deliberately excludes pink/magenta (reads as
+// neon, and collides with the target's violet) and orange/red (those mean finding severity)
+const HOST_PALETTE=['#5B9EF5','#30C9A3','#E0B64B','#3FBFE0','#8C9EF0','#6BC97A','#8CA0C4'];
+function hashHue(str){ let h=0; for(let i=0;i<str.length;i++) h=(h*31+str.charCodeAt(i))>>>0; return h%360; }
 // finding SEVERITY colors (vivid, fully distinct from the structural palette)
 const SEVC={ c:'#FF3B5C', h:'#FF8A3D', m:'#FFD23D', l:'#3BA0FF', i:'#9CA3AF' };
 
 function showView(v){
   S.view=v;
-  document.getElementById('vt-find').classList.toggle('on', v==='findings');
-  document.getElementById('vt-graph').classList.toggle('on', v==='graph');
-  document.getElementById('vt-surface').classList.toggle('on', v==='surface');
+  document.getElementById('vr-find').classList.toggle('on', v==='findings');
+  document.getElementById('vr-graph').classList.toggle('on', v==='graph');
+  document.getElementById('vr-surface').classList.toggle('on', v==='surface');
+  document.getElementById('vr-coverage').classList.toggle('on', v==='coverage');
   document.getElementById('find-pane').style.display = v==='findings' ? '' : 'none';
   document.getElementById('graph-pane').style.display = v==='graph' ? 'block' : 'none';
   document.getElementById('surface-pane').style.display = v==='surface' ? 'flex' : 'none';
+  document.getElementById('coverage-pane').style.display = v==='coverage' ? 'flex' : 'none';
   if(v==='graph'){ graphInit(); graphStart(); viewRefresh(); }
-  else { graphStop(); if(v==='surface') viewRefresh(); }
+  else { graphStop(); if(v==='surface'||v==='coverage') viewRefresh(); }
 }
 async function viewRefresh(){
   if(!S.target) return;
@@ -1552,6 +2336,7 @@ async function viewRefresh(){
   const r=S.run||{};
   if(S.view==='graph') graphSync(r);
   else if(S.view==='surface') buildSurface(r);
+  else if(S.view==='coverage') renderCoverage();
 }
 function graphRefresh(){ viewRefresh(); }
 
@@ -1577,10 +2362,18 @@ function buildSurface(run){
   });
   S.surfaceData={root, fByEp, total:eps.length};
   renderSurface('');
-  document.getElementById('surface-count').textContent=eps.length+' endpoints · '+Object.keys(root).length+' hosts';
-  surfaceSummary(run, eps, Object.keys(root).length);
+  // the tree-building `eps` array is capped at 200 server-side (payload-size guard) — that cap must
+  // never leak into a headline count. True, uncapped totals come from run.stats (hunt-run.py
+  // maintains STATE["stats"]["endpoints"] throughout); run.hosts is the full discovered host list,
+  // never truncated. Fall back to the capped-array length only if stats is missing (e.g. cached/old
+  // run data from before this field existed).
+  const realEpCount = (run.stats && typeof run.stats.endpoints==='number') ? run.stats.endpoints : eps.length;
+  const realHostCount = (run.hosts && run.hosts.length) ? run.hosts.length : Object.keys(root).length;
+  const capped = realEpCount > eps.length;
+  document.getElementById('surface-count').textContent=realEpCount+' endpoints · '+realHostCount+' hosts'+(capped?' (showing first '+eps.length+')':'');
+  surfaceSummary(run, eps, realHostCount, realEpCount, capped);
 }
-function surfaceSummary(run, eps, nhosts){
+function surfaceSummary(run, eps, nhosts, nEndpoints, capped){
   const body=document.getElementById('sd-body'), emp=document.getElementById('sd-empty');
   const finds=(run.findings||[]).filter(f=>f.verdict!=='false_positive');
   const bySev={c:0,h:0,m:0,l:0,i:0}; finds.forEach(f=>{ const s=(f.sev||'i').toLowerCase(); if(s in bySev)bySev[s]++; });
@@ -1593,11 +2386,12 @@ function surfaceSummary(run, eps, nhosts){
     <div class="ss-heromono">attack surface</div>
     <div class="ss-stats">
       <div class="ss-stat"><div class="n">${nhosts}</div><div class="k">Hosts</div></div>
-      <div class="ss-stat"><div class="n">${eps.length}</div><div class="k">Endpoints</div></div>
+      <div class="ss-stat"><div class="n">${nEndpoints}</div><div class="k">Endpoints</div></div>
       <div class="ss-stat"><div class="n">${finds.length}</div><div class="k">Findings</div></div>
       <div class="ss-stat"><div class="n">${Object.keys(S.surfaceData.fByEp).length}</div><div class="k">Endpoints w/ findings</div></div>
     </div>
     ${sevHtml?'<div class="ss-sevrow">'+sevHtml+'</div>':''}
+    ${capped?`<div class="ss-hint" style="opacity:.7">Tree below shows the first ${eps.length} of ${nEndpoints} endpoints (payload-size cap) — the counts above are the real totals.</div>`:''}
     <div class="ss-hint">Expand a host to walk its paths. Click any endpoint to inspect it — findings on that endpoint, plus <b>⛋ Evidence</b> to replay the real request/response, and <b>Test with agent</b> to probe it live.</div>`;
 }
 function worstSev(node, fByEp){
@@ -1623,7 +2417,7 @@ function renderSurface(filter){
     row.style.setProperty('--pad', pad+'px');
     const ico = node.__leaf ? `<span class="st-leaf"></span>`
       : isHost ? `<span class="st-host-badge">${esc((name[0]||'?').toUpperCase())}</span>`
-      : `<span class="st-folder">▸</span>`;
+      : `<span class="st-folder"></span>`;
     row.innerHTML =
       `<span class="st-tw ${open?'open':''}">${hasKids?'▶':''}</span>`+
       `<span class="st-ico">${ico}</span>`+
@@ -1681,16 +2475,21 @@ function graphInit(){
   const g={canvas, ctx:canvas.getContext('2d'), nodes:[], links:[], byId:{},
     tf:{x:0,y:0,k:1}, raf:null, drag:null, hover:null, panning:null, dpr:window.devicePixelRatio||1,
     saved:graphLoad(), settled:0};
-  if(g.saved && g.saved.tf) g.tf=g.saved.tf;
   S.graph=g;
   const resize=()=>{ const r=canvas.getBoundingClientRect(); canvas.width=r.width*g.dpr; canvas.height=r.height*g.dpr; g.w=r.width; g.h=r.height; };
   resize(); g._resize=resize; window.addEventListener('resize',resize);
+  // a layout saved from a very differently-sized viewport (desktop → phone, or vice versa)
+  // restores off-screen if we blindly trust its absolute pixel positions/zoom — discard it
+  // and let graphSync lay out a fresh, correctly-fitted radial graph instead
+  if(g.saved && g.saved.vw && (Math.abs(g.saved.vw-g.w)>g.w*0.4 || Math.abs((g.saved.vh||g.h)-g.h)>g.h*0.4)) g.saved=null;
+  if(g.saved && g.saved.tf) g.tf=g.saved.tf;
 
   const toWorld=(mx,my)=>({x:(mx-g.tf.x)/g.tf.k, y:(my-g.tf.y)/g.tf.k});
   const pick=(mx,my)=>{ const w=toWorld(mx,my); let best=null,bd=1e9;
     for(const n of g.nodes){ const d=(n.x-w.x)**2+(n.y-w.y)**2; const r=nodeR(n)+6; if(d<r*r&&d<bd){bd=d;best=n;} } return best; };
 
   canvas.onmousedown=(ev)=>{ const mx=ev.offsetX,my=ev.offsetY; const n=pick(mx,my);
+    g.tfTarget=null;   // a manual drag/pan takes over from any in-flight eased zoom/fit
     if(n){ g.drag={n, }; n.fixed=true; } else { g.panning={x:mx-g.tf.x,y:my-g.tf.y}; } };
   canvas.onmousemove=(ev)=>{ const mx=ev.offsetX,my=ev.offsetY;
     if(g.drag){ const w=toWorld(mx,my); g.drag.n.x=w.x; g.drag.n.y=w.y; g.drag.n.vx=0; g.drag.n.vy=0; }
@@ -1708,7 +2507,7 @@ function graphInit(){
     if(Date.now()-downAt>400 || moved>6) return;
     const n=pick(ev.offsetX,ev.offsetY);
     if(n){ g.selected=n; openDetail(n); } else { g.selected=null; closeDetail(); } };
-  canvas.onwheel=(ev)=>{ ev.preventDefault(); const f=ev.deltaY<0?1.12:0.89; const mx=ev.offsetX,my=ev.offsetY;
+  canvas.onwheel=(ev)=>{ ev.preventDefault(); g.tfTarget=null; const f=ev.deltaY<0?1.12:0.89; const mx=ev.offsetX,my=ev.offsetY;
     const wx=(mx-g.tf.x)/g.tf.k, wy=(my-g.tf.y)/g.tf.k; g.tf.k=Math.max(0.2,Math.min(4,g.tf.k*f));
     g.tf.x=mx-wx*g.tf.k; g.tf.y=my-wy*g.tf.k; clearTimeout(g._wz); g._wz=setTimeout(graphSave,400); };
 }
@@ -1717,39 +2516,83 @@ function graphKey(){ return 'huntr_g_'+(S.target||'default'); }
 function graphLoad(){ try{ const s=localStorage.getItem(graphKey()); return s?JSON.parse(s):null; }catch{ return null; } }
 function graphSave(){ const g=S.graph; if(!g||!g.nodes) return;
   try{ const pos={}; g.nodes.forEach(n=>{ pos[n.id]=[Math.round(n.x),Math.round(n.y)]; });
-    localStorage.setItem(graphKey(), JSON.stringify({pos, tf:g.tf, ts:Date.now()})); }catch{} }
+    localStorage.setItem(graphKey(), JSON.stringify({pos, tf:g.tf, vw:g.w, vh:g.h, ts:Date.now()})); }catch{} }
 function graphReset(){ try{ localStorage.removeItem(graphKey()); }catch{} const g=S.graph; if(!g)return;
-  g.saved=null; g.tf={x:0,y:0,k:1}; g.nodes.forEach(n=>{ n.fixed=false; n.x=g.w/2+(Math.random()-.5)*300; n.y=g.h/2+(Math.random()-.5)*300; n.vx=0;n.vy=0; }); g.settled=0; flash('layout reset','ok'); }
+  g.saved=null; g.tfTarget=null; g.tf={x:0,y:0,k:1}; g.nodes.forEach(n=>{ n.fixed=false; n.x=g.w/2+(Math.random()-.5)*300; n.y=g.h/2+(Math.random()-.5)*300; n.vx=0;n.vy=0; }); g.settled=0; flash('layout reset','ok'); }
 
 function nodeR(n){ const d=(S.graph&&S.graph.deg&&S.graph.deg[n.id])||0;
   const base = n.type==='target'?15 : n.type==='host'?9 : n.type==='chain'?8 : n.type==='finding'?(n.sev==='c'?9:7) : 3.2;
   return base + Math.min(7, Math.sqrt(d)*1.1); }   // Obsidian-style: more connected = bigger
-function nodeColor(n){ return n.type==='finding' ? (SEVC[(n.sev||'i').toLowerCase()]||SEVC.i) : (NC[n.type]||NC.endpoint); }
+function nodeColor(n){ if(n.col) return n.col;
+  return n.type==='finding' ? (SEVC[(n.sev||'i').toLowerCase()]||SEVC.i) : (NC[n.type]||NC.endpoint); }
 
 function graphSync(run){
   const g=S.graph; if(!g) return;
   const keep={}; g.nodes.forEach(n=>keep[n.id]=n);
   const nodes=[], links=[], byId={};
   const sp=(g.saved&&g.saved.pos)||{};
-  const add=(id,type,label,ex)=>{ if(byId[id])return byId[id];
+  const add=(id,type,label,ex,aAngle,aRadius,zBase)=>{ if(byId[id])return byId[id];
     const old=keep[id]; const save=sp[id];
-    const n=Object.assign({id,type,label,vx:0,vy:0,
-      x: old?old.x : (save?save[0]:(g.w/2+(Math.random()-.5)*260)),
-      y: old?old.y : (save?save[1]:(g.h/2+(Math.random()-.5)*260)),
+    let x,y;
+    if(old){ x=old.x; y=old.y; }
+    else if(save){ x=save[0]; y=save[1]; }
+    else if(aRadius){ x=g.w/2+Math.cos(aAngle)*aRadius+(Math.random()-.5)*16; y=g.h/2+Math.sin(aAngle)*aRadius+(Math.random()-.5)*16; }
+    else { x=g.w/2+(Math.random()-.5)*60; y=g.h/2+(Math.random()-.5)*60; }
+    const n=Object.assign({id,type,label,vx:0,vy:0,x,y,aAngle:aAngle||0,aRadius:aRadius||0,
+      ph:old?old.ph:Math.random()*6.283, ph2:old?old.ph2:Math.random()*6.283,
+      // zBase (+ per-node zJit, breathing in graphDraw) is the node's pseudo-3D depth —
+      // x/y/z all move independently over time, which is as close to "4D" as a flat
+      // canvas gets: a living, parallaxing volume instead of a flat node-link diagram.
+      zBase: zBase!=null?zBase:0.3, zJit: old?old.zJit:(Math.random()-0.5)*0.3,
       fixed: (!old && save)?true:false}, ex||{});
     nodes.push(n); byId[id]=n; return n; };
+
   const tLabel=(S.rawScope||run.target||'target').split('\n')[0].slice(0,28);
-  add('__root','target',tLabel,{sub:'scope'});
-  (run.endpoints||[]).slice(0,70).forEach(e=>{ const u=typeof e==='string'?e:(e&&(e.url||e.endpoint)||''); if(!u)return;
+  add('__root','target',tLabel,{sub:'scope',col:'#A78BFA'},0,0,1.0);
+
+  // ── radial/sunburst layout: hosts ring the target, each host's endpoints fan
+  // out within that host's own angular wedge, findings sit one ring further out
+  // from whatever they're attached to. A random-blob force layout turns into an
+  // unreadable hairball past ~40 nodes; anchoring every node to a (angle,radius)
+  // target and gently spring-pulling it there (graphTick) keeps structure legible
+  // while still letting the physics breathe and drags still work.
+  const HR=Math.max(130, Math.min(g.w,g.h)*0.27), ER=HR+Math.max(80,Math.min(g.w,g.h)*0.17);
+  g.HR=HR; g.ER=ER;
+  const eps=(run.endpoints||[]).slice(0,70).map(e=>{
+    const u=typeof e==='string'?e:(e&&(e.url||e.endpoint)||''); if(!u) return null;
     let host=''; try{host=new URL(u).host;}catch{}
-    const hid='h:'+host; if(host&&!byId[hid]){ add(hid,'host',host,{sub:host}); links.push({s:'__root',t:hid}); }
-    const id='e:'+u; const path=u.replace(/^https?:\/\/[^/]+/,'')||'/';
-    add(id,'endpoint',path.slice(0,40),{sub:u}); links.push({s:host?hid:'__root',t:id}); });
+    return {u,host};
+  }).filter(Boolean);
+  const hostList=[...new Set(eps.map(e=>e.host).filter(Boolean))];
+  const hostAngle={};
+  hostList.forEach((h,i)=>{ hostAngle[h]=(i/Math.max(1,hostList.length))*6.283-1.5708; });
+  // each host hub gets one accent from a small curated palette (never pink/magenta, never
+  // the finding-orange or critical-red so those keep their meaning) — the hub carries the
+  // color, its endpoints stay neutral, so a single-host hunt doesn't turn the whole graph
+  // into one glowing color the way per-node hue tinting did
+  hostList.forEach(h=>{ add('h:'+h,'host',h,{sub:h,col:HOST_PALETTE[hashHue(h)%HOST_PALETTE.length]},hostAngle[h],HR,0.5); links.push({s:'__root',t:'h:'+h}); });
+  const epByHost={}; eps.forEach(e=>{ (epByHost[e.host]=epByHost[e.host]||[]).push(e); });
+  Object.keys(epByHost).forEach(h=>{
+    const list=epByHost[h], base=hostAngle[h]||0;
+    const spread=Math.min(1.15,0.14+list.length*0.05);
+    list.forEach((e,i)=>{
+      const t=list.length>1?(i/(list.length-1))-0.5:0;
+      const a=base+t*spread;
+      const id='e:'+e.u; const path=e.u.replace(/^https?:\/\/[^/]+/,'')||'/';
+      add(id,'endpoint',path.slice(0,40),{sub:e.u},a,ER,0.1);
+      links.push({s:h?('h:'+h):'__root',t:id});
+    });
+  });
+
   (run.findings||[]).forEach((f,i)=>{ if(f.verdict==='false_positive')return; const sev=(f.sev||'i').toLowerCase();
-    const id='f:'+i; add(id,'finding',(f.title||('#'+i)).slice(0,34),{sev,fi:i,sub:(SVLBL[sev]||sev)+' · '+(f.endpoint||'')});
-    let tgt='__root'; if(f.endpoint){ if(byId['e:'+f.endpoint])tgt='e:'+f.endpoint; else{ try{const h='h:'+new URL(f.endpoint).host; if(byId[h])tgt=h;}catch{} } }
+    const id='f:'+i; let tgt='__root', pa=null, pr=null;
+    if(f.endpoint){ if(byId['e:'+f.endpoint]){tgt='e:'+f.endpoint; pa=byId[tgt].aAngle; pr=byId[tgt].aRadius;}
+      else{ try{const h='h:'+new URL(f.endpoint).host; if(byId[h]){tgt=h; pa=byId[h].aAngle; pr=byId[h].aRadius;}}catch{} } }
+    add(id,'finding',(f.title||('#'+i)).slice(0,34),{sev,fi:i,sub:(SVLBL[sev]||sev)+' · '+(f.endpoint||'')},
+      pa!=null?pa:Math.random()*6.283, (pr!=null?pr:ER)+60, 0.75);
     links.push({s:tgt,t:id,kind:'finding'}); });
-  (run.chains||[]).forEach((c,i)=>{ const id='ch:'+i; add(id,'chain',(c.title||('chain '+i)).slice(0,30),{sub:c.impact||''});
+  (run.chains||[]).forEach((c,i)=>{ const id='ch:'+i;
+    add(id,'chain',(c.title||('chain '+i)).slice(0,30),{sub:c.impact||'',col:'#2DD4BF'}, Math.random()*6.283, ER+120, 0.6);
     (c.findings||[]).forEach(fi=>{ if(byId['f:'+fi])links.push({s:'f:'+fi,t:id,kind:'chain'}); }); });
   g.nodes=nodes; g.links=links; g.byId=byId;
   // adjacency + degree for highlight + sizing (Obsidian behaviour)
@@ -1757,17 +2600,50 @@ function graphSync(run){
   links.forEach(l=>{ if(adj[l.s]&&adj[l.t]){ adj[l.s].add(l.t); adj[l.t].add(l.s); deg[l.s]++; deg[l.t]++; } });
   g.adj=adj; g.deg=deg;
   if(g.selected && !byId[g.selected.id]){ g.selected=null; closeDetail(); }
+  if(!g.saved && !g.autoFitted){ g.autoFitted=true; g.needsRefit=true; graphFit(false); }
 }
+
+// frame the whole radial layout in view — called once on a fresh graph, and from the ⤢ toolbar button.
+// animate=false snaps instantly (first paint, before anything's on screen); the button/auto-refit
+// calls glide the camera there instead of jump-cutting, via the tfTarget lerp in graphTick.
+function graphFit(animate){
+  const g=S.graph; if(!g||!g.nodes.length) return;
+  let minX=1e9,maxX=-1e9,minY=1e9,maxY=-1e9;
+  g.nodes.forEach(n=>{ const r=n.aRadius||0, a=n.aAngle||0;
+    const x=g.w/2+Math.cos(a)*r, y=g.h/2+Math.sin(a)*r;
+    minX=Math.min(minX,x-24); maxX=Math.max(maxX,x+24); minY=Math.min(minY,y-24); maxY=Math.max(maxY,y+24); });
+  const bw=maxX-minX, bh=maxY-minY; if(bw<=0||bh<=0) return;
+  const k=Math.max(0.28,Math.min(1.5, Math.min(g.w/bw,g.h/bh)*0.92));
+  const tx=g.w/2-((minX+maxX)/2)*k, ty=g.h/2-((minY+maxY)/2)*k;
+  if(animate===false){ g.tf.k=k; g.tf.x=tx; g.tf.y=ty; graphSave(); }
+  else { g.tfTarget={x:tx,y:ty,k}; }
+}
+function graphZoom(f){ const g=S.graph; if(!g) return; const cx=g.w/2, cy=g.h/2;
+  const base=g.tfTarget||g.tf;
+  const wx=(cx-base.x)/base.k, wy=(cy-base.y)/base.k;
+  const k=Math.max(0.2,Math.min(4,base.k*f));
+  g.tfTarget={x:cx-wx*k, y:cy-wy*k, k}; }
 
 function graphStart(){ const g=S.graph; if(!g||g.raf) return; g.settled=0;
   const step=()=>{ graphTick(); graphDraw();
-    if(++g.settled===160) graphSave();   // persist once the fresh layout has settled (~2.6s)
+    if(++g.settled===160){   // persist once the fresh layout has settled (~2.6s)
+      if(g.needsRefit){ g.needsRefit=false; graphFit(true); } else graphSave();
+    }
     g.raf=requestAnimationFrame(step); }; g.raf=requestAnimationFrame(step); }
 function graphStop(){ const g=S.graph; if(g&&g.raf){ cancelAnimationFrame(g.raf); g.raf=null; } }
 
 function graphTick(){
   const g=S.graph, N=g.nodes; if(!N.length) return;
   const cx=g.w/2, cy=g.h/2;
+  g._t=(g._t||0)+1;
+  // ease the camera toward a pending zoom/fit target instead of jump-cutting to it
+  if(g.tfTarget){
+    const t=g.tfTarget;
+    g.tf.x+=(t.x-g.tf.x)*0.16; g.tf.y+=(t.y-g.tf.y)*0.16; g.tf.k+=(t.k-g.tf.k)*0.16;
+    if(Math.abs(t.k-g.tf.k)<0.0015 && Math.hypot(t.x-g.tf.x,t.y-g.tf.y)<0.4){
+      g.tf.x=t.x; g.tf.y=t.y; g.tf.k=t.k; g.tfTarget=null; graphSave();
+    }
+  }
   for(let i=0;i<N.length;i++){ const a=N[i];
     for(let j=i+1;j<N.length;j++){ const b=N[j];
       let dx=a.x-b.x, dy=a.y-b.y, d2=dx*dx+dy*dy||0.01; if(d2>90000)continue;
@@ -1776,67 +2652,152 @@ function graphTick(){
   for(const l of g.links){ const a=g.byId[l.s], b=g.byId[l.t]; if(!a||!b)continue;
     let dx=b.x-a.x, dy=b.y-a.y, d=Math.sqrt(dx*dx+dy*dy)||0.01; const rest=l.kind==='chain'?120:72;
     const f=(d-rest)*0.015; const fx=dx/d*f, fy=dy/d*f; a.vx+=fx; a.vy+=fy; b.vx-=fx; b.vy-=fy; }
-  for(const n of N){ if(n.fixed)continue; n.vx+=(cx-n.x)*0.004; n.vy+=(cy-n.y)*0.004;
-    n.vx*=0.86; n.vy*=0.86; n.x+=n.vx; n.y+=n.vy; }
+  // anchor each node toward its (angle,radius) slot on the radial layout instead of
+  // a flat pull-to-center — that flat pull is what used to flatten the rings into a blob
+  const t=g._t*0.012;
+  for(const n of N){ if(n.fixed)continue;
+    const tx=cx+Math.cos(n.aAngle||0)*(n.aRadius||0), ty=cy+Math.sin(n.aAngle||0)*(n.aRadius||0);
+    n.vx+=(tx-n.x)*0.02; n.vy+=(ty-n.y)*0.02;
+    // ambient drift — a slow per-node sway so the graph keeps breathing once it
+    // settles instead of freezing into a static screenshot; phase is randomized
+    // per node (graphSync) so the whole graph doesn't pulse in lockstep
+    n.vx+=Math.sin(t+n.ph)*0.05; n.vy+=Math.cos(t*0.84+n.ph2)*0.05;
+    n.vx*=0.88; n.vy*=0.88; n.x+=n.vx; n.y+=n.vy; }
 }
 
 function hexA(hex,a){ hex=hex.replace('#',''); const n=parseInt(hex,16);
   return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`; }
 
 function graphDraw(){
-  const g=S.graph, ctx=g.ctx; g._t=(g._t||0)+1;
+  const g=S.graph, ctx=g.ctx;
   ctx.save(); ctx.scale(g.dpr,g.dpr); ctx.clearRect(0,0,g.w,g.h);
   ctx.translate(g.tf.x,g.tf.y); ctx.scale(g.tf.k,g.tf.k);
   const focus = g.hover || g.selected;
   const near = focus ? (g.adj[focus.id]||new Set()) : null;
   const isLit = (id)=> !focus || id===focus.id || (near&&near.has(id));
+  const mix=(a,b,t)=>a+(b-a)*t;
+  const T=g._t||0;
 
-  // ── links ──
+  // live depth per node this frame: a fixed band per node type (zBase) + a persistent random
+  // offset (zJit) + a slow independent sine breathing on top. x/y sway (graphTick), zoom/pan,
+  // AND this z-breathing all move on their own clocks — position, depth and time all animating
+  // independently is about as close to "4D" as a flat canvas can fake, and it reads as parallax.
+  const liveZ={}, dScale={}, dAlpha={};
+  for(const n of g.nodes){
+    const z=(n.zBase||0.3)+(n.zJit||0)+Math.sin(T*0.011+n.ph)*0.08;
+    liveZ[n.id]=z;
+    const u=Math.max(0,Math.min(1,(z+0.35)/1.5));
+    dScale[n.id]=mix(0.7,1.4,u); dAlpha[n.id]=mix(0.46,1,u);
+  }
+
+  // ── radar guide rings — reads the radial layout at a glance, like a scope sweep ──
+  const root=g.byId['__root'];
+  if(root && g.HR){
+    ctx.save(); ctx.lineWidth=1/g.tf.k; ctx.setLineDash([2,7]);
+    [g.HR,g.ER].forEach(r=>{ if(!r)return; ctx.strokeStyle='rgba(148,163,184,.07)';
+      ctx.beginPath(); ctx.arc(root.x,root.y,r,0,6.283); ctx.stroke(); });
+    ctx.setLineDash([]); ctx.restore();
+  }
+
+  // ── links — source→target colour gradient per synapse, plus an occasional travelling
+  // pulse (an action potential) so the graph reads as firing, not just connected ──
   ctx.lineCap='round';
   for(const l of g.links){ const a=g.byId[l.s], b=g.byId[l.t]; if(!a||!b)continue;
-    const lit = !focus || (isLit(l.s)&&isLit(l.t)&&(l.s===focus.id||l.t===focus.id));
+    const target = (!focus || (isLit(l.s)&&isLit(l.t)&&(l.s===focus.id||l.t===focus.id))) ? 1 : 0;
+    l._f = l._f==null ? target : l._f+(target-l._f)*0.15;
+    const lit=l._f, dep=(dAlpha[a.id]+dAlpha[b.id])/2;
+    let ctrl=null;
+    ctx.beginPath();
     if(l.kind==='chain'){
-      ctx.setLineDash([5,5]); ctx.lineDashOffset = -(g._t*0.6);
-      ctx.strokeStyle = hexA('#34D399', lit?0.85:0.3); ctx.lineWidth=2;
+      ctx.setLineDash([5,5]); ctx.lineDashOffset = -(T*0.6);
+      ctx.strokeStyle = hexA('#2DD4BF', mix(0.3,0.85,lit)*dep); ctx.lineWidth=2;
+      ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y);
+    } else if(l.kind==='finding'){
+      ctx.setLineDash([]);
+      const mx=(a.x+b.x)/2, my=(a.y+b.y)/2, dx=b.x-a.x, dy=b.y-a.y, len=Math.hypot(dx,dy)||1;
+      const nx=-dy/len, ny=dx/len, bend=Math.min(22,len*0.16);
+      ctrl={x:mx+nx*bend,y:my+ny*bend};
+      const fc=nodeColor(b);
+      const grad=ctx.createLinearGradient(a.x,a.y,b.x,b.y);
+      grad.addColorStop(0, hexA(nodeColor(a), mix(focus?0.02:0.06,0.3,lit)*dep));
+      grad.addColorStop(1, hexA(fc, mix(focus?0.04:0.1,0.55,lit)*dep));
+      ctx.strokeStyle=grad; ctx.lineWidth = mix(0.9,1.5,lit);
+      ctx.moveTo(a.x,a.y); ctx.quadraticCurveTo(ctrl.x,ctrl.y,b.x,b.y);
     } else {
       ctx.setLineDash([]);
-      const base = l.kind==='finding'? '#FB923C' : '#8892A0';
-      ctx.strokeStyle = hexA(base, lit?0.38:(focus?0.025:0.07));
-      ctx.lineWidth = lit?1.4:0.8;
+      const grad=ctx.createLinearGradient(a.x,a.y,b.x,b.y);
+      grad.addColorStop(0, hexA(nodeColor(a), mix(focus?0.015:0.05,0.26,lit)*dep));
+      grad.addColorStop(1, hexA(nodeColor(b), mix(focus?0.015:0.05,0.26,lit)*dep));
+      ctx.strokeStyle=grad; ctx.lineWidth = mix(0.8,1.3,lit);
+      ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y);
     }
-    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+    ctx.stroke();
+
+    // travelling pulse — staggered per link (l._ph, assigned once) so the graph fires
+    // like a living network instead of every synapse blinking in lockstep
+    if(l._ph==null) l._ph=Math.random();
+    const period = l.kind==='finding'?95 : l.kind==='chain'?150 : 185;
+    const win = 0.22;
+    const cyc = ((T + l._ph*period*6) % period)/period;
+    if(cyc < win){
+      const pp = cyc/win;
+      const px = ctrl ? (1-pp)*(1-pp)*a.x+2*(1-pp)*pp*ctrl.x+pp*pp*b.x : a.x+(b.x-a.x)*pp;
+      const py = ctrl ? (1-pp)*(1-pp)*a.y+2*(1-pp)*pp*ctrl.y+pp*pp*b.y : a.y+(b.y-a.y)*pp;
+      const glowA = Math.sin(pp*Math.PI) * mix(0.3,1,lit) * dep;
+      const pc = nodeColor(b);
+      ctx.beginPath(); ctx.fillStyle=hexA(pc, glowA); ctx.arc(px,py,2.3,0,6.283); ctx.fill();
+      ctx.beginPath(); ctx.fillStyle=hexA('#FFFFFF', glowA*0.85); ctx.arc(px,py,1,0,6.283); ctx.fill();
+    }
   }
   ctx.setLineDash([]);
 
-  // ── nodes (halo glow + core) ──
-  for(const n of g.nodes){ const r=nodeR(n), col=nodeColor(n); const lit=isLit(n.id);
-    const a = lit?1:0.18;
-    // glow halo
-    const hr = r*(n===focus?3.4:2.1);
-    const grd=ctx.createRadialGradient(n.x,n.y,r*0.5,n.x,n.y,hr);
-    grd.addColorStop(0, hexA(col, (lit?0.33:0.06)));
+  // ── nodes — drawn back-to-front by depth, with a slow per-node heartbeat so the
+  // whole graph idles like resting neurons instead of a frozen diagram ──
+  const order=[...g.nodes].sort((p,q)=>liveZ[p.id]-liveZ[q.id]);
+  for(const n of order){
+    const scale=dScale[n.id], dep=dAlpha[n.id];
+    const r=nodeR(n)*scale, col=nodeColor(n);
+    const target=isLit(n.id)?1:0; n._f = n._f==null?target : n._f+(target-n._f)*0.15;
+    const beat=0.5+0.5*Math.sin(T*0.05+n.ph*3);
+    const a = mix(0.18,1,n._f)*dep;
+    const hr = r*mix(1.5,2.1, n===focus?1:0.18+beat*0.12);
+    const grd=ctx.createRadialGradient(n.x,n.y,r*0.6,n.x,n.y,hr);
+    grd.addColorStop(0, hexA(col, mix(0.04,0.2,n._f)*(0.8+beat*0.2)));
     grd.addColorStop(1, hexA(col, 0));
     ctx.fillStyle=grd; ctx.beginPath(); ctx.arc(n.x,n.y,hr,0,6.283); ctx.fill();
-    // core
-    ctx.beginPath(); ctx.arc(n.x,n.y,r,0,6.283); ctx.fillStyle=hexA(col,a); ctx.fill();
+    // glossy core — a soft highlight offset toward the light source gives the orb some depth
+    const core=ctx.createRadialGradient(n.x-r*0.3,n.y-r*0.35,r*0.08,n.x,n.y,r);
+    core.addColorStop(0, hexA('#FFFFFF',a*(0.3+beat*0.12)));
+    core.addColorStop(0.4, hexA(col,a));
+    core.addColorStop(1, hexA(col,a));
+    ctx.beginPath(); ctx.arc(n.x,n.y,r,0,6.283); ctx.fillStyle=core; ctx.fill();
     if(n.type==='finding'&&n.sev==='c'){ ctx.lineWidth=2; ctx.strokeStyle=hexA('#FFFFFF',a); ctx.stroke(); }
     if(n===g.selected){ ctx.lineWidth=2; ctx.strokeStyle=hexA('#FFFFFF',0.9); ctx.beginPath(); ctx.arc(n.x,n.y,r+3,0,6.283); ctx.stroke(); }
   }
-  // ── labels (smart: important always; endpoints on focus/zoom) ──
-  for(const n of g.nodes){ const r=nodeR(n); const lit=isLit(n.id);
+  // ── labels (smart: important always, with a legibility chip; endpoints on focus/zoom) ──
+  for(const n of order){
+    const r=nodeR(n)*dScale[n.id]; const lit=n._f==null?1:n._f;
     const important = n.type==='target'||n.type==='host'||n.type==='finding'||n.type==='chain';
     const show = important || n===focus || (near&&near.has(n.id)) || g.tf.k>1.7;
     if(!show) continue;
-    ctx.globalAlpha = lit?1:0.25;
     ctx.font=(n.type==='target'?"600 12.5px":"500 11px")+" 'Inter',sans-serif";
-    ctx.fillStyle = n.type==='endpoint'?'#7A828E':'#DFE2E7';
-    ctx.textAlign='left';
     const lbl = n.label.length>30 && n.type==='endpoint' ? n.label.slice(0,30)+'…' : n.label;
-    // subtle text backing for legibility
-    ctx.fillText(lbl, n.x+r+5, n.y+4);
+    const tx=n.x+r+7, ty=n.y+4;
+    if(important && lit>0.08){
+      const tw=ctx.measureText(lbl).width;
+      ctx.fillStyle=hexA('#09090c', mix(0,0.6,lit));
+      ctx.beginPath();
+      if(ctx.roundRect) ctx.roundRect(tx-5,ty-12,tw+10,16,4); else ctx.rect(tx-5,ty-12,tw+10,16);
+      ctx.fill();
+    }
+    ctx.globalAlpha = mix(0.25,1,lit)*dAlpha[n.id];
+    ctx.fillStyle = n.type==='endpoint'?'#9AA3B0':'#E9EBEF';
+    ctx.textAlign='left';
+    ctx.fillText(lbl, tx, ty);
     ctx.globalAlpha=1;
   }
   ctx.restore();
+  const zl=document.getElementById('graph-zoom-lbl'); if(zl) zl.textContent=Math.round(g.tf.k*100)+'%';
 }
 
 /* ─── detail panel ─── */
@@ -1915,14 +2876,36 @@ async function toggleInsights(){
   body.innerHTML='<div class="gi-empty">⠋ analysing surface…</div>';
   // Graph build gets 120s server-side; the default 8s api() timeout aborted it
   // and the UI then mislabeled a client timeout as "not enough surface yet".
+  // (Brain priority lives in the persistent right rail now, on every view — no
+  // need to re-fetch/duplicate it in this graph-specific panel.)
   const k=await apiLongGet('/api/hunt/kgraph?target='+encodeURIComponent(S.target));
-  if(!k||!k.ok){ const msg=(k&&k.error==='timed out')?'still building the graph — try again in a moment':((k&&k.error)||'not enough surface yet'); body.innerHTML='<div class="gi-empty">'+esc(msg)+'</div>'; return; }
-  S.kgraph=k; renderInsights(k);
+  if(!k||!k.ok){
+    const msg=(k&&k.error==='timed out')?'still building the graph — try again in a moment':((k&&k.error)||'not enough surface yet');
+    body.innerHTML='<div class="gi-empty">'+esc(msg)+'</div>'; return;
+  }
+  S.kgraph=k; renderInsights(k,'');
 }
-function renderInsights(k){
+// cross-hunt learned priority — hunt-brain.py's actual hit-rate across past hunts on this stack,
+// not this session's judgment. Returns '' when there's nothing to show (new stack, <2 attempts).
+function renderBrainSection(brain){
+  const prio=(brain&&brain.ok&&(brain.priority||[]).length) ? brain.priority : null;
+  if(!prio) return '';
+  let h=`<div class="gi-h">◆ Brain priority <span style="opacity:.6;font-weight:400;text-transform:none;">· ${esc(brain.stack||'')}</span></div>`;
+  h+=`<div class="gi-sub">historical hit-rate, across every past hunt on this stack — not just this one</div>`;
+  prio.slice(0,8).forEach(p=>{
+    const pct=Math.round((p.rate||0)*100);
+    h+=`<div class="gi-item" style="cursor:default;">
+      <span class="gi-tx" style="flex:0 0 76px;"><span class="gi-mono">${esc(p.cls)}</span></span>
+      <span class="gi-bar-wrap"><span class="gi-bar" style="width:${pct}%"></span></span>
+      <span class="gi-sc" title="${p.hits}/${p.attempts} hunts, source: ${esc(p.source)}">${pct}%</span></div>`;
+  });
+  return h;
+}
+function renderInsights(k,brainHtml){
   const body=document.getElementById('gi-body');
   const svc={c:'#F43F5E',h:'#FB923C',m:'#FACC15',l:'#38BDF8',i:'#64748B'};
   let h=`<div class="gi-sub">${k.stats.nodes} nodes · ${k.stats.edges} edges · ${k.stats.communities} clusters · cached, 0 tokens</div>`;
+  h+=brainHtml||'';
   // god-nodes = pivotal test targets
   h+=`<div class="gi-h">★ Pivotal targets (god-nodes)</div>`;
   (k.gods||[]).slice(0,8).forEach(g=>{
@@ -2086,6 +3069,96 @@ async function saveScope(){
   if(r&&r.ok){ flash('scope saved','ok'); closeModal(); } else flash('save failed','no');
 }
 
+/* ═══ credentials: hand the engine a new session mid-hunt, and verify it actually works ═══ */
+function renderSessionAlert(alert){
+  const b=document.getElementById('session-banner');
+  if(!b) return;
+  if(!alert || !alert.msg){ b.setAttribute('hidden',''); return; }
+  document.getElementById('session-banner-txt').textContent='⚠ '+alert.msg;
+  b.removeAttribute('hidden');
+}
+function renderCircuitBanner(hosts){
+  const b=document.getElementById('circuit-banner');
+  if(!b) return;
+  if(!hosts || !hosts.length){ b.setAttribute('hidden',''); return; }
+  b.textContent='⚠ circuit-broken after repeated 403/429/timeouts, no longer being tested: '
+    +hosts.join(', ')+'  ·  if this was transient, delete .hunt/cb/<host> to reset';
+  b.removeAttribute('hidden');
+}
+function renderLlmBanner(alert){
+  const b=document.getElementById('llm-banner');
+  if(!b) return;
+  if(!alert || !alert.msg){ b.setAttribute('hidden',''); return; }
+  b.textContent='⚠ '+alert.msg;
+  b.removeAttribute('hidden');
+}
+function openCreds(){
+  openModal(`<div class="m-title">Credentials</div>
+    <div class="m-sub">Hand the engine a new session — e.g. after the old one expired or was rotated.
+      Test it live before committing, or update straight away. Takes effect on the hunt's very next
+      authenticated request — no restart needed.</div>
+    <div class="m-lbl">Auth token</div>
+    <input class="f-input" id="cr-tok" type="password" placeholder="Bearer eyJ…">
+    <div class="m-lbl">Cookie</div>
+    <input class="f-input" id="cr-cookie" type="text" placeholder="session=abc123">
+    <div class="m-lbl">Auth header <span style="opacity:.5">· one per line, for header-based APIs</span></div>
+    <textarea class="m-ta" id="cr-authhdr" style="min-height:52px" placeholder="X-FilesAPI-Auth: a249baf3…"></textarea>
+    <div class="m-lbl">CDP port <span style="opacity:.5">· SPA localStorage auth — attach to your already-logged-in Chrome</span></div>
+    <input class="f-input" id="cr-cdp" type="number" placeholder="9222" min="1024" max="65535">
+    <div class="m-lbl">Test URL <span style="opacity:.5">· optional — defaults to the target's root</span></div>
+    <input class="f-input" id="cr-url" type="text" placeholder="https://…">
+    <div id="cr-result"></div>
+    <div class="m-row" style="margin-top:12px">
+      <button class="m-btn" style="background:transparent;border:1px solid var(--c-bd);color:var(--c)" onclick="testCreds()">⟳ Test</button>
+      <button class="m-btn p" onclick="updateCreds()">Update &amp; use</button>
+    </div>`);
+}
+function _credsBody(){
+  return {target:S.target,
+    session_token:(document.getElementById('cr-tok')||{}).value?.trim()||'',
+    cookie:(document.getElementById('cr-cookie')||{}).value?.trim()||'',
+    auth_header:(document.getElementById('cr-authhdr')||{}).value?.trim()||'',
+    cdp_port:parseInt((document.getElementById('cr-cdp')||{}).value||'0')||0};
+}
+async function testCreds(){
+  const body=_credsBody();
+  body.url=(document.getElementById('cr-url')||{}).value?.trim()||'';
+  if(!body.session_token && !body.cookie && !body.auth_header){ flash('enter at least one credential first','no'); return; }
+  const el=document.getElementById('cr-result');
+  if(el) el.innerHTML='<div class="cr-detail">⠋ firing anon + authed requests through scope-guard…</div>';
+  const r=await api('/api/hunt/creds/test',body);
+  renderCredsResult(r);
+}
+function renderCredsResult(r){
+  const el=document.getElementById('cr-result'); if(!el) return;
+  if(!r){ el.innerHTML='<div class="cr-verdict no">test failed — no response from engine</div>'; return; }
+  const V={
+    'looks-authenticated':     ['ok','✓ looks authenticated — the response visibly differs with these creds attached'],
+    'no-visible-difference':   ['no','⚠ no visible difference from an anonymous request — wrong cookie/header name, or the target ignores it'],
+    'authed-looks-logged-out': ['no','⚠ even WITH these creds the response still looks logged-out (login page / redirect)'],
+    'jwt-expired':             ['no','✗ this token already expired — its own exp claim is in the past. Get a fresh one.'],
+    'out-of-scope':            ['no','✗ that test URL is not in this hunt’s scope — pick a URL inside scope.allow'],
+    'no-creds-supplied':       ['no','enter at least one credential first'],
+  };
+  const hit=V[r.verdict]||['no', (r.error||r.verdict||'unknown result')];
+  let extra='';
+  if(r.jwt && r.jwt.state){
+    extra+=`<div class="cr-detail">jwt: sub=${esc(String(r.jwt.sub||'?'))} · ${esc(r.jwt.state)}`
+         +(r.jwt.remaining_s!=null?' · '+Math.round(r.jwt.remaining_s/60)+'m left':'')+`</div>`;
+  }
+  if(r.anon && r.authed){
+    extra+=`<div class="cr-detail">anon ${r.anon.status||'?'} / ${r.anon.len||0}b  →  authed ${r.authed.status||'?'} / ${r.authed.len||0}b</div>`;
+  }
+  el.innerHTML=`<div class="cr-verdict ${hit[0]}">${esc(hit[1])}</div>${extra}`;
+}
+async function updateCreds(){
+  const body=_credsBody();
+  if(!body.session_token && !body.cookie && !body.auth_header){ flash('enter at least one credential first','no'); return; }
+  const r=await api('/api/hunt/creds',body);
+  if(r&&r.ok){ flash('credentials updated — the hunt will use them on its next request','ok'); closeModal(); renderSessionAlert(null); }
+  else flash('update failed','no');
+}
+
 /* ═══ #2 diff vs baseline ═══ */
 async function openDiff(){
   openModal('<div class="m-title">Diff</div><div class="m-sub">⠋ comparing…</div>');
@@ -2186,6 +3259,28 @@ function flash(msg,kind){
   t.className=kind||''; t.textContent=msg; t.classList.add('show');
   clearTimeout(flash._t);
   flash._t=setTimeout(()=>t.classList.remove('show'),2600);
+}
+// combo banner trigger — diffs run.chains against the last-seen count so a flourish fires
+// exactly once per genuinely new chain, never on first paint (which would fire for every
+// chain already on disk when a finished hunt is reopened).
+function checkCombo(run){
+  const chains=run.chains||[];
+  if(S.lastChainCount==null){ S.lastChainCount=chains.length; return; }
+  if(chains.length>S.lastChainCount){
+    for(let i=S.lastChainCount;i<chains.length;i++) comboFlash(chains[i]);
+    S.lastChainCount=chains.length;
+  }
+}
+// combo banner — one real event per newly-recorded chain (doPoll diffs run.chains.length)
+function comboFlash(chain){
+  let t=document.getElementById('combo-toast');
+  if(!t){ t=document.createElement('div'); t.id='combo-toast'; document.body.appendChild(t); }
+  const n=(chain.findings||[]).length;
+  t.innerHTML=`<span class="ct-ic">⛓</span><div><div class="ct-title">CHAIN${n?' ×'+n:''}</div>`+
+    `<div class="ct-sub">${esc((chain.title||'findings linked into impact').slice(0,60))}</div></div>`;
+  t.classList.add('show');
+  clearTimeout(comboFlash._t);
+  comboFlash._t=setTimeout(()=>t.classList.remove('show'),3400);
 }
 function setStatus(cls,msg){ document.getElementById('sdot').className=cls; document.getElementById('stext').textContent=msg; }
 function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }

@@ -2,7 +2,7 @@
 """
 browser-capture.py — capture the REAL authenticated API surface of a SPA by driving a real browser.
 
-For AUTHORIZED testing. Loads the operator's session cookies into a real Chromium, navigates the app,
+For AUTHORIZED testing. Loads the operator's session into a real Chromium, navigates the app,
 and records every XHR/fetch the SPA makes to the target's own hosts — the exact endpoints, methods, and
 request BODIES (the params) the application actually uses. That real call list (with correct params) is
 what the exploit agent should test for IDOR / logic, instead of guessing. Read-only.
@@ -10,20 +10,50 @@ what the exploit agent should test for IDOR / logic, instead of guessing. Read-o
 Implementation note: this env's Python Playwright driver is broken, so this shells out to NODE Playwright
 (which works). Needs node with the `playwright` module resolvable (NODE_PATH).
 
+AUTH (2026-10-21 fix): the ONLY auth mechanism this tool supported was a raw `--cookie` string injected
+into a fresh, otherwise-anonymous Playwright context. Any session that lives somewhere else — a bearer
+token / custom auth header (creds.session_token / creds.auth_header — neither cookie nor Bearer, e.g.
+Files.com's X-FilesAPI-Auth), or (very common on modern SPAs) a JWT the app itself stores in
+localStorage and attaches via an axios/fetch interceptor — got a COMPLETELY UNAUTHENTICATED capture
+with no error and no warning: the tool "succeeds", returns some calls, and silently records only the
+anonymous surface. Two fixes:
+  1. --cdp-port: when a debug Chrome is already attached (creds.cdp_port, grey/white mode — the SAME
+     port js-api-harvest.py already uses in this exact phase), ATTACH to it via Playwright's own
+     connectOverCDP instead of launching a fresh incognito browser. This inherits the operator's REAL
+     session wholesale — cookies, localStorage, IndexedDB, service workers, everything — with zero
+     per-site auth-shape guessing. Strictly better than reconstructing auth from a raw string whenever
+     it's available, and the only mechanism that can ever cover a localStorage-token SPA at all.
+  2. --header "Name: value" (repeatable): when NOT using CDP, set extra HTTP headers on the fresh
+     context (e.g. "Authorization: Bearer <token>", or a program's custom auth header) so a
+     bearer/custom-header session is still carried on every request the SPA fires, not silently dropped.
+Every response now reports which mechanism actually applied (`auth_mode`: "cdp"/"cookie"/"header"/"none")
+so "ran fine, 12 calls" and "ran fine, but genuinely unauthenticated" no longer look identical.
+
 Usage:
   browser-capture.py --url https://app.example.com/ --cookie "a=1; b=2" [--ua "..."] \
+      [--cdp-port 9222] [--header "Authorization: Bearer xyz"]... \
       [--hosts example.com] [--secs 14] [--chrome /usr/bin/chromium] [--out calls.json] [--json]
-Emits: {"calls":[{"method","path","url","type","status","req_body"}], "count":N}
+Emits: {"calls":[{"method","path","url","type","status","req_body"}], "count":N, "auth_mode":"cdp"|"cookie"|"header"|"none"}
 """
 import sys, os, re, json, tempfile, subprocess
 
 def arg(n, d=None):
     return sys.argv[sys.argv.index(n) + 1] if n in sys.argv else d
 
+def arg_all(n):
+    return [sys.argv[i + 1] for i, v in enumerate(sys.argv) if v == n and i + 1 < len(sys.argv)]
+
 URL = arg("--url"); COOKIE = arg("--cookie", ""); UA = arg("--ua", "Mozilla/5.0 yeswehack")
 SECS = int(arg("--secs", "14") or 14); OUT = arg("--out")
 CHROME = arg("--chrome") or next((b for b in ("/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome") if os.path.exists(b)), "/usr/bin/chromium")
 HOSTS = arg("--hosts")
+CDP_PORT = arg("--cdp-port", "")
+HEADERS = {}
+for h in arg_all("--header"):
+    if ":" in h:
+        k, v = h.split(":", 1)
+        if k.strip():
+            HEADERS[k.strip()] = v.strip()
 if URL and not HOSTS:
     HOSTS = ".".join(re.sub(r"^https?://", "", URL).split("/")[0].split(":")[0].split(".")[-2:])
 
@@ -36,13 +66,32 @@ if not URL:
 JS = r"""
 const { chromium } = require('playwright');
 const URL=process.env.BC_URL, COOKIE=process.env.BC_COOKIE||'', UA=process.env.BC_UA,
-      HOST=process.env.BC_HOST, SECS=parseInt(process.env.BC_SECS||'14',10), CHROME=process.env.BC_CHROME;
+      HOST=process.env.BC_HOST, SECS=parseInt(process.env.BC_SECS||'14',10), CHROME=process.env.BC_CHROME,
+      CDP_PORT=process.env.BC_CDP_PORT||'', HEADERS=JSON.parse(process.env.BC_HEADERS||'{}');
 const APIISH=/(\/cgi-bin\/|\/api\/|\/v\d+\/|\/index\/service\/|action=|\/graphql)/i;
 (async()=>{
   const calls={};
-  const b=await chromium.launch({executablePath:CHROME,headless:true,args:['--no-sandbox','--disable-gpu','--disable-dev-shm-usage']});
-  const ctx=await b.newContext({userAgent:UA,ignoreHTTPSErrors:true});
-  if(COOKIE){ await ctx.addCookies(COOKIE.split(';').map(kv=>{const [n,...r]=kv.trim().split('=');return {name:n.trim(),value:r.join('=').trim(),domain:'.'+HOST,path:'/',secure:true};})); }
+  let b=null, ctx, authMode='none';
+  if(CDP_PORT){
+    // Attach to the operator's ALREADY-LOGGED-IN debug Chrome instead of launching a fresh incognito
+    // one — this inherits the real session wholesale (cookies, localStorage, IndexedDB, service
+    // workers), the only mechanism that can ever work for a localStorage-token SPA at all.
+    try{
+      const browser=await chromium.connectOverCDP('http://127.0.0.1:'+CDP_PORT);
+      const contexts=browser.contexts();
+      ctx = contexts.length ? contexts[0] : await browser.newContext({userAgent:UA,ignoreHTTPSErrors:true});
+      authMode='cdp';
+    }catch(e){ ctx=null; }
+  }
+  if(!ctx){
+    b=await chromium.launch({executablePath:CHROME,headless:true,args:['--no-sandbox','--disable-gpu','--disable-dev-shm-usage']});
+    ctx=await b.newContext({userAgent:UA,ignoreHTTPSErrors:true});
+    if(COOKIE){
+      await ctx.addCookies(COOKIE.split(';').map(kv=>{const [n,...r]=kv.trim().split('=');return {name:n.trim(),value:r.join('=').trim(),domain:'.'+HOST,path:'/',secure:true};}));
+      authMode='cookie';
+    }
+    if(Object.keys(HEADERS).length){ await ctx.setExtraHTTPHeaders(HEADERS); if(authMode==='none') authMode='header'; }
+  }
   const page=await ctx.newPage();
   page.on('request',req=>{try{const u=req.url();if(!u.includes(HOST))return;const rt=req.resourceType();
     if(rt!=='xhr'&&rt!=='fetch'&&!APIISH.test(u))return;const k=req.method()+' '+u.split('#')[0];if(calls[k])return;
@@ -52,15 +101,16 @@ const APIISH=/(\/cgi-bin\/|\/api\/|\/v\d+\/|\/index\/service\/|action=|\/graphql
   try{await page.goto(URL,{waitUntil:'networkidle',timeout:30000});}catch(e){try{await page.goto(URL,{waitUntil:'domcontentloaded',timeout:20000});}catch(e2){}}
   await page.waitForTimeout(SECS*1000);
   for(const sel of ['nav a','[role="navigation"] a','a[href*="measure"]','a[href*="device"]']){try{const els=await page.$$(sel);for(const el of els.slice(0,3)){await el.click({timeout:2000}).catch(()=>{});await page.waitForTimeout(2500);}}catch(e){}}
-  await b.close();
+  if(b) await b.close();
   const arr=Object.values(calls);
-  console.log(JSON.stringify({calls:arr,count:arr.length}));
+  console.log(JSON.stringify({calls:arr,count:arr.length,auth_mode:authMode}));
 })().catch(e=>console.log(JSON.stringify({calls:[],error:String(e).slice(0,200)})));
 """
 
 tf = tempfile.NamedTemporaryFile("w", suffix=".js", delete=False)
 tf.write(JS); tf.close()
-env = dict(os.environ, BC_URL=URL, BC_COOKIE=COOKIE, BC_UA=UA, BC_HOST=HOSTS or "", BC_SECS=str(SECS), BC_CHROME=CHROME)
+env = dict(os.environ, BC_URL=URL, BC_COOKIE=COOKIE, BC_UA=UA, BC_HOST=HOSTS or "", BC_SECS=str(SECS),
+           BC_CHROME=CHROME, BC_CDP_PORT=CDP_PORT, BC_HEADERS=json.dumps(HEADERS))
 np = env.get("NODE_PATH", "")
 env["NODE_PATH"] = ":".join(x for x in [np, "/usr/share/nodejs", "/usr/lib/node_modules"] if x)
 try:

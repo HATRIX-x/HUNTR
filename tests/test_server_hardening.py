@@ -95,6 +95,72 @@ class ServerHardening(unittest.TestCase):
         st, _ = _req("POST", self.base + "/api/hunt/start", body={"target": "   "})
         self.assertEqual(st, 400)
 
+    def test_raw_program_page_with_no_extractable_targets_is_refused(self):
+        # Real incident (2026-10-15): a full HackerOne program page, pasted as `target` before the
+        # client had a Haiku-classified scope_obj, fell through the deterministic-fallback-found-0-
+        # targets branch with `t` never reset — so the ENTIRE RAW PAGE became hunt-run.py's literal
+        # --target. Confirmed live: a `ps aux` showing `hunt-run.py --target Skip to main content >
+        # ...` as an actual running process, which then whitespace/comma-split the prose into bogus
+        # "hosts" (English words lifted out of scope-exclusion sentences) and produced false-positive
+        # findings. This must always be refused with a clean 400, never silently started.
+        page = ("Scope exclusions\nCore Ineligible Findings are out of scope. Learn more.\n\n"
+                "Overview\nAcme is a wallet. DO NOT test Acme Exchange hosts.\n\n"
+                "Known Findings but not limited to:\nAsset\tOut of scope finding class\n"
+                "fiat.a.acme.io\tUnauthenticated signing oracle, including message read, write, "
+                "delete, interception and credential ID or wallet UUID lookup\n")
+        st, body = _req("POST", self.base + "/api/hunt/start", body={"target": page})
+        self.assertEqual(st, 400)
+        self.assertIn("couldn't find any in-scope targets", json.loads(body)["error"])
+
+    def test_scope_obj_from_client_is_trusted_and_used_as_target(self):
+        # The companion success path: when the client already ran Haiku classification (the live
+        # preview) and sends scope_obj, the server must use ITS targets, not re-derive (and
+        # potentially regress) with the fast/no-LLM fallback.
+        target = "pidreuse-test-scopeobj.invalid"   # .invalid never resolves — DNS fails fast, no flakiness
+        try:
+            st, body = _req("POST", self.base + "/api/hunt/start", body={
+                "target": "ignored raw page text that would otherwise fail extraction",
+                "scope_obj": {"targets": [target], "allow": [target], "deny": []},
+            })
+            self.assertEqual(st, 200)
+            self.assertEqual(json.loads(body)["target"], target)
+        finally:
+            subprocess.run(["pkill", "-9", "-f", f"hunt-run.py --target {target}"])
+
+    def test_stale_non_hunt_pid_does_not_falsely_report_already_running(self):
+        # A PID can be reused by the OS after the original hunt-run.py exits. The old check was a
+        # bare `os.kill(pid, 0)` — alive-or-not only — so a stale run.pid left by a crashed hunt
+        # could point at any unrelated live process and this would falsely claim
+        # "already_running": true, leaving the operator believing a hunt is running when nothing is.
+        target = "pidreuse-test-stale.invalid"
+        hd = Path(self.home) / "targets" / target / ".hunt"
+        hd.mkdir(parents=True, exist_ok=True)
+        (hd / "run.pid").write_text(str(os.getpid()))   # this TEST process: alive, definitely not hunt-run.py
+        try:
+            st, body = _req("POST", self.base + "/api/hunt/start", body={"target": target})
+            self.assertEqual(st, 200)
+            self.assertNotIn("already_running", json.loads(body))
+        finally:
+            subprocess.run(["pkill", "-9", "-f", f"hunt-run.py --target {target}"])
+
+    def test_credentials_file_created_with_restrictive_permissions(self):
+        # creds.json holds session tokens/cookies in the clear. The old write_text()-then-chmod()
+        # sequence had a real window where the file existed at the default umask (often group/world
+        # readable) before chmod narrowed it. Must be 0600 from the moment it exists.
+        target = "pidreuse-test-creds.invalid"
+        try:
+            st, _ = _req("POST", self.base + "/api/hunt/start",
+                         body={"target": target, "session_token": "Bearer sekrit-token-value"})
+            self.assertEqual(st, 200)
+            cf = Path(self.home) / "targets" / target / ".hunt" / "creds.json"
+            deadline = time.time() + 5
+            while not cf.exists() and time.time() < deadline:
+                time.sleep(0.1)
+            self.assertTrue(cf.exists(), "creds.json was never written")
+            self.assertEqual(oct(cf.stat().st_mode & 0o777), "0o600")
+        finally:
+            subprocess.run(["pkill", "-9", "-f", f"hunt-run.py --target {target}"])
+
     def test_bad_base64_upload_is_400(self):
         st, _ = _req("POST", self.base + "/api/mobile/upload",
                      body={"filename": "x.apk", "data_b64": "@@@not base64@@@"})

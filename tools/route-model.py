@@ -7,9 +7,11 @@ identically for a fraction of the cost). This encodes the routing policy: given 
 tier to use and why, so a run doesn't burn top-tier tokens on log-summarising or payload-stamping.
 
 Tiers resolve to model ids (override via env HUNT_MODEL_STRONG / _MID / _CHEAP):
-  strong  deep reasoning / novel exploitation      (default: claude-opus-5)
-  mid     structured writing / moderate reasoning   (default: claude-sonnet-5)
-  cheap   mechanical / high-volume / deterministic  (default: claude-haiku-4-5-20251001)
+  strong  deep reasoning / novel exploitation      (default: nvidia/nemotron-3-ultra-550b-a55b)
+  mid     structured writing / moderate reasoning   (default: nvidia/nemotron-3-ultra-550b-a55b)
+  cheap   mechanical / high-volume / deterministic  (default: nvidia/nemotron-3-ultra-550b-a55b)
+
+Provider is set by HUNT_LLM_PROVIDER (default: nvidia). API key via HUNT_LLM_API_KEY.
 
 Usage:
   route-model.py --task hypothesis        # → tier + model id + rationale
@@ -19,12 +21,12 @@ Exit: 0.
 """
 import sys, os, json
 
-# Stability-pinned: Opus 4.8 / Sonnet 4.6 don't get downgraded mid-session by safety classifiers
-# (unlike newer previews), so a long autonomous hunt won't silently drop tier. Override via env.
+# Stability-pinned defaults. Override via env HUNT_MODEL_STRONG / _MID / _CHEAP.
+# Default provider is NVIDIA Nemotron 3 Ultra (set HUNT_LLM_PROVIDER to change).
 TIER_MODEL = {
-    "strong": os.environ.get("HUNT_MODEL_STRONG", "claude-opus-4-8"),
-    "mid": os.environ.get("HUNT_MODEL_MID", "claude-sonnet-4-6"),
-    "cheap": os.environ.get("HUNT_MODEL_CHEAP", "claude-haiku-4-5-20251001"),
+    "strong": os.environ.get("HUNT_MODEL_STRONG", "nvidia/nemotron-3-ultra-550b-a55b"),
+    "mid": os.environ.get("HUNT_MODEL_MID", "nvidia/nemotron-3-ultra-550b-a55b"),
+    "cheap": os.environ.get("HUNT_MODEL_CHEAP", "nvidia/nemotron-3.5-lightning-30b-a3b"),
 }
 
 # task → (tier, rationale, needs_llm). needs_llm=False → a Python tool does it; NO provider needed.

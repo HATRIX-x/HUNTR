@@ -104,14 +104,24 @@ try:
         sev = SEVMAP.get((info.get("severity") or "medium").lower(), "m")
         at = j.get("matched-at") or j.get("host") or ""
         oob = j.get("interaction") or j.get("interactsh") or {}
+        has_oast = isinstance(oob, dict) and bool(oob.get("protocol"))
         proof = ""
-        if isinstance(oob, dict) and oob.get("protocol"):
+        if has_oast:
             proof = " · OAST %s callback received (blind, out-of-band confirmed)" % oob.get("protocol")
+        # The module docstring's own design intent is "OAST hits are deterministic -> confirmed,
+        # never gated on the AI judge" — but this unconditionally labeled EVERY nuclei -dast hit
+        # "confirmed", whether or not an actual OOB interaction (has_oast) was present. A -dast
+        # template can also match on a reflected/status-code signal with no real blind callback at
+        # all, and that was getting the exact same "skip all downstream verification" treatment as
+        # a genuine interactsh hit. Only an actual OOB interaction earns that; anything else is
+        # "likely" so it still goes through the normal AI-judge/triage pipeline like other tools'
+        # unconfirmed leads, instead of skipping it entirely.
         findings.append({
-            "severity": sev, "cls": cls, "verdict": "confirmed", "template": tid,
+            "severity": sev, "cls": cls, "verdict": "confirmed" if has_oast else "likely", "template": tid,
             "title": cls + " — " + (name if name != cls else "parameter"),
             "endpoint": at,
-            "detail": ("nuclei DAST template '%s' confirmed %s at %s%s" % (tid, cls, at, proof)).strip(),
+            "detail": ("nuclei DAST template '%s' %s %s at %s%s" %
+                       (tid, "confirmed" if has_oast else "flagged", cls, at, proof)).strip(),
         })
     out({"findings": findings, "tested": True, "requests": reqs, "urls": len(uniq)})
 except Exception as e:

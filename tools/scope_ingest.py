@@ -8,17 +8,33 @@ Why this exists: the old flow had two incompatible paths from the same box —
 "Confirm & summarize" ran an LLM-only parse, while "Start hunt" on a raw page fed
 the entire page to hunt-run.py --target, which whitespace-split it into hundreds of
 junk "assets" (every word on the page). This module makes extraction deterministic
-and reliable FIRST (hosts/URLs/CIDRs/repos, in-scope vs out-of-scope split, type
-classification), then LETS the LLM enrich only the unstructured bits
-(rewards/rules/caps/policy) — and only when credentials exist. The asset list never
-depends on the model being up.
+and reliable FIRST (hosts/URLs/CIDRs/repos found by regex — this NEVER depends on
+the model being up), then hands classification (which of those hosts are actually
+IN scope) to Haiku 5.5 when available.
+
+Why classification needs the model, not just regex: the naive fallback below
+(extract_assets / OUT_HEADINGS) splits in/out at the FIRST "out of scope"-ish
+keyword anywhere on the page. Real program pages routinely put an "out of scope"
+summary/exclusions blurb, or a "known findings" table, BEFORE the real Assets/Scope
+table — on Exodus's H1 page the real Assets table (*.exodus.io, Wildcard/High/
+Eligible) sits ~10k chars after that first keyword, so the naive split dumped the
+explicit, eligible wildcard asset into DENY along with everything else (0 in-scope,
+15 out — see tests/test_scope_ingest.py::ScopeIngestLLM for the regression). A
+position-based heuristic cannot fix this; it requires reading what the page says
+ABOUT each specific asset. See [[scope-classifier-haiku]] memory.
 
 Pipeline:
-  1. detect_shape   host | url_list | program_page         (pure regex)
-  2. extract        assets + in/out-of-scope split          (deterministic, always)
-  3. enrich         rewards/rules/focus/… via LLM           (optional, grounded)
-  4. canonicalize   dedup, normalize, classify, allow/deny  (deterministic)
-  5. persist        scope.allow / scope.deny / program.json (single source of truth)
+  1. detect_shape   host | url_list | program_page             (pure regex)
+  2. extract        candidate assets (deterministic, always) + a DETERMINISTIC
+                     in/out/ split as the offline fallback floor
+  3. classify        Haiku 5.5 judges each candidate in/out/ambiguous from the FULL
+                     page context (only when creds exist; replaces step 2's split
+                     wholesale on success, never on failure) — grounded to the
+                     candidate list, never invents an asset. Unsure → "ambiguous",
+                     denied by default until a human confirms (never silently "in").
+  4. enrich         rewards/rules/focus/… via LLM               (optional, grounded)
+  5. canonicalize   dedup, normalize, classify, allow/deny      (deterministic)
+  6. persist        scope.allow / scope.deny / program.json     (single source of truth)
 
 CLI:  scope_ingest.py [--json] [--no-enrich] [--persist <hunt_dir>]   (text on stdin or --text)
 Importable:  detect_shape, extract_assets, classify, canonicalize, ingest, persist
@@ -125,8 +141,49 @@ def extract_assets(text):
     return in_assets, out_assets
 
 
-def canonicalize(in_assets, out_assets):
-    """Dedup + build allow/deny pattern lists + the hunt target list (web+api only)."""
+_OPEN_SCOPE_RE = re.compile(
+    r"open[\s-]*scope\s*(?:policy|:)|even if not (?:listed|in scope)|any[\w.\s-]{2,40}-owned (?:asset|domain)",
+    re.I)
+
+
+def _root_domain(host):
+    """Last two dot-labels of a host — a cheap eTLD+1-ish root, good enough to widen an
+    explicit in-scope asset into an Open-Scope wildcard (see _open_scope_wildcards)."""
+    parts = host.strip(".").split(".")
+    return ".".join(parts[-2:]) if len(parts) >= 2 else host
+
+
+def _open_scope_wildcards(text_fields, in_clean):
+    """Caught live (2026-10-21): a hunt on Databricks's HackerOne program recorded real,
+    'confirmed' findings against www.databricks.com/login.databricks.com/microsites.databricks.com
+    — none literally in scope.allow, because none of those exact subdomains appeared as a token
+    anywhere on the program PAGE (they were only discovered live, by crawling, mid-hunt). But the
+    program's own text says "an Open Scope policy for all Databricks-owned assets" / "Open Scope:
+    any Databricks-owned asset, even if not listed in scope" — by definition an open-ended policy
+    like that can never be captured as a finite list of literal hosts; per-candidate classification
+    (classify()/_classify_scope_llm) only ever judges tokens that already appear on the page, so it
+    structurally cannot cover a host discovered later that was never mentioned by name.
+    Detect that policy phrasing (regex, so this works with or without LLM enrichment — it also
+    checks the raw program text, not just the enriched summary/focus) and derive a '*.<root>'
+    wildcard per distinct root domain already seen among the EXPLICIT in-scope web/api assets, so a
+    newly-discovered subdomain sharing that root is allowed too. This never widens past an existing
+    explicit DENY: scope-guard.py's in_scope() checks deny before allow, so a narrower exclusion
+    like '*.cloud.databricks.com' (Ineligible wildcard) still wins over the broader Open-Scope one
+    even though they share the same root domain."""
+    text = " ".join(str(f) for f in text_fields if f)
+    if not _OPEN_SCOPE_RE.search(text):
+        return []
+    roots = sorted({_root_domain(a["asset"].split("/")[0]) for a in in_clean
+                    if a.get("type") in ("web", "api") and "." in a["asset"]})
+    return [f"*.{r}" for r in roots]
+
+
+def canonicalize(in_assets, out_assets, ambiguous=None):
+    """Dedup + build allow/deny pattern lists + the hunt target list (web+api only).
+    `ambiguous` (classifier couldn't tell in vs out from the page text) is defensively
+    DENIED — never auto-hunted — until a human confirms it; shown separately in the UI
+    rather than silently dropped into either bucket."""
+    ambiguous = ambiguous or []
     seen = set()
     in_clean = []
     for a in in_assets:
@@ -134,9 +191,89 @@ def canonicalize(in_assets, out_assets):
             seen.add(a["asset"])
             in_clean.append(a)
     allow = [a["asset"] for a in in_clean]
-    deny = sorted({o["asset"] for o in out_assets})
+    deny = sorted({o["asset"] for o in out_assets} | {a["asset"] for a in ambiguous})
     targets = [a["asset"] for a in in_clean if a["type"] in ("web", "api")]
     return in_clean, allow, deny, targets
+
+
+CLASSIFY_SYS = (
+    "You are a meticulous bug-bounty scope auditor. You are given the FULL program page text and a "
+    "list of CANDIDATE assets already extracted from it (hosts/domains/repos/mobile apps/package "
+    "names). For EACH candidate decide:\n"
+    "  in         — explicitly declared IN SCOPE: appears in an actual Scope/Assets/'In Scope' "
+    "section or table, typically with an eligibility/severity/reward marker (Wildcard, Eligible, "
+    "High/Critical, a bounty amount). A wildcard like '*.company.com' covers its subdomains.\n"
+    "  out        — the page explicitly excludes it: 'DO NOT test', a stated host/feature ban, an "
+    "explicit out-of-scope/excluded list entry, or it is clearly a 3rd-party/cookie/analytics/"
+    "leaderboard/unrelated-company domain, not the program owner's own asset.\n"
+    "  ambiguous  — you cannot tell from the text alone: e.g. it is mentioned ONLY in a 'known "
+    "findings' / 'already reported' table mapping Asset -> one specific finding class (that is NOT "
+    "a full exclusion — see rule 2), or it is a different root domain never listed in the actual "
+    "assets table, or scope status genuinely isn't stated.\n"
+    "CRITICAL RULES — this gates real network requests against someone else's production "
+    "infrastructure; a wrong verdict has real consequences:\n"
+    "1. A keyword like 'out of scope' appearing elsewhere on the page (a summary blurb, an unrelated "
+    "exclusions list) is NOT evidence about a DIFFERENT asset. Judge each candidate ONLY by what the "
+    "page says ABOUT THAT SPECIFIC ASSET — never by which section happens to be textually nearby or "
+    "earlier in reading order.\n"
+    "2. A host listed ONLY in a 'known/already-reported finding class' table is NOT fully out of "
+    "scope unless the page SEPARATELY says not to test that host/feature at all — classify it 'in' "
+    "(it is still a live, testable asset) and put the one excluded finding class in `note` so that "
+    "specific known issue isn't re-reported. If the page separately bans testing the host/feature "
+    "entirely (e.g. 'DO NOT test X'), classify 'out' instead.\n"
+    "3. When genuinely unsure, choose 'ambiguous'. NEVER guess 'in' to be generous, and NEVER classify "
+    "a real asset 'out' just because exclusion language appears earlier in the page than its listing.\n"
+    "4. Only classify candidates from the given list — never invent a new one.\n"
+    "Return ONLY this JSON, no prose, no code fences:\n"
+    "{\"classifications\":[{\"asset\":\"\",\"verdict\":\"in\"|\"out\"|\"ambiguous\",\"reason\":\"\","
+    "\"note\":\"\"}]}\n"
+    "`reason` is one short clause citing what the page actually says. `note` is used only for rule 2 "
+    "(the specific known/excluded finding class on an otherwise in-scope asset); else \"\"."
+)
+
+
+def _classify_scope_llm(text, candidates):
+    """Ground-truth in/out/ambiguous classification via Haiku 5.5 — judges each deterministically
+    DISCOVERED candidate (regex still owns discovery — the model never invents an asset) by what the
+    page says about THAT asset, fixing what the position-based OUT_HEADINGS split structurally cannot.
+    Returns (verdicts: {asset: {"verdict","reason","note"}}, ok). ok=False → caller keeps the
+    deterministic fallback split (offline-safe; same floor as before this existed)."""
+    if not candidates:
+        return {}, False
+    try:
+        import llm_auth
+        _, mode = llm_auth.llm_headers()
+        if not mode:
+            return {}, False
+    except Exception:
+        return {}, False
+    try:
+        import llm_client
+        model = os.environ.get("HUNT_MODEL_INTAKE", "claude-haiku-5-5")
+        cand_list = "\n".join(sorted({a for a, _ in candidates}))
+        body = text
+        cut = body.find("# Netscape HTTP Cookie File")
+        if cut > 500:
+            body = body[:cut]
+        user = "CANDIDATES (classify every one of these, nothing else):\n" + cand_list + \
+               "\n\nFULL PAGE TEXT:\n" + body[:40000]
+        txt, err = llm_client.call_llm(CLASSIFY_SYS, user, model=model, max_tokens=3000, timeout=90)
+        if err or not txt:
+            return {}, False
+        t = re.sub(r"^\s*```(?:json)?|```\s*$", "", txt.strip(), flags=re.I | re.M).strip()
+        m = re.search(r"\{.*\}", t, re.S)
+        data = json.loads(m.group(0) if m else t)
+        cand_set = {a for a, _ in candidates}
+        verdicts = {}
+        for c in (data.get("classifications") or []):
+            a = _strip(str(c.get("asset", "")))
+            v = c.get("verdict")
+            if a in cand_set and v in ("in", "out", "ambiguous"):
+                verdicts[a] = {"verdict": v, "reason": str(c.get("reason", ""))[:200],
+                               "note": str(c.get("note", ""))[:200]}
+        return verdicts, bool(verdicts)
+    except Exception:
+        return {}, False
 
 
 def source_hash(text):
@@ -177,22 +314,50 @@ def _enrich(text, base):
 
 
 def ingest(text, enrich=True):
-    """Text → canonical scope object. Deterministic asset list always; LLM metadata optional."""
+    """Text → canonical scope object. Deterministic asset DISCOVERY always; CLASSIFICATION (which
+    discovered hosts are actually in scope) goes to Haiku 5.5 when creds exist — see
+    _classify_scope_llm for why the naive position-based split fails on real program pages. Falls
+    back to the deterministic split (offline-safe) if the model is unavailable or fails."""
     shape = detect_shape(text)
-    in_assets, out_assets = extract_assets(text)
-    in_clean, allow, deny, targets = canonicalize(in_assets, out_assets)
+    candidates = extract_raw(text)
+    in_assets, out_assets = extract_assets(text)   # deterministic fallback floor — always computed
+    ambiguous = []
+    classifier = "deterministic"
+    if enrich and shape == "program_page" and candidates:
+        verdicts, ok = _classify_scope_llm(text, candidates)
+        if ok:
+            classifier = os.environ.get("HUNT_MODEL_INTAKE", "claude-haiku-5-5")
+            in_assets, out_assets, ambiguous = [], [], []
+            for a, kind in candidates:
+                t = classify(a, kind)
+                v = verdicts.get(a)
+                if not v:   # model skipped it — safe default is visible uncertainty, not silent "in"
+                    ambiguous.append({"asset": a, "type": t, "reason": "unclassified by model"})
+                elif v["verdict"] == "in":
+                    in_assets.append({"asset": a, "type": t, "note": v.get("note", "")})
+                elif v["verdict"] == "out":
+                    out_assets.append({"asset": a, "type": t, "reason": v.get("reason", "")})
+                else:
+                    ambiguous.append({"asset": a, "type": t, "reason": v.get("reason", "")})
+    in_clean, allow, deny, targets = canonicalize(in_assets, out_assets, ambiguous)
     scope = {
         "shape": shape,
         "program": "", "platform": "", "summary": "",
-        "in_scope": in_clean, "out_of_scope": out_assets,
+        "in_scope": in_clean, "out_of_scope": out_assets, "ambiguous": ambiguous,
         "allow": allow, "deny": deny, "targets": targets,
         "rewards": "", "severity_rewards": [], "rules": [], "focus": [],
         "ua_required": "", "rate_limit": "", "poc_required": False, "ai_policy": "",
-        "source_hash": source_hash(text), "enriched": False, "model": "deterministic",
+        "source_hash": source_hash(text), "enriched": False,
+        "model": "deterministic", "asset_classifier": classifier,
     }
     if enrich and targets:
         scope, did = _enrich(text, scope)
         scope["enriched"] = did
+    open_wild = _open_scope_wildcards(
+        [text, scope.get("summary"), " ".join(scope.get("focus") or []), " ".join(scope.get("rules") or [])],
+        in_clean)
+    if open_wild:
+        scope["allow"] = sorted(set(scope["allow"]) | set(open_wild))
     return scope
 
 

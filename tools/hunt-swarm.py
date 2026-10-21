@@ -32,6 +32,10 @@ def safe(h):
     # input so distinct long inputs stay unique. Keep in sync with huntr-server.py:safe.
     # (Charset now matches the other tools so the same target maps to one workspace dir.)
     if len(s) > 80:
+        # Already an existing per-host workspace slug? Reuse it as-is instead of re-hashing — see
+        # [[otto-resume-rehash-bug]]. (main() always runs with base=Path("."), hence the literal here.)
+        if Path(f".hunt-{s}").exists():
+            return s
         import hashlib
         s = s[:72] + "_" + hashlib.sha1((h or "").encode("utf-8", "ignore")).hexdigest()[:8]
     return s

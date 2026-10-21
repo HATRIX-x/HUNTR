@@ -30,6 +30,13 @@ def safe(t):
     # mkdir() raise "File name too long" and crash. Cap length and append a short hash of the full
     # input so distinct long inputs stay unique. Keep in sync with huntr-server.py:safe.
     if len(s) > 80:
+        # If this already IS an existing on-disk workspace slug, reuse it as-is instead of
+        # re-hashing — re-running safe() on an already-hashed slug (the dashboard hands this
+        # back as `target` for resume/poll) would hash the SLUG TEXT, not the original target,
+        # landing on a different hash and silently pointing at a brand-new empty workspace.
+        # See [[otto-resume-rehash-bug]] memory — same bug, fixed in huntr-server.py first.
+        if (TARGETS / s).exists():
+            return s
         import hashlib
         s = s[:72] + "_" + hashlib.sha1((t or "").encode("utf-8", "ignore")).hexdigest()[:8]
     return s

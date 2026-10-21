@@ -26,15 +26,22 @@ import time
 
 API_VERSION = "2023-06-01"
 OAUTH_BETA = "oauth-2025-04-20"
-CREDS_PATH = os.path.expanduser("~/.claude/.credentials.json")
+# The engine can hunt on a SEPARATE Claude account from the one Claude Code is logged into, so their
+# subscription quotas do not collide: set HUNT_CLAUDE_CREDS to a second account's credentials.json
+# (preferred — carries expiry), or HUNT_CLAUDE_OAUTH_TOKEN to a raw accessToken (quick, no refresh).
+CREDS_PATH = os.path.expanduser(os.environ.get("HUNT_CLAUDE_CREDS") or "~/.claude/.credentials.json")
 # skew: treat a token expiring within 2 min as already expired
 EXPIRY_SKEW_MS = 120_000
 
 
 def _read_oauth():
-    """Return (access_token, expires_at_ms) from the Claude Code login, or (None, 0)."""
+    """Return (access_token, expires_at_ms). A raw token override wins, then HUNT_CLAUDE_CREDS / default."""
+    raw = (os.environ.get("HUNT_CLAUDE_OAUTH_TOKEN") or "").strip()
+    if raw:
+        return raw, int(time.time() * 1000) + 6 * 3600 * 1000   # assume ~6h validity for a pasted token
+    path = os.path.expanduser(os.environ.get("HUNT_CLAUDE_CREDS") or "~/.claude/.credentials.json")
     try:
-        with open(CREDS_PATH) as f:
+        with open(path) as f:
             d = json.load(f)
     except (OSError, ValueError):
         return None, 0

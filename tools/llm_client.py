@@ -40,9 +40,20 @@ _LLM_SLOT_DIR = Path(os.environ.get("HUNTR_LLM_SLOT_DIR", str(Path.home() / ".hu
 
 def _llm_slots():
     try:
-        return int(os.environ.get("HUNTR_LLM_SLOTS", "0") or 0)
+        n = int(os.environ.get("HUNTR_LLM_SLOTS", "0") or 0)
     except Exception:
-        return 0
+        n = 0
+    if n <= 0 and _cli_mode():
+        # CLI mode shares ONE subscription session limit across hunt-run.py, its background
+        # scanner threads, and every agent-*.py subprocess it shells out to — unlike the raw API
+        # path there's no per-call 429/backoff, just a hard session-limit wall, so an unbounded
+        # pile-up of concurrent `claude -p` calls silently burns the whole session's budget on
+        # calls that queue or get rejected. Default to a small cap unless the operator overrides.
+        try:
+            n = int(os.environ.get("HUNTR_CLI_SLOTS", "2") or 2)
+        except Exception:
+            n = 2
+    return n
 
 
 def _llm_slot_acquire():
@@ -260,12 +271,19 @@ def _claude_cli_call(system, user, model, timeout=180):
     cmd = [cli, "-p", user or "", "--model", model or "claude-sonnet-4-6"]
     if system:
         cmd += ["--append-system-prompt", system]
+    # cross-process throttle: every call site (call_llm, _anthropic_raw_request, summarize_if_large)
+    # funnels through here, so this is the one choke point that needs to bound how many `claude -p`
+    # subprocesses — across hunt-run.py, its background threads, and every agent-*.py it spawns — hit
+    # the shared subscription at once (see _llm_slots()).
+    _slot = _llm_slot_acquire()
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
         return None, "claude-cli timeout"
     except Exception as e:
         return None, "claude-cli error: " + str(e)[:200]
+    finally:
+        _llm_slot_release(_slot)
     out = (r.stdout or "").strip()
     # The CLI prints usage-limit / auth notices to STDOUT as plain prose (not an error exit), e.g.
     # "You've hit your session limit · resets 5:10pm". Detect these so callers get a real error instead
@@ -303,6 +321,12 @@ def _claude_oauth_headers():
     return {}, None
 
 
+# Per-call token usage from the most recent call_llm(), for callers that want to track spend
+# (e.g. hunt-run.py's cost meter). {} means unknown — the subscription/CLI path has no per-call
+# billing at all, so there is nothing to report; this is the correct signal, not a missing feature.
+_LAST_USAGE = {}
+
+
 def call_llm(system, user, model=None, max_tokens=None, temperature=None,
               api_key=None, provider=None, base_url=None, timeout=120,
               top_p=None, enable_thinking=None):
@@ -310,12 +334,14 @@ def call_llm(system, user, model=None, max_tokens=None, temperature=None,
     Call the configured LLM provider (default: NVIDIA Nemotron 3 Ultra).
     Returns (text, error) where error is None on success.
     """
+    global _LAST_USAGE
     # CLI backend (HUNT_LLM_VIA_CLI=1): run Anthropic completions through the `claude` CLI, which is the
     # sanctioned subscription path (the raw OAuth API key is 429-blocked). Used for a model that is Claude.
     if _cli_mode():
         _m = (model or "").strip()
         if not _m:
             _m = os.environ.get("HUNT_MODEL_MID") or "claude-sonnet-4-6"
+        _LAST_USAGE = {}  # subscription path: no per-call token/cost accounting exists
         if _m.startswith("claude") or (provider or "").lower().strip() == "anthropic":
             return _claude_cli_call(system, user, _m if _m.startswith("claude") else "claude-sonnet-4-6",
                                     timeout=timeout)
@@ -396,6 +422,7 @@ def call_llm(system, user, model=None, max_tokens=None, temperature=None,
     opener = build_opener(*handlers)
 
     _slot = _llm_slot_acquire()  # cross-process LLM pool: bounds concurrent calls across all workers
+    _LAST_USAGE = {}  # cleared before the attempt; only a successful response below sets it
     try:
         import time as _t
         last = None
@@ -407,6 +434,8 @@ def call_llm(system, user, model=None, max_tokens=None, temperature=None,
             try:
                 with opener.open(req, timeout=timeout) as r:
                     data = json.loads(r.read().decode("utf-8"))
+                    _LAST_USAGE = dict(data.get("usage") or {})
+                    _LAST_USAGE["model"] = config.get("model")
                     return config["parse_response"](data), None
             except HTTPError as e:
                 try: raw = e.read().decode("utf-8")
@@ -648,7 +677,18 @@ def call_llm_with_tools(system, initial_user, tools, tool_executor,
             tid  = block["id"]
             name = block["name"]
             inp  = block.get("input", {})
-            result = tool_executor(name, inp)
+            try:
+                result = tool_executor(name, inp)
+            except Exception as e:
+                # THIS is the actual difference between "a Claude loop" and a script that calls an
+                # LLM: real Claude Code always catches a tool-execution exception and feeds it back
+                # as the tool_result, so the model sees "that failed, try differently" and keeps
+                # reasoning. PREVIOUSLY this propagated straight out of call_llm_with_tools — any
+                # bug in ONE tool branch (e.g. record_finding, http_request — not every branch in
+                # hunt-run.py's executor wraps itself) silently killed the ENTIRE agent loop for the
+                # rest of the hunt, with only a generic "tool-use agent error" at the outer catch and
+                # zero chance for the model to recover or route around it.
+                result = json.dumps({"error": f"{name} crashed: {e}"[:400]})
             result_str = str(result)
             # improvement #6: summarize large outputs before they hit Sonnet's context
             if len(result_str) > 3500 and name != "done":

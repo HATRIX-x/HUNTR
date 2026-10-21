@@ -31,7 +31,13 @@ if not URL or "?" not in URL or "=" not in URL.split("?", 1)[1]:
     out({"findings": [], "tested": False, "error": "no query parameters to test"})
 
 def fetch(u):
-    req = urllib.request.Request(u, headers={"User-Agent": "Mozilla/5.0 HUNTR"})
+    import os as _os
+    _ah={}
+    try:
+        _ah=json.loads(_os.environ.get("HUNT_AUTH_HEADERS","") or "{}") or {}
+    except Exception: _ah={}
+    _hh={"User-Agent": "Mozilla/5.0 HUNTR"}; _hh.update(_ah)
+    req = urllib.request.Request(u, headers=_hh)
     if TOKEN:
         req.add_header("Authorization", TOKEN if TOKEN.lower().startswith("bearer") else "Bearer " + TOKEN)
     try:

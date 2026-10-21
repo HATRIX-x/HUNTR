@@ -57,6 +57,11 @@ def safe(t):
     # mkdir() raise "File name too long" and crash. Cap length and append a short hash of the full
     # input so distinct long inputs stay unique. Keep in sync with huntr-server.py:safe.
     if len(s) > 80:
+        # Already an existing snapshot slug? Reuse it as-is instead of re-hashing — re-hashing the
+        # SLUG TEXT (not the original target) lands on a different hash and silently starts a brand
+        # new, empty snapshot/baseline instead of the real one. See [[otto-resume-rehash-bug]].
+        if (STORE / (s + ".json")).exists():
+            return s
         import hashlib
         s = s[:72] + "_" + hashlib.sha1((t or "").encode("utf-8", "ignore")).hexdigest()[:8]
     return s

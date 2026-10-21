@@ -31,7 +31,15 @@ def arg(n, d=None):
 def flag(n): return n in sys.argv
 
 # ── fingerprint database ──────────────────────────────────────────────
-# (service, cname_pattern, http_body_pattern, severity, claim_url_hint)
+# (service, cname_pattern, http_body_pattern, severity, claim_url_hint, strict)
+# `strict` (defaults True when omitted below — see FINGERPRINTS normalization): is http_body_pattern
+# distinctive enough, on its own, to mean "this specific service's unclaimed-resource page", or is it
+# generic enough that an unrelated, perfectly legitimate, actively-claimed site could coincidentally
+# show the same text for a totally different reason? A handful of entries use either a bare HTTP
+# status-code string or a word-for-word copy of the single most common default web-server error page
+# in existence (e.g. Apache httpd's stock "The requested URL was not found on this server.") — those
+# are marked strict=False below, which (see check_host) requires the DNS-level NXDOMAIN signal too
+# before confirming, instead of trusting the body text alone.
 FINGERPRINTS = [
     ("github_pages",   r"github\.io$",           r"There isn't a GitHub Pages site here",           "high", "https://pages.github.com"),
     ("netlify",        r"netlify\.(?:app|com)$",  r"Not Found - Request ID|page not found",          "high", "https://netlify.com"),
@@ -40,8 +48,9 @@ FINGERPRINTS = [
     ("aws_s3",         r"s3\.amazonaws\.com$|s3-website",r"NoSuchBucket|The specified bucket does not exist", "critical", "https://aws.amazon.com/s3"),
     ("aws_elastic",    r"elasticbeanstalk\.com$", r"No Application Found",                           "high", "https://aws.amazon.com/elasticbeanstalk"),
     ("azure_websites", r"azurewebsites\.net$",    r"404 Web Site not found|could not be found in the application", "high", "https://azure.microsoft.com"),
-    ("azure_cloudapp", r"cloudapp\.azure\.com$",  r"404|does not exist",                             "medium", "https://azure.microsoft.com"),
-    ("azure_trafficmgr",r"trafficmanager\.net$",  r"404|does not exist",                             "medium", "https://azure.microsoft.com"),
+    # bare "404"/"does not exist" — generic, no service-specific wording at all
+    ("azure_cloudapp", r"cloudapp\.azure\.com$",  r"404|does not exist",                             "medium", "https://azure.microsoft.com", False),
+    ("azure_trafficmgr",r"trafficmanager\.net$",  r"404|does not exist",                             "medium", "https://azure.microsoft.com", False),
     ("fastly",         r"fastly\.net$",            r"Fastly error: unknown domain",                   "high", "https://fastly.com"),
     ("cloudfront",     r"cloudfront\.net$",        r"The request could not be satisfied|ERROR: The request could not",  "medium", "https://aws.amazon.com/cloudfront"),
     ("zendesk",        r"zendesk\.com$",            r"Help Center Closed|this help center is no longer available", "high", "https://zendesk.com"),
@@ -57,10 +66,13 @@ FINGERPRINTS = [
     ("wordpress",      r"wordpress\.com$",          r"Do you want to register",                       "medium", "https://wordpress.com"),
     ("helpscout",      r"helpscoutdocs\.com$",      r"No settings were found for this company",      "high", "https://helpscout.com"),
     ("intercom",       r"intercom\.io$",             r"Uh oh. That page doesn't exist",               "high", "https://intercom.com"),
-    ("cargo",          r"cargocollective\.com$",    r"404 Not Found",                                 "medium", "https://cargocollective.com"),
+    # stock Apache httpd default 404 TITLE text — not Cargo-specific, any default Apache site shows this
+    ("cargo",          r"cargocollective\.com$",    r"404 Not Found",                                 "medium", "https://cargocollective.com", False),
     ("strikingly",     r"strikingly\.com$",         r"page not found",                                "medium", "https://strikingly.com"),
     ("webflow",        r"webflow\.io$",              r"The page you are looking for doesn't exist",   "high", "https://webflow.com"),
-    ("unbounce",       r"unbounce\.com$",           r"The requested URL was not found on this server","high", "https://unbounce.com"),
+    # stock Apache httpd default 404 BODY text ("The requested URL ... was not found on this
+    # server.") — the single most common default error page on the internet, not Unbounce-specific
+    ("unbounce",       r"unbounce\.com$",           r"The requested URL was not found on this server","high", "https://unbounce.com", False),
     ("uservoice",      r"uservoice\.com$",          r"This UserVoice subdomain is currently available", "high", "https://uservoice.com"),
     ("canny",          r"canny\.io$",               r"Company Not Found",                              "high", "https://canny.io"),
     ("kajabi",         r"kajabi\.com$",             r"This page is not available",                    "medium", "https://kajabi.com"),
@@ -70,9 +82,11 @@ FINGERPRINTS = [
     ("bitbucket",      r"bitbucket\.io$",           r"Repository not found",                          "medium", "https://bitbucket.org"),
     ("wufoo",          r"wufoo\.com$",              r"Profile Not Found",                              "medium", "https://wufoo.com"),
     ("uptimerobot",    r"uptimerobot\.com$",        r"page not found on Uptimerobot",                 "medium", "https://uptimerobot.com"),
-    ("jetbrains_space",r"jetbrains\.space$",        r"404",                                           "medium", "https://jetbrains.com/space"),
+    # bare "404" — generic, no service-specific wording at all
+    ("jetbrains_space",r"jetbrains\.space$",        r"404",                                           "medium", "https://jetbrains.com/space", False),
     ("desk",           r"desk\.com$",               r"Sorry, we couldn't find that page",             "medium", "https://desk.com"),
 ]
+FINGERPRINTS = [fp if len(fp) == 6 else fp + (True,) for fp in FINGERPRINTS]
 
 def resolve_cname_chain(host, max_depth=10):
     """Return list of CNAMEs in the chain. Last entry is the final target."""
@@ -133,9 +147,9 @@ def check_host(host):
     matched_service = None
     matched_cname = None
     for cname in all_targets:
-        for service, cname_pat, body_pat, sev, claim_url in FINGERPRINTS:
+        for service, cname_pat, body_pat, sev, claim_url, strict in FINGERPRINTS:
             if re.search(cname_pat, cname, re.I):
-                matched_service = (service, cname_pat, body_pat, sev, claim_url)
+                matched_service = (service, cname_pat, body_pat, sev, claim_url, strict)
                 matched_cname = cname
                 break
         if matched_service: break
@@ -143,11 +157,17 @@ def check_host(host):
     if not matched_service:
         return None
 
-    service, cname_pat, body_pat, sev, claim_url = matched_service
+    service, cname_pat, body_pat, sev, claim_url, strict = matched_service
 
     # fetch HTTP to confirm unclaimed signal
     body = fetch_http_body(host)
     body_match = bool(body_pat and re.search(body_pat, body, re.I))
+    # a non-strict pattern (bare "404", or a stock Apache default error page — see FINGERPRINTS)
+    # isn't distinctive enough to confirm on its own; it needs the independent DNS-level NXDOMAIN
+    # signal too, since a perfectly legitimate, actively-claimed site can trivially show the exact
+    # same generic text for an unrelated reason (a custom 404 page, a blocked WAF rule, ...).
+    if body_match and not strict and resolves:
+        body_match = False
 
     if not resolves:
         # NXDOMAIN + CNAME points to service = dangling

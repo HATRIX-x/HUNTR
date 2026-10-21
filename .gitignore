@@ -48,3 +48,11 @@ Thumbs.db
 # Temporary outputs
 /tmp/
 *.tmp
+docs/
+runtime
+installed-tools
+
+# Google OAuth client secret (do not commit)
+client_secret_*.json
+token*.json
+.gsc_token*

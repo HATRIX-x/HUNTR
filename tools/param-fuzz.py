@@ -19,7 +19,7 @@ Usage:
                 [--json] [--out results.json]
 Exit: 0 clean · 1 findings.
 """
-import sys, re, json, time, ssl, random, string
+import os, sys, re, json, time, ssl, random, string
 from pathlib import Path
 from urllib.request import urlopen, Request
 from urllib.error import HTTPError
@@ -100,6 +100,15 @@ def send_request(url, method, headers, params=None, body=None, timeout=12):
                 data = urllib.parse.urlencode(params).encode()
         elif body:
             data = body.encode() if isinstance(body, str) else body
+    # WAF survival: route through the live Chrome (CDP) when available; fall back to urllib on any miss.
+    if os.environ.get("HUNT_CDP_PORT"):
+        try:
+            import huntrfetch
+            _st, _b = huntrfetch.http(method, target, headers, data, timeout)
+            if _st != 0:
+                return _st, _b, len(_b)
+        except Exception:
+            pass
     req = Request(target, data=data, headers=headers, method=method)
     try:
         with opener.open(req, timeout=timeout) as r:
@@ -130,6 +139,9 @@ def build_headers(token=None, extra_headers=None, method="GET"):
         for eh in extra_headers:
             if ":" in eh:
                 k,v = eh.split(":",1); h[k.strip()] = v.strip()
+    try:  # program auth header(s) (e.g. X-FilesAPI-Auth) so authed params are actually reached
+        for _k,_v in (json.loads(os.environ.get("HUNT_AUTH_HEADERS","") or "{}") or {}).items(): h.setdefault(_k,_v)
+    except Exception: pass
     return h
 
 def binary_search_params(url, method, headers, batch, base_status, base_size, body, sentinel, timeout=12):
@@ -253,8 +265,11 @@ def main():
             "param": d["param"],
             "deviation": d["deviation"],
             "status": d["status"],
-            "severity": "medium",
-            "note": f"Hidden parameter '{d['param']}' causes response deviation — test for injection/behavior change",
+            # A discovered param that only changes the response is a LEAD, not a vuln — informational
+            # until a concrete impact (IDOR/injection/authz) is proven. The IDOR test below carries its
+            # own (higher) severity when it actually confirms cross-object access.
+            "severity": "info",
+            "note": f"Hidden parameter '{d['param']}' causes response deviation — LEAD: test for injection/authz/IDOR before rating",
             "url": url,
         })
     all_findings += idor_findings

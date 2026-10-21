@@ -64,13 +64,40 @@ def asset(name):
 PORT = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else 8899
 START_TS = time.time()  # process start, for /api/health uptime
 
+# In-process claim on a workspace currently being started — closes the race window between the
+# run.pid liveness check and the new hunt-run.py subprocess actually writing its own run.pid. A
+# rapid double-click/client-retry on /api/hunt/start for the SAME target can otherwise land both
+# requests inside that gap and fork two hunt-run.py processes racing on one run.json. ThreadingHTTPServer
+# runs each request on its own thread, so this must be a real lock, not a plain dict.
+_START_LOCK = threading.Lock()
+_STARTING = set()
+
 
 def safe(t):
     s = re.sub(r"[^a-z0-9._-]+", "_", (t or "default").lower()).strip("_") or "default"
     # Bound the workspace dir name: a pasted program page (thousands of chars) as the "target" made
     # mkdir() raise "File name too long" and crashed the start request (UI then shows "server not
     # running"). Cap length and append a short hash of the full input so distinct long inputs stay unique.
+    #
+    # NOTE: a short, non-truncated slug has no hash tag, so two DIFFERENT short target strings that
+    # happen to collapse to the identical slug (the regex folds any run of non [a-z0-9._-] chars to
+    # one "_" — e.g. "a.com;b.com" and "a.com,b.com" both become "a.com_b.com") would collide into
+    # the same workspace. Deliberately NOT hashing every slug to close this: ~/.huntr/targets/<slug>
+    # is a stable, human-addressable id that every existing hunt workspace (and bookmarked /api calls)
+    # depends on — always-hashing would orphan every workspace created before this comment. The
+    # collision needs two genuinely different target strings differing ONLY in characters the regex
+    # treats as equivalent, which is rare; tracked as a known, low-severity gap rather than "fixed"
+    # destructively. See [[raw-page-as-target-bug]] memory.
     if len(s) > 80:
+        # If this already IS an existing on-disk workspace slug, reuse it as-is instead of
+        # re-hashing. /api/targets hands the dir-encoded slug (d.name) back to the UI as
+        # "target" for resume/poll calls, and a long original scope produces a slug >80 chars
+        # itself — re-running safe() on that already-hashed slug would hash the SLUG TEXT
+        # (not the original scope), landing on a different hash and silently routing every
+        # poll/resume to a brand-new EMPTY workspace while the real findings sit untouched
+        # under the original hash. See [[otto-resume-rehash-bug]] memory.
+        if (TARGETS / s).exists():
+            return s
         import hashlib
         s = s[:72] + "_" + hashlib.sha1((t or "").encode("utf-8", "ignore")).hexdigest()[:8]
     return s
@@ -80,6 +107,28 @@ def hunt_dir(target):
     d = TARGETS / safe(target) / ".hunt"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def is_process(pid, marker):
+    """Is `pid` alive AND actually the process we think it is (its cmdline contains `marker`, e.g.
+    'hunt-run.py' or 'hunt-watch.py')? A PID is reused by the OS once the original process exits, so
+    a bare liveness check (os.kill(pid, 0)) on a stale PID file can match a completely unrelated
+    process. That's a false positive when just checking "is a hunt already running" (annoying — the
+    operator is told a hunt is live when none is) but a real safety problem anywhere this gates a
+    SIGNAL: /api/hunt/control blindly os.killpg()'d (SIGTERM for stop, SIGSTOP for pause) whatever
+    process group a stale run.pid pointed at, and /api/hunt/watch's stop blindly os.kill()'d whatever
+    watch.pid pointed at — either could hit an unrelated process (another of the operator's own
+    processes, a daemon, anything) if the PID had been recycled. Every signal site must go through
+    this first and refuse (not silently proceed) when it returns False."""
+    try:
+        os.kill(pid, 0)
+    except Exception:
+        return False
+    try:  # Linux: confirm the PID is actually OUR process, not a reused/unrelated one
+        cmd = Path(f"/proc/{pid}/cmdline").read_bytes()
+        return marker.encode() in cmd
+    except Exception:
+        return True   # no /proc (non-Linux) — fall back to liveness-only
 
 
 def run(tool, args, target=None, stdin=None, timeout=120):
@@ -111,6 +160,101 @@ curl -s '127.0.0.1:%d/api/next?target=acme'</code></pre>
 <p style=color:#948CB6;font-size:13px>Bound to 127.0.0.1 only. Nothing bypasses scope-guard.</p>
 """ % (PORT, PORT, PORT)
 
+_PROOF_404 = """<!doctype html><meta charset=utf8><title>Not found</title>
+<body style="background:#0A0A0D;color:#9CA2AD;font-family:system-ui;max-width:520px;margin:120px auto;text-align:center">
+<p>That finding doesn't exist, or the hunt has no evidence saved yet.</p></body>"""
+
+_SEV_LABEL = {"c": "Critical", "h": "High", "m": "Medium", "l": "Low", "i": "Info"}
+_SEV_COLOR = {"c": "#F43F5E", "h": "#FB923C", "m": "#FACC15", "l": "#38BDF8", "i": "#64748B"}
+
+
+def _html_escape(s):
+    return (str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def _proof_trust_badge(f):
+    # mirrors huntr-ui.html's trustTier() exactly, so a shared link reads the same confidence
+    # tier the dashboard itself would show — one trust vocabulary, not two.
+    proven = f.get("_det") is True or (f.get("proof") or {}).get("proven") is True
+    if proven:
+        return ("PROVEN", "#34D399", "Confirmed by a deterministic oracle — not an LLM judgment call.")
+    if f.get("adversarial_checked") and f.get("verdict") == "confirmed":
+        return ("RE-VERIFIED", "#A594F9", "Survived an independent second judge pass before being trusted.")
+    if f.get("adversarial_checked") and f.get("verdict") != "confirmed":
+        return ("DISPUTED", "#FB923C", "An adversarial re-check disagreed and this was downgraded.")
+    if f.get("verdict") == "confirmed":
+        return ("LLM-CONFIRMED", "#5B616C", "Confirmed by one judge pass — not independently re-checked.")
+    return (None, None, None)
+
+
+def _render_proof_page(f, target, fi, program):
+    sev = (f.get("sev") or "i").lower()
+    sev_label = _SEV_LABEL.get(sev, sev)
+    sev_color = _SEV_COLOR.get(sev, "#64748B")
+    badge, badge_color, badge_title = _proof_trust_badge(f)
+    title = _html_escape(f.get("title") or "(untitled finding)")
+    endpoint = _html_escape(f.get("endpoint") or "")
+    detail = _html_escape(f.get("detail") or "")
+    vuln_detail = _html_escape(f.get("vuln_detail") or "")
+    impact = _html_escape(f.get("impact_text") or f.get("reco") or "")
+    poc = _html_escape(f.get("poc") or "")
+    report = _html_escape(f.get("report") or "")
+    proof_evidence = _html_escape((f.get("proof") or {}).get("evidence") or "")
+    sections = []
+    if detail:
+        sections.append(("What it is", detail, False))
+    if vuln_detail:
+        sections.append(("Vulnerability", vuln_detail, False))
+    if impact:
+        sections.append(("Impact", impact, False))
+    if proof_evidence:
+        sections.append(("Deterministic proof", proof_evidence, True))
+    if poc:
+        sections.append(("Proof of concept" + (" — verified" if f.get("poc_verified") else ""), poc, True))
+    if report:
+        sections.append(("Full report", report, True))
+    body = "".join(
+        '<div class="sec"><div class="lbl">%s</div><%s>%s</%s></div>' % (
+            _html_escape(lbl), ("pre" if is_pre else "p"), txt, ("pre" if is_pre else "p"))
+        for lbl, txt, is_pre in sections)
+    badge_html = (
+        '<span class="badge" style="color:%s;border-color:%s44;background:%s1a" title="%s">%s</span>'
+        % (badge_color, badge_color, badge_color, _html_escape(badge_title), _html_escape(badge))
+    ) if badge else ""
+    wm_program = (" · " + _html_escape(program)) if program else ""
+    ep_html = ('<div class="ep">%s</div>' % endpoint) if endpoint else ""
+    tpl = """<!doctype html><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>{title}</title>
+<style>
+:root{{color-scheme:dark}}
+body{{background:#0A0A0D;color:#ECEDF0;font-family:-apple-system,system-ui,sans-serif;max-width:760px;margin:0 auto;padding:40px 20px 80px;line-height:1.6}}
+.wm{{font-size:11px;letter-spacing:2px;color:#5B616C;font-weight:700;margin-bottom:28px}}
+.wm b{{color:#8B7CF6}}
+.hd{{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:8px}}
+.sevpill{{font-size:10px;font-weight:700;letter-spacing:.5px;padding:4px 10px;border-radius:6px;flex-shrink:0;margin-top:3px}}
+.badge{{font-size:9.5px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;padding:4px 9px;border-radius:6px;border:1px solid;margin-top:3px}}
+h1{{font-size:20px;margin:0 0 6px;flex:1;min-width:240px}}
+.ep{{font-family:ui-monospace,monospace;font-size:12.5px;color:#9CA2AD;word-break:break-all;border-bottom:1px solid rgba(255,255,255,.08);padding-bottom:20px;margin-bottom:24px}}
+.sec{{padding:16px 0;border-top:1px solid rgba(255,255,255,.07)}}
+.sec:first-of-type{{border-top:none;padding-top:0}}
+.lbl{{font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:#5B616C;margin-bottom:8px}}
+.sec p{{margin:0;font-size:14px;color:#ECEDF0;white-space:pre-wrap}}
+.sec pre{{margin:0;font-family:ui-monospace,monospace;font-size:12.5px;color:#ECEDF0;white-space:pre-wrap;word-break:break-word;background:#111318;border:1px solid rgba(255,255,255,.07);border-radius:8px;padding:14px}}
+.foot{{margin-top:40px;padding-top:16px;border-top:1px solid rgba(255,255,255,.07);font-size:11.5px;color:#5B616C}}
+</style>
+<div class="wm">HUNTR<b>.</b> &nbsp;shared finding #{fi}{wm_program}</div>
+<div class="hd">
+  <span class="sevpill" style="color:{sev_color};background:{sev_color}1f">{sev_label}</span>
+  <h1>{title}</h1>
+  {badge_html}
+</div>
+{ep_html}
+{body}
+<div class="foot">Generated by HUNTR — a deterministic oracle or an independent adversarial re-check is the only way a finding here earned PROVEN or RE-VERIFIED; everything else is one judge's read and should be treated accordingly.</div>
+"""
+    return tpl.format(title=title, fi=fi, wm_program=wm_program, sev_color=sev_color,
+                      sev_label=_html_escape(sev_label), badge_html=badge_html, ep_html=ep_html, body=body)
+
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
@@ -134,6 +278,116 @@ class H(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         self._send(b"", 204)
+
+    def _start_hunt_locked(self, t, hd, b):
+        """Actually launch hunt-run.py for `t` in workspace `hd`. Called only after the
+        idempotency check + in-process start-lock in do_POST's /api/hunt/start handler have
+        already confirmed no other live hunt (or concurrent start) owns this workspace."""
+        # credentials go to a 0600 file (never argv — keeps tokens/cookies out of `ps`). Created
+        # with the restrictive mode from the moment the file exists (os.open + O_EXCL-free low-level
+        # open with mode=0o600), not write-then-chmod — the old write_text()-then-chmod() sequence
+        # had a real (if brief) window where the secrets file existed at the default (group/world
+        # readable) umask before the chmod narrowed it.
+        st = (b.get("session_token") or "").strip()
+        t2 = (b.get("token2") or "").strip()
+        ck = (b.get("cookie") or "").strip()      # cookie-session auth (web apps that don't use bearer)
+        # If the operator pasted a whole Netscape cookie file (curl/Firefox export), convert it to a
+        # real `name=value; name=value` header. Drop analytics/tracking noise so only session cookies
+        # go to the scanners. A bare header is passed through unchanged.
+        if ck and ("# Netscape HTTP Cookie File" in ck or "\t" in ck):
+            _NOISE = ("_ga", "_gid", "_gat", "_gcl_au", "_fbp", "_fbc", "_uetsid", "_uetvid",
+                      "utm_", "snitcher_device_id", "homesubdomain", "_hjsession", "ajs_",
+                      "amplitude", "mp_", "__hssc", "__hssrc", "__hstc", "hubspotutk")
+            pairs = []
+            for ln in ck.replace("\\t", "\t").splitlines():
+                ln = ln.strip()
+                if not ln or ln.startswith("#"):
+                    continue
+                parts = ln.split("\t")
+                if len(parts) >= 7:
+                    name, val = parts[5].strip(), parts[6].strip()
+                else:  # maybe already "name=value; ..." mixed in
+                    continue
+                if not name or name.lower().startswith(_NOISE) or any(name.lower().startswith(n) for n in _NOISE):
+                    continue
+                pairs.append(f"{name}={val}")
+            if pairs:
+                ck = "; ".join(pairs)
+        ua = (b.get("ua") or "").strip()          # program-required UA suffix (e.g. yeswehack)
+        cf = hd / "creds.json"
+        try:
+            ah = (b.get("auth_header") or "").strip()   # custom auth header(s), e.g. X-FilesAPI-Auth: <tok>
+            cdp = int(b.get("cdp_port") or 0)
+            creds = {k: v for k, v in (("session_token", st), ("token2", t2), ("cookie", ck), ("auth_header", ah), ("ua", ua)) if v}
+            if cdp:
+                creds["cdp_port"] = cdp
+            if creds:
+                fd = os.open(cf, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                try:
+                    os.write(fd, json.dumps(creds).encode())
+                finally:
+                    os.close(fd)
+            elif cf.exists():
+                cf.unlink()
+        except Exception:
+            pass
+        # out-of-scope list → scope.deny (deny wins in scope-guard, so the hunt sticks to scope)
+        deny = b.get("scope_deny") or []
+        if isinstance(deny, list) and deny:
+            try:
+                lines = {d.strip() for d in deny if isinstance(d, str) and d.strip()
+                         and "all " not in d.lower()}   # drop vague "all domains not listed" phrasing
+                if lines:
+                    (hd / "scope.deny").write_text("\n".join(sorted(lines)) + "\n")
+            except Exception:
+                pass
+        # persist the parsed program summary (rewards/rules/focus/caps/poc/ai/out-of-scope) so the
+        # sweep, triage, and report generation can honor it — and the operator can see it later.
+        pm = b.get("program_meta")
+        if isinstance(pm, dict) and pm:
+            try: (hd / "program.json").write_text(json.dumps(pm, indent=2))
+            except Exception: pass
+        # program's request-rate cap (e.g. 2 req/s) → rules.json, which scope-guard throttles to
+        try:
+            rps = b.get("rate_rps")
+            if rps and float(rps) > 0:
+                (hd / "rules.json").write_text(json.dumps({"rate_rps": float(rps)}))
+        except Exception:
+            pass
+        # persist launch opts so a rate-limit-paused hunt can be resumed with the same settings
+        try:
+            budget_sec = int(b.get("budget_sec") or 86400)
+        except (ValueError, TypeError):
+            budget_sec = 86400
+        try:
+            cost_cap_usd = float(b.get("cost_cap_usd") or 0)
+        except (ValueError, TypeError):
+            cost_cap_usd = 0
+        opts = {"program": b.get("program", ""), "mode": b.get("mode", "grey"),
+                "scope_types": b.get("scope_types") or ["web", "api"],
+                "stealth": bool(b.get("stealth")), "single_host": bool(b.get("single_host")),
+                "llm_light": bool(b.get("llm_light")), "budget_sec": budget_sec,
+                "cost_cap_usd": cost_cap_usd}
+        try: (hd / "launch.json").write_text(json.dumps(opts))
+        except Exception: pass
+        args = [sys.executable, str(TOOLS / "hunt-run.py"), "--target", t,
+                "--program", opts["program"], "--mode", opts["mode"],
+                "--scope-types", ",".join(opts["scope_types"]),
+                "--budget-sec", str(opts["budget_sec"])]
+        if opts["cost_cap_usd"] > 0:
+            args += ["--cost-cap-usd", str(opts["cost_cap_usd"])]
+        if opts["stealth"]:
+            args.append("--stealth")
+        env = dict(os.environ); env["HUNT_DIR"] = str(hd)
+        if opts["stealth"]:      env["HUNT_STEALTH"] = "1"   # throttle loud scanners (WAF-safe)
+        if opts["single_host"]:  env["HUNT_SINGLE"] = "1"    # strict exact-host scope (no subdomain creep)
+        if opts["llm_light"]:    env["HUNT_LLM"] = "haiku"   # Haiku-only — minimise rate limits (no paid API key)
+        try:
+            lf = open(hd / "run.log", "a")
+            subprocess.Popen(args, stdout=lf, stderr=lf, env=env, start_new_session=True)
+            return self._send({"ok": True, "target": t})
+        except Exception as e:
+            return self._send({"ok": False, "error": str(e)[:200]}, 500)
 
     MAX_BODY = 1024 * 1024  # 1MB limit
 
@@ -183,6 +437,16 @@ class H(BaseHTTPRequestHandler):
             return self._send({"ok": True, "port": PORT,
                                "uptime_sec": round(time.time() - START_TS, 1),
                                "active_hunts": active})
+        if u.path == "/proof":  # GET ?target=&fi= — standalone, shareable proof page for ONE finding
+            fi_raw = q.get("fi", "")
+            hd = hunt_dir(q.get("target", "")); rf = hd / "run.json"
+            try:
+                fi = int(fi_raw)
+                d = json.loads(rf.read_text())
+                f = d["findings"][fi]
+            except Exception:
+                return self._send(_PROOF_404, 404, "text/html")
+            return self._send(_render_proof_page(f, q.get("target", ""), fi, d.get("program", "")), 200, "text/html")
         if u.path == "/":
             ui = asset("huntr-ui.html")
             if ui:
@@ -288,10 +552,26 @@ class H(BaseHTTPRequestHandler):
                         "leads": (d.get("leads") or [])[-30:],
                         "logs": (d.get("logs") or [])[-200:],
                         "hosts": d.get("hosts", []),
+                        "chains": d.get("chains", []),  # small list — the graph view's chain nodes and the
+                                                         # combo banner both need this on every live poll
+                        # the endpoints LIST is capped to 200 for payload size, but that cap must never
+                        # leak into a headline STATISTIC — the UI's attack-surface summary card used to
+                        # read len(this list) for "Endpoints" (and derive "Hosts" from it too), so any
+                        # hunt with >200 endpoints always showed exactly "200", looking hardcoded. stats
+                        # carries the real, uncapped counts hunt-run.py already maintains.
                         "endpoints": [e if isinstance(e, str) else e.get("url", "") for e in (d.get("endpoints") or [])][:200],
+                        "stats": d.get("stats", {}),
                         "tested": {k: v for k, v in list((d.get("tested") or {}).items())[:100]},
                         "nuclei_count": d.get("nuclei_count"), "gau_count": d.get("gau_count"),
                         "js_secrets": len(d.get("js_secrets") or []),
+                        "supervisor_log": (d.get("supervisor_log") or [])[-40:],
+                        "cost_usd": d.get("cost_usd", 0), "llm_calls": d.get("llm_calls", 0),
+                        "llm_input_tokens": d.get("llm_input_tokens", 0),
+                        "llm_output_tokens": d.get("llm_output_tokens", 0),
+                        "target": d.get("target"), "program": d.get("program"),
+                        "session_alert": d.get("session_alert"),
+                        "circuit_open": d.get("circuit_open"),
+                        "llm_alert": d.get("llm_alert"),
                     }
                     # full=1 sends everything (used by report generator)
                     if q.get("full") == "1":
@@ -353,6 +633,27 @@ class H(BaseHTTPRequestHandler):
                 p = hd / fn
                 return [l.strip() for l in p.read_text().splitlines() if l.strip() and not l.startswith("#")] if p.exists() else []
             return self._send({"ok": True, "allow": _rdscope("scope.allow"), "deny": _rdscope("scope.deny")})
+        if u.path == "/api/hunt/brain":  # GET ?target= — cross-hunt learned technique priority (hunt-brain.py)
+            hd = hunt_dir(q.get("target", "")); rf = hd / "run.json"
+            if not rf.exists():
+                return self._send({"ok": False, "error": "no hunt"}, 404)
+            try:
+                d = json.loads(rf.read_text())
+            except Exception:
+                d = {}
+            # same lightweight stack heuristic hunt-run.py's _stack() uses — kept inline rather than
+            # importing the whole engine module just for this one GET.
+            p = ((d.get("program") or "") + " " + (d.get("target") or "")).lower()
+            stack = ["fintech"] if any(k in p for k in ("bank", "pay", "fin", "wallet", "card", "trading", "ledger", "crypto")) else []
+            stack += ["saas", "api"]
+            if any("graphql" in (e if isinstance(e, str) else e.get("url", "")).lower() for e in (d.get("endpoints") or [])):
+                stack.append("graphql")
+            stack = ",".join(dict.fromkeys(stack))
+            r = run("hunt-brain.py", ["--get-priorities", "--stack", stack])
+            try:
+                return self._send({"ok": True, "stack": stack, "priority": json.loads(r["out"])})
+            except Exception:
+                return self._send({"ok": False, "error": (r.get("err") or "brain lookup failed")[:200]}, 500)
         if u.path == "/api/hunt/probe":  # GET ?target=&url=&method= — live scope-guarded request/response (Burp-style)
             url = q.get("url", "")
             if not url:
@@ -551,7 +852,9 @@ class H(BaseHTTPRequestHandler):
             # the explicit "AI enrich" button omits it (enrich on).
             _enrich = b.get("enrich", True)
             _args = ["--json"] if _enrich else ["--json", "--no-enrich"]
-            r = run("scope_ingest.py", _args, stdin=text, timeout=(100 if _enrich else 15))
+            # enrich=True now runs up to 2 sequential Haiku 5.5 calls (scope classification, then
+            # metadata) — classification alone measured ~49s on a large real program page.
+            r = run("scope_ingest.py", _args, stdin=text, timeout=(170 if _enrich else 15))
             try:
                 parsed = json.loads((r.get("out") or "").strip().splitlines()[-1])
             except Exception:
@@ -562,13 +865,19 @@ class H(BaseHTTPRequestHandler):
                 # Whitespace-only used to collapse via safe() to the shared
                 # "default" workspace and silently start a real hunt there.
                 return self._send({"ok": False, "error": "no target"}, 400)
-            # If a whole program page was pasted, deterministically extract the real
-            # scope here instead of handing the page text to hunt-run.py --target
-            # (which whitespace-splits it into hundreds of junk "assets"). Runs
-            # without the LLM so Start is fast and reliable; the structured scope is
-            # persisted below as the single source of truth.
-            _scope_obj = None
-            if ("\n" in t) or (len(t) > 120) or (len(t.split()) > 6):
+            # If a whole program page was pasted, extract the real scope here instead of handing
+            # the page text to hunt-run.py --target (which whitespace-splits it into hundreds of
+            # junk "assets"). Prefer the client's already-Haiku-classified scope_obj (the live
+            # preview's auto-enrich already did the slow, accurate in/out/ambiguous classification —
+            # see scope_ingest._classify_scope_llm; re-deriving here with enrich=False would silently
+            # REGRESS to the naive position-based split and could send 0 targets to a hunt that the
+            # preview correctly found 6 for). Only falls back to the fast deterministic-only ingest
+            # when the client has no classified scope yet (so Start never blocks on an LLM call).
+            _scope_obj = b.get("scope_obj") if isinstance(b.get("scope_obj"), dict) else None
+            _page_shaped = ("\n" in t) or (len(t) > 120) or (len(t.split()) > 6)
+            if _scope_obj and _scope_obj.get("targets"):
+                t = ",".join(_scope_obj["targets"])
+            elif _page_shaped:
                 try:
                     import importlib.util as _ilu
                     _spec = _ilu.spec_from_file_location("scope_ingest", str(TOOLS / "scope_ingest.py"))
@@ -580,116 +889,59 @@ class H(BaseHTTPRequestHandler):
                         _scope_obj = None
                 except Exception:
                     _scope_obj = None
+                # CRITICAL: page-shaped input that STILL has no targets after extraction must NEVER
+                # fall through with the original prose as `t` — that is exactly the historical bug
+                # (whitespace-split into hundreds of junk "assets"; a real incident: a full HackerOne
+                # program page became the literal --target of a live hunt-run.py, producing bogus
+                # "hosts" from English words in the page text and false-positive findings). Refuse
+                # instead of guessing — the operator needs to wait for /api/scope/parse (Haiku
+                # classification) to finish and resend with scope_obj, or fix the scope text.
+                if not _scope_obj:
+                    return self._send({"ok": False, "error":
+                        "couldn't find any in-scope targets in the pasted text — wait for scope "
+                        "classification to finish (the live preview), or paste a clean host/wildcard "
+                        "list instead of the raw page"}, 400)
             hd = hunt_dir(t)
-            if _scope_obj:  # persist the canonical scope the hunt will read
-                try:
-                    hd.mkdir(parents=True, exist_ok=True)
-                    if _scope_obj.get("allow"):
-                        (hd / "scope.allow").write_text("\n".join(_scope_obj["allow"]) + "\n")
-                    if _scope_obj.get("deny"):
-                        (hd / "scope.deny").write_text("\n".join(_scope_obj["deny"]) + "\n")
-                    (hd / "program.json").write_text(json.dumps(_scope_obj, indent=2))
-                except Exception:
-                    pass
-            # Idempotent start: if a live hunt already owns this target, adopt it
-            # instead of forking a duplicate hunt-run.py that races on the same
-            # run.json/run.pid (double-click, client retry, or a second tab).
+            # Idempotent start: if a live hunt already owns this target, adopt it instead of
+            # forking a duplicate hunt-run.py that races on the same run.json/run.pid (double-click,
+            # client retry, a second tab). Checked BEFORE any file writes below — this used to run
+            # AFTER scope.allow/scope.deny/program.json were (re)written, so a duplicate Start click
+            # on an already-running hunt would silently rewrite its live scope files out from under
+            # it mid-run. A bare `os.kill(pid, 0)` also used to be the whole check: a PID is reused
+            # by the OS after the original process exits, so a stale run.pid from a crashed hunt
+            # could point at an unrelated live process and this would falsely report
+            # "already_running": true — the operator believes a hunt is running; nothing is.
             try:
                 _pid = int((hd / "run.pid").read_text().strip())
-                os.kill(_pid, 0)
+            except Exception:
+                _pid = None
+            if _pid is not None and is_process(_pid, "hunt-run.py"):
                 return self._send({"ok": True, "target": t, "already_running": True})
-            except Exception:
-                pass
-            # credentials go to a 0600 file (never argv — keeps tokens/cookies out of `ps`)
-            st = (b.get("session_token") or "").strip()
-            t2 = (b.get("token2") or "").strip()
-            ck = (b.get("cookie") or "").strip()      # cookie-session auth (web apps that don't use bearer)
-            # If the operator pasted a whole Netscape cookie file (curl/Firefox export), convert it to a
-            # real `name=value; name=value` header. Drop analytics/tracking noise so only session cookies
-            # go to the scanners. A bare header is passed through unchanged.
-            if ck and ("# Netscape HTTP Cookie File" in ck or "\t" in ck):
-                _NOISE = ("_ga", "_gid", "_gat", "_gcl_au", "_fbp", "_fbc", "_uetsid", "_uetvid",
-                          "utm_", "snitcher_device_id", "homesubdomain", "_hjsession", "ajs_",
-                          "amplitude", "mp_", "__hssc", "__hssrc", "__hstc", "hubspotutk")
-                pairs = []
-                for ln in ck.replace("\\t", "\t").splitlines():
-                    ln = ln.strip()
-                    if not ln or ln.startswith("#"):
-                        continue
-                    parts = ln.split("\t")
-                    if len(parts) >= 7:
-                        name, val = parts[5].strip(), parts[6].strip()
-                    else:  # maybe already "name=value; ..." mixed in
-                        continue
-                    if not name or name.lower().startswith(_NOISE) or any(name.lower().startswith(n) for n in _NOISE):
-                        continue
-                    pairs.append(f"{name}={val}")
-                if pairs:
-                    ck = "; ".join(pairs)
-            ua = (b.get("ua") or "").strip()          # program-required UA suffix (e.g. yeswehack)
-            cf = hd / "creds.json"
+            # Close the window between this check and the new process actually writing its own
+            # run.pid (the gap a rapid double-click/retry races in): hold a short-lived in-process
+            # claim on this workspace so a second concurrent /api/hunt/start for the SAME target
+            # waits on this one's outcome instead of forking a second hunt-run.py.
+            with _START_LOCK:
+                if str(hd) in _STARTING:
+                    return self._send({"ok": True, "target": t, "already_running": True})
+                _STARTING.add(str(hd))
             try:
-                ah = (b.get("auth_header") or "").strip()   # custom auth header(s), e.g. X-FilesAPI-Auth: <tok>
-                creds = {k: v for k, v in (("session_token", st), ("token2", t2), ("cookie", ck), ("auth_header", ah), ("ua", ua)) if v}
-                if creds:
-                    cf.write_text(json.dumps(creds))
-                    try: os.chmod(cf, 0o600)
-                    except Exception: pass
-                elif cf.exists():
-                    cf.unlink()
-            except Exception:
-                pass
-            # out-of-scope list → scope.deny (deny wins in scope-guard, so the hunt sticks to scope)
-            deny = b.get("scope_deny") or []
-            if isinstance(deny, list) and deny:
-                try:
-                    lines = {d.strip() for d in deny if isinstance(d, str) and d.strip()
-                             and "all " not in d.lower()}   # drop vague "all domains not listed" phrasing
-                    if lines:
-                        (hd / "scope.deny").write_text("\n".join(sorted(lines)) + "\n")
-                except Exception:
-                    pass
-            # persist the parsed program summary (rewards/rules/focus/caps/poc/ai/out-of-scope) so the
-            # sweep, triage, and report generation can honor it — and the operator can see it later.
-            pm = b.get("program_meta")
-            if isinstance(pm, dict) and pm:
-                try: (hd / "program.json").write_text(json.dumps(pm, indent=2))
-                except Exception: pass
-            # program's request-rate cap (e.g. 2 req/s) → rules.json, which scope-guard throttles to
-            try:
-                rps = b.get("rate_rps")
-                if rps and float(rps) > 0:
-                    (hd / "rules.json").write_text(json.dumps({"rate_rps": float(rps)}))
-            except Exception:
-                pass
-            # persist launch opts so a rate-limit-paused hunt can be resumed with the same settings
-            try:
-                budget_sec = int(b.get("budget_sec") or 86400)
-            except (ValueError, TypeError):
-                budget_sec = 86400
-            opts = {"program": b.get("program", ""), "mode": b.get("mode", "grey"),
-                    "scope_types": b.get("scope_types") or ["web", "api"],
-                    "stealth": bool(b.get("stealth")), "single_host": bool(b.get("single_host")),
-                    "llm_light": bool(b.get("llm_light")), "budget_sec": budget_sec}
-            try: (hd / "launch.json").write_text(json.dumps(opts))
-            except Exception: pass
-            args = [sys.executable, str(TOOLS / "hunt-run.py"), "--target", t,
-                    "--program", opts["program"], "--mode", opts["mode"],
-                    "--scope-types", ",".join(opts["scope_types"]),
-                    "--budget-sec", str(opts["budget_sec"])]
-            if opts["stealth"]:
-                args.append("--stealth")
-            env = dict(os.environ); env["HUNT_DIR"] = str(hd)
-            if opts["stealth"]:      env["HUNT_STEALTH"] = "1"   # throttle loud scanners (WAF-safe)
-            if opts["single_host"]:  env["HUNT_SINGLE"] = "1"    # strict exact-host scope (no subdomain creep)
-            if opts["llm_light"]:    env["HUNT_LLM"] = "haiku"   # Haiku-only — minimise rate limits (no paid API key)
-            try:
-                lf = open(hd / "run.log", "a")
-                subprocess.Popen(args, stdout=lf, stderr=lf, env=env, start_new_session=True)
-                return self._send({"ok": True, "target": t})
-            except Exception as e:
-                return self._send({"ok": False, "error": str(e)[:200]}, 500)
+                if _scope_obj:  # persist the canonical scope the hunt will read
+                    try:
+                        hd.mkdir(parents=True, exist_ok=True)
+                        if _scope_obj.get("allow"):
+                            (hd / "scope.allow").write_text("\n".join(_scope_obj["allow"]) + "\n")
+                        if _scope_obj.get("deny"):
+                            (hd / "scope.deny").write_text("\n".join(_scope_obj["deny"]) + "\n")
+                        (hd / "program.json").write_text(json.dumps(_scope_obj, indent=2))
+                    except Exception:
+                        pass
+                return self._start_hunt_locked(t, hd, b)
+            finally:
+                with _START_LOCK:
+                    _STARTING.discard(str(hd))
         if u.path == "/api/hunt/control":  # POST {target, action: stop|pause|resume}
+            import signal
             tgt = t; act = (b.get("action") or "").strip()
             hd = hunt_dir(tgt); pidf = hd / "run.pid"
             try:
@@ -704,15 +956,41 @@ class H(BaseHTTPRequestHandler):
             cur_status = ""
             try: cur_status = json.loads(rf.read_text()).get("status", "")
             except Exception: pass
+            # A "paused" hunt was SIGSTOP'd, not exited — if the process is still genuinely alive,
+            # wake THAT SAME process with SIGCONT instead of relaunching a second one, which would
+            # leave the first permanently stopped and orphaned forever (it would never receive the
+            # resume and never get cleaned up). Only fall through to a fresh relaunch below if the
+            # process has somehow also died while "paused" (e.g. crashed, or the box rebooted).
+            if act == "resume" and cur_status == "paused" and pid is not None and _alive(pid) and is_process(pid, "hunt-run.py"):
+                try:
+                    os.killpg(os.getpgid(pid), signal.SIGCONT)
+                except Exception as e:
+                    return self._send({"ok": False, "error": str(e)[:120]}, 500)
+                try:
+                    d = json.loads(rf.read_text())
+                    d["status"] = "running"; d.pop("paused_reason", None)
+                    d.setdefault("logs", []).append({"t": "ok", "v": "▷ hunt resumed by operator"})
+                    rf.write_text(json.dumps(d))
+                except Exception:
+                    pass
+                return self._send({"ok": True, "action": "resume", "resumed_in_place": True})
             if act == "resume" and (pid is None or not _alive(pid) or cur_status in ("paused", "done", "stopped", "error")):
                 try:
                     opts = json.loads((hd / "launch.json").read_text())
                 except Exception:
                     opts = {"mode": "grey", "scope_types": ["web", "api"], "budget_sec": 86400}
+                if b.get("cost_cap_usd") is not None:  # resuming from a cost-cap pause can raise the cap
+                    try:
+                        opts["cost_cap_usd"] = float(b.get("cost_cap_usd") or 0)
+                        (hd / "launch.json").write_text(json.dumps(opts))
+                    except (ValueError, TypeError):
+                        pass
                 args = [sys.executable, str(TOOLS / "hunt-run.py"), "--target", tgt, "--resume",
                         "--program", opts.get("program", ""), "--mode", opts.get("mode", "grey"),
                         "--scope-types", ",".join(opts.get("scope_types") or ["web", "api"]),
                         "--budget-sec", str(int(opts.get("budget_sec") or 86400))]
+                if float(opts.get("cost_cap_usd") or 0) > 0:
+                    args += ["--cost-cap-usd", str(float(opts["cost_cap_usd"]))]
                 if opts.get("stealth"): args.append("--stealth")
                 env = dict(os.environ); env["HUNT_DIR"] = str(hd)
                 if opts.get("stealth"):     env["HUNT_STEALTH"] = "1"
@@ -726,10 +1004,17 @@ class H(BaseHTTPRequestHandler):
                     return self._send({"ok": False, "error": str(e)[:200]}, 500)
             if pid is None:
                 return self._send({"ok": False, "error": "no running hunt"}, 404)
-            import signal
             sig = {"stop": signal.SIGTERM, "pause": signal.SIGSTOP, "resume": signal.SIGCONT}.get(act)
             if not sig:
                 return self._send({"ok": False, "error": "bad action"}, 400)
+            # A stale run.pid (left behind by a hunt that already crashed/finished) can be recycled
+            # by the OS for an unrelated process. Signaling blind — os.killpg() on whatever process
+            # group that PID now belongs to — would SIGSTOP/SIGTERM something that isn't this hunt at
+            # all. Refuse rather than risk it; see is_process().
+            if not is_process(pid, "hunt-run.py"):
+                return self._send({"ok": False, "error":
+                    "no running hunt (the recorded process is gone or no longer this hunt) — stale "
+                    "run.pid, nothing was signaled"}, 404)
             try:
                 os.killpg(os.getpgid(pid), sig)
             except Exception as e:
@@ -739,6 +1024,18 @@ class H(BaseHTTPRequestHandler):
                     rf = hd / "run.json"; d = json.loads(rf.read_text())
                     d["status"] = "stopped"; d["stage"] = "Stopped"
                     d.setdefault("logs", []).append({"t": "warn", "v": "■ hunt stopped by operator"})
+                    rf.write_text(json.dumps(d))
+                except Exception:
+                    pass
+            elif act == "pause":
+                # SIGSTOP above genuinely freezes the process (confirmed live: `ps` shows STAT=T
+                # immediately after) — but nothing ever told run.json, so the dashboard kept polling
+                # and showing "running" forever with no visible change, looking exactly like pause
+                # did nothing at all even though the process was truly suspended the whole time.
+                try:
+                    rf = hd / "run.json"; d = json.loads(rf.read_text())
+                    d["status"] = "paused"; d["paused_reason"] = "paused by operator"
+                    d.setdefault("logs", []).append({"t": "warn", "v": "⏸ hunt paused by operator"})
                     rf.write_text(json.dumps(d))
                 except Exception:
                     pass
@@ -782,6 +1079,9 @@ class H(BaseHTTPRequestHandler):
             ctx = {"target": t}
             try:
                 d = json.loads(rf.read_text())
+                tested = d.get("tested") or {}
+                eps = [e if isinstance(e, str) else e.get("url", "") for e in (d.get("endpoints") or [])]
+                untested = [e for e in eps if e not in tested][:40]
                 ctx = {
                     "target": d.get("target", t),
                     "status": d.get("status", ""),
@@ -790,6 +1090,10 @@ class H(BaseHTTPRequestHandler):
                                   "verdict": f.get("verdict"), "endpoint": f.get("endpoint"),
                                   "cls": f.get("cls"), "detail": (f.get("detail") or "")[:360]}
                                  for i, f in enumerate(d.get("findings", []))],
+                    # ground "what's untested / how thorough" answers in the real ledger, not a guess
+                    "coverage_pct": round(100.0 * len(tested) / len(eps), 1) if eps else None,
+                    "endpoints_total": len(eps), "endpoints_tested": len(tested),
+                    "untested_endpoints_sample": untested,
                 }
             except Exception:
                 pass
@@ -819,7 +1123,12 @@ class H(BaseHTTPRequestHandler):
             hd = hunt_dir(t); pidf = hd / "watch.pid"
             if action == "stop":
                 try:
-                    pid = int(pidf.read_text().strip()); os.kill(pid, 15); pidf.unlink(missing_ok=True)
+                    pid = int(pidf.read_text().strip())
+                    # same PID-reuse risk as /api/hunt/control's stop/pause — don't signal a recycled
+                    # PID that's no longer this hunt-watch.py. See is_process().
+                    if is_process(pid, "hunt-watch.py"):
+                        os.kill(pid, 15)
+                    pidf.unlink(missing_ok=True)
                 except Exception:
                     pass
                 wj = hd / "watch.json"
@@ -920,11 +1229,14 @@ class H(BaseHTTPRequestHandler):
             pidf = hd / "run.pid"
             try:
                 pid = int(pidf.read_text().strip())
-                try:
-                    os.kill(pid, 0)  # process alive?
+                # A bare os.kill(pid, 0) liveness check used to be the whole test — same PID-reuse
+                # risk as pause/stop/watch-stop (see is_process()): a stale run.pid left behind by a
+                # hunt that already finished/crashed can be recycled by the OS for a totally
+                # unrelated process, which would permanently block delete with "hunt is running —
+                # stop it first" even though no hunt is running at all. Verify it's actually still
+                # hunt-run.py before refusing.
+                if is_process(pid, "hunt-run.py"):
                     return self._send({"ok": False, "error": "hunt is running — stop it first"}, 409)
-                except OSError:
-                    pass  # process dead, safe to delete
             except Exception:
                 pass
             import shutil
@@ -1498,6 +1810,97 @@ class H(BaseHTTPRequestHandler):
             ids[name] = rec
             p.write_text(json.dumps(ids, indent=2))
             return self._send({"ok": True, "identities": list(ids.keys())})
+        if u.path == "/api/hunt/creds":
+            # Hot-swap creds on an ALREADY-RUNNING hunt. hunt-run.py's _creds() re-reads
+            # creds.json from disk on every single use, so a running process picks this up
+            # on its very next authenticated request — no restart needed. Previously creds
+            # could only be set once, at /api/hunt/start; there was no way to hand the engine
+            # a fresh token/cookie mid-hunt after the old one expired or was rotated.
+            hd = hunt_dir(t)
+            cf = hd / "creds.json"
+            try:
+                cur = json.loads(cf.read_text()) if cf.exists() else {}
+            except Exception:
+                cur = {}
+            for k in ("session_token", "token2", "cookie", "auth_header", "ua"):
+                v = (b.get(k) or "").strip()
+                if v:
+                    cur[k] = v
+            cdp_mid = int(b.get("cdp_port") or 0)
+            if cdp_mid:
+                cur["cdp_port"] = cdp_mid
+            try:
+                fd = os.open(cf, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                try:
+                    os.write(fd, json.dumps(cur).encode())
+                finally:
+                    os.close(fd)
+            except Exception:
+                pass
+            # mirror into identities.json["session"] too, so chat-driven agent tools (chain,
+            # authtest, exec-http, ...) that read identities.json rather than creds.json also
+            # see the swap instead of silently keeping the stale/dead credential.
+            try:
+                idp = hd / "identities.json"
+                ids = json.loads(idp.read_text()) if idp.exists() else {}
+                rec = ids.setdefault("session", {})
+                if cur.get("session_token"):
+                    rec["authorization"] = cur["session_token"]
+                if cur.get("cookie"):
+                    rec["cookie"] = cur["cookie"]
+                if cur.get("auth_header"):
+                    hdrs = rec.setdefault("headers", {})
+                    for ln in str(cur["auth_header"]).replace("\\n", "\n").splitlines():
+                        if ":" in ln:
+                            k2, v2 = ln.split(":", 1)
+                            if k2.strip():
+                                hdrs[k2.strip()] = v2.strip()
+                idp.write_text(json.dumps(ids, indent=2))
+            except Exception:
+                pass
+            # the operator just supplied fresh creds — clear any stale-session alert so the
+            # dashboard banner drops immediately instead of waiting for the next health probe.
+            try:
+                rf = hd / "run.json"
+                if rf.exists():
+                    rd = json.loads(rf.read_text())
+                    if rd.pop("session_alert", None) is not None:
+                        tmp = rf.with_suffix(".json.tmp")
+                        tmp.write_text(json.dumps(rd))
+                        tmp.replace(rf)
+            except Exception:
+                pass
+            return self._send({"ok": True})
+        if u.path == "/api/hunt/creds/test":
+            # Verify a candidate cred actually does something, BEFORE (or after) committing it —
+            # fires the same request anon vs with-creds through scope-guard and diffs them, plus
+            # decodes a JWT's exp claim if the token/cookie looks like one. See creds-test.py.
+            hd = hunt_dir(t)
+            probe = (b.get("url") or "").strip()
+            if not probe:
+                host = (t or "").split(",")[0].strip()
+                if "://" in host:
+                    host = urlparse(host).hostname or host
+                else:
+                    host = host.split("/")[0]
+                probe = f"https://{host}/" if host else ""
+            if not probe:
+                return self._send({"ok": False, "error": "no target/url to probe"})
+            args = ["--url", probe, "--json"]
+            if (b.get("session_token") or "").strip():
+                args += ["--authorization", b["session_token"].strip()]
+            if (b.get("cookie") or "").strip():
+                args += ["--cookie", b["cookie"].strip()]
+            for ln in str(b.get("auth_header") or "").replace("\\n", "\n").splitlines():
+                if ":" in ln.strip():
+                    args += ["--auth-header", ln.strip()]
+            if (b.get("ua") or "").strip():
+                args += ["--ua", b["ua"].strip()]
+            r = run("creds-test.py", args, t, timeout=40)
+            try:
+                return self._send(json.loads(r["out"]))
+            except Exception:
+                return self._send({"ok": False, "error": (r.get("err") or "")[:500] or "no output"})
         # ── Cloud config / sync ─────────────────────────────────────────
         if u.path == "/api/cloud/config":  # POST {agent_token?, cloud_url?}
             args = []
