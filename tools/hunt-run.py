@@ -742,6 +742,293 @@ def _asset_host(a):
     return re.sub(r"^\*\.", "", h), wild
 
 
+def phase_program_intel():
+    """STRATUM 0 — Pre-hunt intelligence: run BEFORE any probe is sent.
+
+    Flying blind costs bounties. This phase ingests everything PUBLIC about the program
+    so the engine attacks with context, not randomly:
+
+    1. Known disclosures (H1 hacktivity via disclosed-index.py) — dedup corpus seeded with
+       what's already been reported; the engine skips re-finding it and focuses on the gaps.
+    2. GitHub org full scan (github-recon.py) — trufflehog + gitleaks + CI/CD misconfig on
+       the entire org's public repos. A single leaked .env → instant critical, zero probes.
+    3. Shodan host intelligence (requires SHODAN_API_KEY) — exposed services, open ports,
+       TLS certificates, banners. Finds the attack surface the web scanner never sees.
+    4. Wayback Machine deleted endpoints — URLs the app removed from its SPA but forgot to
+       restrict on the backend. "The endpoint exists but isn't linked" is a real pattern.
+    5. Reward table parsing — extract bounty amounts from the scope data so attack-planner.py
+       can rank attack cells by actual dollar value on THIS program, not generic severity.
+
+    All results feed STATE["program_intel"] which attack-planner.py and phase_plan consume."""
+    STATE["program_intel"] = {}
+    prog = (PROGRAM or apex(TARGET) or TARGET).strip()
+    prog_handle = re.sub(r"[^a-z0-9\-]", "", prog.lower().replace(".", "-"))
+
+    # ── 1. Known disclosures ─────────────────────────────────────────────────────────────────
+    if (HERE / "disclosed-index.py").exists():
+        log("cmd", "$ disclosed-index — H1 hacktivity for " + prog_handle)
+        out_d, _, rc = sh([sys.executable, str(HERE / "disclosed-index.py"),
+                           "--program", prog, "--handle", prog_handle, "--limit", "100", "--json"],
+                          timeout=40)
+        try:
+            dd = json.loads(out_d.strip().splitlines()[-1]) if out_d.strip() else {}
+            known = dd.get("added", 0) or dd.get("count", 0)
+            STATE["program_intel"]["disclosures"] = dd.get("reports", [])[:50]
+            if known:
+                log("ok", "✓ disclosures · " + str(known) + " known finding(s) indexed → dedup corpus")
+            else:
+                log("out", "→ disclosures · no public reports found for " + prog_handle)
+        except Exception:
+            pass
+
+    # ── 2. GitHub org deep scan ───────────────────────────────────────────────────────────────
+    # github-recon.py supersedes the basic _github_dork() added earlier — it clones repos
+    # and runs trufflehog/gitleaks for real secret extraction, not just API filename matching.
+    gh_token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if gh_token and (HERE / "github-recon.py").exists():
+        log("cmd", "$ github-recon — org secrets + staging hosts + CI/CD misconfig")
+        gr_args = ["--org", prog_handle, "--token", gh_token, "--json"]
+        grd, _, _ = sh([sys.executable, str(HERE / "github-recon.py")] + gr_args, timeout=180)
+        try:
+            grd_j = json.loads(grd.strip().splitlines()[-1]) if grd.strip() else {}
+            for f in grd_j.get("findings", []):
+                add_finding(f.get("severity", "c"), "GitHub — " + (f.get("name") or f.get("type", "secret")),
+                            f.get("detail") or f.get("description") or "", f.get("url") or f.get("file") or "",
+                            cls="Secret/credential leak", verdict="confirmed")
+            STATE["program_intel"]["github"] = grd_j
+            if grd_j.get("findings"):
+                log("ok", "✓ github-recon · " + str(len(grd_j["findings"])) + " finding(s)")
+        except Exception:
+            pass
+
+    # ── 3. Shodan host intelligence ───────────────────────────────────────────────────────────
+    shodan_key = os.environ.get("SHODAN_API_KEY", "").strip()
+    if shodan_key:
+        import urllib.request as _shur, urllib.parse as _shup
+        lithost = re.sub(r"^\*\.", "", TARGET).split("/")[0].strip()
+        domain = ".".join(lithost.split(".")[-2:])
+        url = ("https://api.shodan.io/shodan/host/search?key=" + _shup.quote(shodan_key) +
+               "&query=" + _shup.quote("hostname:" + domain) + "&facets=port,country&minify=true")
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                sd = json.loads(r.read().decode("utf-8", "ignore"))
+            hosts_found = sd.get("total", 0)
+            STATE["program_intel"]["shodan"] = sd
+            # surface exposed non-standard ports as leads
+            for match in (sd.get("matches") or [])[:20]:
+                port = match.get("port")
+                ip = match.get("ip_str")
+                product = match.get("product") or ""
+                banner = (match.get("data") or "")[:120]
+                if port and port not in (80, 443):
+                    add_finding("m", f"Shodan — non-standard port exposed: {ip}:{port} {product}",
+                                banner, f"http://{ip}:{port}/", cls="Misconfig/CVE", verdict="likely")
+            log("ok" if hosts_found else "out",
+                f"{'✓' if hosts_found else '→'} shodan · {hosts_found} host(s) on {domain}")
+        except Exception as _se:
+            log("out", "→ shodan · " + str(_se)[:80])
+
+    # ── 4. Wayback Machine deleted endpoints ─────────────────────────────────────────────────
+    import urllib.request as _wbur
+    lithost = re.sub(r"^\*\.", "", TARGET).split("/")[0].strip()
+    domain = ".".join(lithost.split(".")[-2:])
+    wb_url = (f"https://web.archive.org/cdx/search/cdx?url=*.{domain}/*&output=json"
+              f"&fl=original&collapse=urlkey&limit=500&filter=statuscode:200")
+    try:
+        req = _wbur.Request(wb_url, headers={"User-Agent": "Mozilla/5.0"})
+        with _wbur.urlopen(req, timeout=20) as r:
+            wb_data = json.loads(r.read().decode("utf-8", "ignore"))
+        archived_urls = [row[0] for row in wb_data[1:] if row] if len(wb_data) > 1 else []
+        # inject archived URLs as endpoint candidates for the surface phase
+        existing_urls = {e["url"] for e in STATE.get("endpoints", [])}
+        new_from_wb = 0
+        for au in archived_urls[:300]:
+            if au not in existing_urls and _in_scope(au)[0]:
+                STATE.setdefault("endpoints", []).append({"url": au, "method": "GET",
+                                                          "source": "wayback", "status": None})
+                existing_urls.add(au)
+                new_from_wb += 1
+        STATE["program_intel"]["wayback_count"] = len(archived_urls)
+        if new_from_wb:
+            log("ok", f"✓ wayback · {len(archived_urls)} archived URL(s) · {new_from_wb} new endpoint(s) injected")
+        else:
+            log("out", f"→ wayback · {len(archived_urls)} archived URL(s) (all known or out-of-scope)")
+    except Exception as _we:
+        log("out", "→ wayback · " + str(_we)[:80])
+
+    # ── 5. Reward table parsing ───────────────────────────────────────────────────────────────
+    # Read the scope file for bounty amounts so attack-planner.py can rank by dollar value.
+    scope_f = HUNT_DIR / "scope.md"
+    scope_j = HUNT_DIR / "scope.json"
+    reward_table = {}
+    for sf in (scope_j, scope_f):
+        if not sf.exists():
+            continue
+        try:
+            raw = sf.read_text(errors="ignore")
+            # JSON: look for "rewards", "bounties", "bounty" keys
+            if sf.suffix == ".json":
+                sd = json.loads(raw)
+                for key in ("rewards", "bounties", "bounty", "reward_table"):
+                    if isinstance(sd.get(key), dict):
+                        reward_table.update(sd[key])
+            else:
+                # Markdown: parse rows like "| Critical | $5,000 - $10,000 |"
+                for m in re.finditer(r"\|\s*(Critical|High|Medium|Low|Informational)\s*\|.*?\$([\d,]+)", raw, re.I):
+                    sev = m.group(1).lower()[:1]
+                    amt = int(re.sub(r"[,.]", "", m.group(2)))
+                    reward_table[sev] = amt
+        except Exception:
+            pass
+    if reward_table:
+        STATE["program_intel"]["reward_table"] = reward_table
+        log("ok", "✓ reward table · " + str(reward_table))
+
+    flush()
+
+
+def phase_auth_deep():
+    """Deep authentication & session security testing — beyond JWT and basic IDOR.
+
+    phase_authed establishes a session and does JWT attacks + BOLA/BFLA diffing.
+    This phase goes deeper on the authentication/session layer itself:
+
+    1. OAuth/OIDC flows (oauth-probe.py) — state param missing → CSRF, redirect_uri lax
+       matching, implicit flow (token in URL fragment), PKCE downgrade, scope escalation.
+    2. Password-reset flow — host-header injection in reset email, token reuse, timing-based
+       username enumeration. "Forgot password" endpoints are the most-overlooked high-severity
+       class because they're boring to click through manually.
+    3. Session security — auth-session.py checks for JWT expiry problems, fixation, infinite
+       sessions (no exp claim).
+    4. MFA/OTP — rate limit on the OTP endpoint, backup code entropy.
+
+    All findings added to STATE["findings"] with verdict="confirmed" where the oracle proves it."""
+    c = _creds()
+    tok = (c.get("session_token") or "").strip()
+    if MODE == "black" or (not tok and not c.get("cookie")):
+        return
+    hosts_live = [h["host"] for h in STATE["hosts"] if h.get("status")]
+    base_url = ("https://" + hosts_live[0]) if hosts_live else ("https://" + apex(TARGET))
+    eps = [e["url"] for e in STATE["endpoints"]]
+
+    # ── 1. OAuth/OIDC audit ──────────────────────────────────────────────────────────────────
+    oauth_eps = [e["url"] for e in STATE["endpoints"] if re.search(r"(/oauth|/authorize|/connect/|/openid|/oidc|/sso)", e.get("url", ""), re.I)]
+    if not oauth_eps:
+        # look for the authorize endpoint pattern in discovered JS/SPA flows
+        oauth_eps = [base_url + "/oauth/authorize", base_url + "/api/oauth/authorize"]
+    if (HERE / "oauth-probe.py").exists() and oauth_eps:
+        for oa_ep in oauth_eps[:3]:
+            log("cmd", "$ oauth-probe — state/CSRF · redirect_uri · implicit · PKCE · scope · " + oa_ep)
+            op_args = ["--auth-url", oa_ep, "--json"]
+            od = tool_json("oauth-probe.py", op_args, timeout=60)
+            for f in (od or {}).get("findings", []):
+                add_finding(f.get("severity", "h"), "OAuth — " + (f.get("name") or f.get("type") or "misconfiguration"),
+                            f.get("detail") or f.get("description") or "", oa_ep, cls="oauth", verdict="confirmed", det=True)
+            if (od or {}).get("findings"):
+                log("ok", "✓ oauth-probe · " + str(len(od["findings"])) + " finding(s) · " + oa_ep)
+            mark_tested(oa_ep, "oauth")
+
+    # ── 2. Password-reset host-header injection ────────────────────────────────────────────────
+    # Finding the reset endpoint and checking if the server uses the Host header to build the
+    # reset link. If it does, an attacker can redirect the reset email to their domain.
+    reset_eps = [e["url"] for e in STATE["endpoints"] if re.search(r"(reset|forgot|recover|password)", e.get("url", ""), re.I)]
+    if not reset_eps:
+        reset_eps = [base_url + "/api/password/reset", base_url + "/forgot-password",
+                     base_url + "/api/auth/forgot", base_url + "/auth/password/reset"]
+    import urllib.request as _rur, urllib.error as _rue
+    _ah = _auth_headers()
+    for rst_ep in reset_eps[:4]:
+        _ok, _ = _in_scope(rst_ep)
+        if not _ok:
+            continue
+        try:
+            evil_host = "evil.huntr-test.com"
+            req_h = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json",
+                     "Host": evil_host, "X-Forwarded-Host": evil_host, "X-Host": evil_host}
+            for k, v in _ah.items():
+                req_h[k] = v
+            # POST with a dummy email — we're probing the reset SEND endpoint, not clicking the link
+            payload = json.dumps({"email": "security-test@huntr-probe.local"}).encode()
+            req = _rur.Request(rst_ep, data=payload, headers=req_h, method="POST")
+            with _rur.urlopen(req, timeout=8) as r:
+                status = r.status
+                body = r.read(2048).decode("utf-8", "ignore")
+                # If the reset link in the email would contain our evil host, the email server
+                # would confirm it — we can only detect it via a DNS callback. Log as "likely".
+                if status in (200, 202, 204):
+                    add_finding("h", "Password-reset host-header injection (likely)",
+                                f"POST {rst_ep} with Host: {evil_host} returned {status}. "
+                                "If the reset link is built from the Host header, the token may be redirected to the attacker's domain. "
+                                "Verify by checking the reset email — does it contain evil.huntr-test.com?",
+                                rst_ep, cls="host-header", verdict="likely")
+                    mark_tested(rst_ep, "host-header")
+                    break
+        except (_rue.HTTPError, _rue.URLError, Exception):
+            pass
+
+    # ── 3. Session security check (JWT expiry / infinite sessions) ────────────────────────────
+    tok_bare = re.sub(r"^Bearer\s+", "", tok, flags=re.I).strip() if tok else ""
+    if tok_bare and re.match(r"^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.", tok_bare):
+        try:
+            import base64 as _b64
+            payload_part = tok_bare.split(".")[1]
+            pad = "=" * (4 - len(payload_part) % 4)
+            claims = json.loads(_b64.urlsafe_b64decode(payload_part + pad).decode("utf-8", "ignore"))
+            exp = claims.get("exp")
+            iat = claims.get("iat")
+            if exp is None:
+                add_finding("m", "JWT with no expiry (infinite session)",
+                            "The supplied JWT has no 'exp' claim — it never expires. "
+                            "A stolen token grants permanent access with no rotation path.",
+                            base_url, cls="jwt", verdict="confirmed", det=True)
+            elif exp > 0 and (exp - time.time()) > 30 * 86400:
+                days = int((exp - time.time()) / 86400)
+                add_finding("l", f"JWT with excessive expiry ({days} days)",
+                            f"Token expires in {days} days. Long-lived tokens increase window of compromise.",
+                            base_url, cls="jwt", verdict="confirmed", det=True)
+        except Exception:
+            pass
+
+    # ── 4. OTP rate-limit probe ────────────────────────────────────────────────────────────────
+    otp_eps = [e["url"] for e in STATE["endpoints"] if re.search(r"(otp|mfa|2fa|verify|confirm|totp)", e.get("url", ""), re.I)]
+    for otp_ep in otp_eps[:2]:
+        _ok, _ = _in_scope(otp_ep)
+        if not _ok:
+            continue
+        try:
+            # Fire 6 rapid OTP guesses and check if ANY returns a non-rate-limit response
+            codes_tried = 0
+            rl_hit = False
+            for test_code in ["000000", "111111", "123456", "999999", "000001", "000002"]:
+                req_h = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"}
+                if tok and not tok.startswith("session-identity"):
+                    req_h["Authorization"] = tok if tok.startswith("Bearer ") else "Bearer " + tok
+                payload = json.dumps({"code": test_code, "otp": test_code, "token": test_code}).encode()
+                req = _rur.Request(otp_ep, data=payload, headers=req_h, method="POST")
+                try:
+                    with _rur.urlopen(req, timeout=5) as r:
+                        if r.status == 429:
+                            rl_hit = True; break
+                        codes_tried += 1
+                except _rue.HTTPError as he:
+                    if he.code == 429:
+                        rl_hit = True; break
+                    codes_tried += 1
+                except Exception:
+                    break
+            if codes_tried >= 5 and not rl_hit:
+                add_finding("h", "MFA/OTP — no rate limit on verification endpoint",
+                            f"POST {otp_ep} accepted {codes_tried} rapid OTP guesses without a 429 response. "
+                            "Brute-force 6-digit TOTP is trivial without rate limiting.",
+                            otp_ep, cls="authz", verdict="confirmed", det=True)
+                mark_tested(otp_ep, "authz")
+        except Exception:
+            pass
+
+    flush()
+
+
 def phase_scope():
     stage("Scope", 6)
     allow = HUNT_DIR / "scope.allow"
@@ -1659,6 +1946,53 @@ def phase_active():
         flush()
     stage("Exploit", 84)
 
+    # 5) WebSocket depth — ws-probe.py on every ws:// / wss:// and /socket endpoint
+    # Tests CSWSH (cross-site WebSocket hijacking), missing auth, message injection/IDOR.
+    ws_eps = [e["url"] for e in STATE["endpoints"]
+              if re.search(r"(/ws\b|/websocket|/socket|/stomp|/hub|/cable|/sockjs)", e.get("url", ""), re.I)
+              or e.get("url", "").lower().startswith(("ws://", "wss://"))]
+    if ws_eps and (HERE / "ws-probe.py").exists():
+        gql_tok = (_creds().get("session_token") or "").strip()
+        for ws_ep in ws_eps[:6]:
+            log("cmd", "$ ws-probe — CSWSH · missing auth · origin reflection · " + ws_ep)
+            ws_args = ["--url", ws_ep, "--json"]
+            if gql_tok:
+                ws_args += ["--token", gql_tok]
+            wd = tool_json("ws-probe.py", ws_args, timeout=30)
+            for f in (wd or {}).get("findings", []):
+                add_finding(f.get("severity", "h"), "WebSocket — " + (f.get("name") or f.get("type", "vulnerability")),
+                            f.get("detail") or f.get("description") or "", ws_ep, cls="websocket",
+                            verdict="confirmed", det=True)
+            mark_tested(ws_ep, "websocket")
+        if ws_eps:
+            log("ok" if any(f.get("cls") == "websocket" for f in STATE["findings"]) else "out",
+                "✓ ws-probe · " + str(len(ws_eps[:6])) + " endpoint(s) tested")
+        flush()
+
+    # 6) Targeted SSRF probe — ssrf-probe.py on endpoints with URL parameters
+    # More thorough than ssrf-test.py: tests cloud metadata + internal service sweep + protocol bypass
+    ssrf_param_eps = [e["url"] for e in STATE["endpoints"]
+                      if re.search(r"[?&](url|uri|path|dest|callback|webhook|fetch|load|src|target|feed|host|domain|site|proxy|redirect|return|next|image|img)=", e.get("url", ""), re.I)]
+    if ssrf_param_eps and (HERE / "ssrf-probe.py").exists():
+        gql_tok = (_creds().get("session_token") or "").strip()
+        for ssrf_ep in ssrf_param_eps[:10]:
+            _ok, _ = _in_scope(ssrf_ep)
+            if not _ok:
+                continue
+            # extract the param name from the URL
+            m_param = re.search(r"[?&](url|uri|path|dest|callback|webhook|fetch|load|src|target|feed|host|domain|site|proxy|redirect|return|next|image|img)=", ssrf_ep, re.I)
+            param_name = m_param.group(1) if m_param else "url"
+            sp_args = ["--url", ssrf_ep, "--param", param_name, "--json"]
+            if gql_tok:
+                sp_args += ["--token", gql_tok]
+            sd = tool_json("ssrf-probe.py", sp_args, timeout=45)
+            for f in (sd or {}).get("findings", []):
+                add_finding(f.get("severity", "h"), "SSRF — " + (f.get("name") or f.get("type", "server-side request forgery")),
+                            f.get("detail") or f.get("description") or "", ssrf_ep, cls="ssrf",
+                            verdict="confirmed", det=True)
+            mark_tested(ssrf_ep, "ssrf")
+        flush()
+
     # LLM: prioritized hypotheses for what to test next (uses your linked Claude account)
     if (HERE / "hypo-gen.py").exists() and eps:
         log("cmd", "$ hypothesize — highest-ROI attack ideas not yet tested")
@@ -1771,6 +2105,49 @@ def phase_authed():
     # authenticated per-endpoint classes (auth-bypass / param / idor) are run by the
     # adaptive coverage loop below, which has the token and covers every applicable cell.
     log("ok", "✓ session accepted — authenticated classes will run in the coverage loop")
+
+    # ── Multi-account auto-setup ──────────────────────────────────────────────────────────────
+    # IDOR/BOLA (cross-account access control) requires TWO real accounts. Without a second token
+    # we can only test "does this endpoint require auth" — not "does account A see account B's data".
+    # If tok2 is not already set and auto_signup is enabled (or the app allows free registration),
+    # mint a second identity autonomously and save it as token2 / "session2" in creds.json.
+    if not tok2 and c.get("auto_signup") and (HERE / "agent-auth.py").exists():
+        log("cmd", "$ agent-auth (2nd account) — auto-registering attacker identity for IDOR testing")
+        flush()
+        _victim_payload = json.dumps({
+            "target": TARGET, "signup": True,
+            "creds": {"username": "", "password": ""},
+            "login_url": c.get("login_url", ""),
+            "identity": "session2",
+        })
+        try:
+            import subprocess as _sp2
+            ar2 = _sp2.run([sys.executable, str(HERE / "agent-auth.py")], input=_victim_payload,
+                           capture_output=True, text=True, timeout=180,
+                           env=dict(os.environ, HUNT_DIR=str(HUNT_DIR)))
+            ad2 = json.loads((ar2.stdout or "").strip().splitlines()[-1]) if ar2.stdout.strip() else {}
+            if ad2.get("authenticated"):
+                # Read the session2 identity from identities.json and persist as token2 in creds.json
+                ids_f = HUNT_DIR / "identities.json"
+                if ids_f.exists():
+                    ids = json.loads(ids_f.read_text())
+                    sess2 = ids.get("session2", {})
+                    tok2_val = sess2.get("authorization") or sess2.get("cookie") or ""
+                    if tok2_val:
+                        cf = HUNT_DIR / "creds.json"
+                        cdata = json.loads(cf.read_text()) if cf.exists() else {}
+                        cdata["token2"] = tok2_val
+                        fd = os.open(str(cf), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                        try:
+                            os.write(fd, json.dumps(cdata).encode())
+                        finally:
+                            os.close(fd)
+                        tok2 = tok2_val
+                        log("ok", "✓ 2nd account registered — tok2 saved · full IDOR/BOLA testing now active")
+            else:
+                log("out", "→ 2nd account: auto-signup not available or blocked: " + str(ad2.get("evidence", ""))[:80])
+        except Exception as _ae:
+            log("warn", "→ 2nd account setup skipped: " + str(_ae)[:100])
 
     # first-class access-control agent: cross-identity IDOR/BOLA diffing (the highest-bounty class).
     if "--no-authtest" not in sys.argv and (HERE / "agent-authtest.py").exists() and STATE.get("endpoints"):
@@ -1896,6 +2273,29 @@ def phase_race_critical():
     if raced_count:
         log("ok", "✓ race-critical · " + str(raced_count) + " endpoint(s) raced · " +
             str(len([f for f in STATE["findings"] if f.get("cls") == "race"])) + " finding(s)")
+
+    # ── Business logic fuzzing — price/quantity/limit manipulation ────────────────────────────
+    # logic-fuzz.py sends the original request then mutates each field: qty=-1, price=0,
+    # amount=2^31, role="admin". Any field the server accepts that shouldn't be accepted is a bug.
+    # Run it on value-flow endpoints (checkout, purchase, subscribe) after the race sweep.
+    if (HERE / "logic-fuzz.py").exists():
+        mutation_eps = [ep for ep in stateful_eps if re.search(
+            r"(checkout|purchase|order|cart|pay|charge|subscribe|credit|coupon|redeem|invoice|price)", ep.lower())][:8]
+        for ep in mutation_eps:
+            _meth = "POST"
+            _lf_args = ["--url", ep, "--method", _meth, "--data", "{}", "--json"]
+            if tok and not tok.startswith("session-identity"):
+                _lf_args += ["--token", tok]
+            elif (c.get("cookie") or "").strip():
+                _lf_args += ["--token", (c.get("cookie") or "").strip()]
+            for k, v in _auth_headers().items():
+                _lf_args += ["--header", f"{k}: {v}"]
+            lfrd = tool_json("logic-fuzz.py", _lf_args, timeout=45)
+            for f in (lfrd or {}).get("findings", []):
+                add_finding(f.get("severity", "h"), "Business logic — " + (f.get("name") or f.get("type") or "unexpected field accepted"),
+                            f.get("detail") or f.get("description") or "", ep, cls="mass-assignment", verdict="likely")
+        if mutation_eps:
+            log("out", "→ logic-fuzz · " + str(len(mutation_eps)) + " value endpoint(s) fuzzed")
     flush()
 
 
@@ -1967,6 +2367,35 @@ def phase_authz_matrix():
         log("ok", "✓ authz-matrix · " + str(found) + " BFLA finding(s) — privileged endpoints accessible")
     else:
         log("ok", "✓ authz-matrix · " + str(len(priv_eps)) + " privileged endpoint(s) probed · all blocked (correct)")
+
+    # ── Mass-assignment sweep on write endpoints ──────────────────────────────────────────────
+    # mass-assign.py probes sensitive field injection on PUT/PATCH endpoints: role, isAdmin,
+    # password, email, active, tenantId, balance — the fields the endpoint was never meant to
+    # accept. Run it on every write endpoint found in the surface.
+    if (HERE / "mass-assign.py").exists():
+        write_eps = [e for e in STATE["endpoints"] if e.get("method", "GET").upper() in ("PUT", "PATCH") or
+                     re.search(r"/(update|edit|modify|profile|settings|account|user)", e.get("url", ""), re.I)][:15]
+        for we in write_eps:
+            _ok2, _ = _in_scope(we["url"] if isinstance(we, dict) else we)
+            if not _ok2:
+                continue
+            ep_url = we["url"] if isinstance(we, dict) else we
+            _meth = we.get("method", "PUT").upper() if isinstance(we, dict) else "PUT"
+            ma_args = ["--url", ep_url, "--method", _meth, "--json"]
+            if tok and not tok.startswith("session-identity"):
+                ma_args += ["--token", tok]
+            elif _ck:
+                ma_args += ["--token", _ck]
+            for k, v in _ah.items():
+                ma_args += ["--header", f"{k}: {v}"]
+            mad = tool_json("mass-assign.py", ma_args, timeout=40)
+            for f in (mad or {}).get("findings", []):
+                add_finding(f.get("severity", "h"), "Mass assignment — " + (f.get("name") or f.get("impact") or "sensitive field accepted"),
+                            f.get("detail") or f.get("description") or "", ep_url, cls="mass-assignment",
+                            verdict="confirmed" if f.get("confirmed") else "likely", det=bool(f.get("confirmed")))
+            mark_tested(ep_url, "mass-assignment")
+        if write_eps:
+            log("out", "→ mass-assign · " + str(len(write_eps)) + " write endpoint(s) probed")
     flush()
 
 
@@ -3847,7 +4276,14 @@ def phase_plan():
     flush()  # the planner reads run.json; make sure recon/surface/harvest are persisted first
     stage("Plan", 38)
     log("cmd", "$ attack-planner — building a target-specific plan + attack flows")
-    d = tool_json("attack-planner.py", ["--run", str(RUN), "--program", str(PROGRAM or TARGET), "--json"], timeout=150)
+    plan_args = ["--run", str(RUN), "--program", str(PROGRAM or TARGET), "--json"]
+    # Pass reward table and biz_logic model so the planner ranks by actual bounty dollars
+    prog_intel = STATE.get("program_intel") or {}
+    if prog_intel.get("reward_table"):
+        plan_args += ["--reward-table", json.dumps(prog_intel["reward_table"])]
+    if STATE.get("biz_logic"):
+        plan_args += ["--biz-logic", json.dumps(STATE["biz_logic"])]
+    d = tool_json("attack-planner.py", plan_args, timeout=150)
     if not isinstance(d, dict) or not d.get("targets"):
         reason = (" (" + _LAST_TOOL_ERR + ")") if (d is None and _LAST_TOOL_ERR) else ""
         log("out", "→ planner produced no plan" + reason + " — falling back to the static class matrix")
@@ -6360,17 +6796,22 @@ def main():
                 phase_hard_triage()   # source findings go through the same hard gate
             else:
                 # ── Web / API hunt ────────────────────────────────────────────
-                phase_recon()
+                # STRATUM 0 — Intelligence (BEFORE any probe is sent)
+                phase_program_intel()     # GOD METHODOLOGY: disclosures + Shodan + Wayback + GitHub org + reward table
+                # STRATUM 1 — Surface mapping
+                phase_recon()             # DNS + HTTP probe + S3 buckets + GitHub dork
                 phase_mobile()            # mobile scope — APK backend hosts/endpoints/secrets
                 phase_surface()
                 phase_discover(deadline)  # ACTIVE discovery — unlinked paths + spec walk + BFS
                 phase_spa_capture()       # SPA runtime API discovery (real browser)
                 phase_memory_recall()     # long-term memory — analogous past situations (BEFORE plan so it informs it)
-                phase_active()            # Layer 1 — deterministic sweep; LLM gets real scan evidence
-                phase_authed()
+                # STRATUM 2 — Attack
+                phase_active()            # Layer 1 — deterministic sweep; LLM gets real scan evidence (+ graphql-map + ws-probe + ssrf-probe)
+                phase_authed()            # Auth surface + JWT + IDOR diffing + multi-account auto-setup
+                phase_auth_deep()         # GOD METHODOLOGY: OAuth probe + reset host-header + MFA rate-limit + JWT expiry
                 phase_biz_logic_map()     # GOD METHODOLOGY: map entities/roles/flows/value-ops before attacking
-                phase_authz_matrix()      # GOD METHODOLOGY: BFLA sweep — privileged endpoints with regular token
-                phase_race_critical()     # GOD METHODOLOGY: 25-thread race bursts on all value-flow endpoints
+                phase_authz_matrix()      # GOD METHODOLOGY: BFLA sweep + mass-assign on write endpoints
+                phase_race_critical()     # GOD METHODOLOGY: 25-thread race bursts + logic-fuzz on all value-flow endpoints
         else:
             log("out", "→ resume: skipping recon/surface (reusing mapped surface); continuing the hunt")
         if not (SOURCE_ASSETS and not WEB_ASSETS):
