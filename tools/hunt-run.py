@@ -915,8 +915,30 @@ def phase_auth_deep():
     # ── 1. OAuth/OIDC audit ──────────────────────────────────────────────────────────────────
     oauth_eps = [e["url"] for e in STATE["endpoints"] if re.search(r"(/oauth|/authorize|/connect/|/openid|/oidc|/sso)", e.get("url", ""), re.I)]
     if not oauth_eps:
-        # look for the authorize endpoint pattern in discovered JS/SPA flows
-        oauth_eps = [base_url + "/oauth/authorize", base_url + "/api/oauth/authorize"]
+        # Guess common paths — but verify each returns a real OAuth-like response (not 404/redirect
+        # to a marketing page) before handing it to oauth-probe. A guessed URL that returns 404 or
+        # a plain HTML marketing page is not an OAuth endpoint and would false-positive every check.
+        import urllib.request as _gur, urllib.error as _gue
+        for _candidate in [base_url + "/oauth/authorize", base_url + "/api/oauth/authorize"]:
+            try:
+                _ok2, _ = _in_scope(_candidate)
+                if not _ok2:
+                    continue
+                _gr = _gur.urlopen(_gur.Request(_candidate, headers={"User-Agent": "Mozilla/5.0"}), timeout=5)
+                _gbody = _gr.read(512).decode("utf-8", "replace").lower()
+                # A real OAuth /authorize returns JSON error, a login-redirect, or an OAuth error page,
+                # NOT a generic marketing/404 page. Exclude obvious non-OAuth responses.
+                if any(tok in _gbody for tok in ("not found", "404", "page not found", "error", "invalid_client", "client_id", "redirect_uri")):
+                    if "invalid_client" in _gbody or "client_id" in _gbody or "redirect_uri" in _gbody:
+                        oauth_eps.append(_candidate)  # looks like a real OAuth error → genuine endpoint
+                    # else: generic 404/marketing page → skip
+            except _gue.HTTPError as _ghe:
+                if _ghe.code in (400, 401, 302, 303):  # 400/401 = real OAuth server rejecting bad req
+                    _gbody = (_ghe.read(256) or b"").decode("utf-8", "replace").lower()
+                    if any(tok in _gbody for tok in ("invalid_client", "client_id", "redirect_uri", "error", "oauth")):
+                        oauth_eps.append(_candidate)
+            except Exception:
+                pass
     if (HERE / "oauth-probe.py").exists() and oauth_eps:
         for oa_ep in oauth_eps[:3]:
             log("cmd", "$ oauth-probe — state/CSRF · redirect_uri · implicit · PKCE · scope · " + oa_ep)
@@ -991,7 +1013,13 @@ def phase_auth_deep():
             pass
 
     # ── 4. OTP rate-limit probe ────────────────────────────────────────────────────────────────
-    otp_eps = [e["url"] for e in STATE["endpoints"] if re.search(r"(otp|mfa|2fa|verify|confirm|totp)", e.get("url", ""), re.I)]
+    # Match only in the URL path (not the query string) and only as true path segments
+    # (preceded by / or start) so "2fa" inside a UUID like "62fa…" doesn't match.
+    def _is_otp_ep(url):
+        from urllib.parse import urlparse as _up
+        path = _up(url).path or ""
+        return bool(re.search(r"(?:^|/)(otp|mfa|2fa|verify-otp|totp|authenticat)(?:[/_?-]|$)", path, re.I))
+    otp_eps = [e["url"] for e in STATE["endpoints"] if _is_otp_ep(e.get("url", ""))]
     for otp_ep in otp_eps[:2]:
         _ok, _ = _in_scope(otp_ep)
         if not _ok:
