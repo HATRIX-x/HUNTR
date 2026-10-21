@@ -810,8 +810,8 @@ def phase_program_intel():
         url = ("https://api.shodan.io/shodan/host/search?key=" + _shup.quote(shodan_key) +
                "&query=" + _shup.quote("hostname:" + domain) + "&facets=port,country&minify=true")
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=15) as r:
+            req = _shur.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with _shur.urlopen(req, timeout=15) as r:
                 sd = json.loads(r.read().decode("utf-8", "ignore"))
             hosts_found = sd.get("total", 0)
             STATE["program_intel"]["shodan"] = sd
