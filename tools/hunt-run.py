@@ -2652,7 +2652,9 @@ def scan_cell(ep, cls, tok, tok2, method="GET"):
             d = tool_json("idor-chain.py", a, timeout=150); ran = d is not None
             for f in (d or {}).get("findings", []):
                 add_finding(f.get("severity", "h"), "IDOR — " + (f.get("name") or "object reference"), f.get("detail") or "", ep, cls="IDOR", verdict="confirmed")
-        elif cls == "authz" and tok and (HERE / "auth-bypass.py").exists():
+        elif cls == "authz" and (HERE / "auth-bypass.py").exists():
+            # tokv is the real Bearer value; empty under cookie/header auth — auth-bypass.py reads
+            # HUNT_AUTH_HEADERS from the env for cookie/custom-header sessions, so no --token needed.
             d = tool_json("auth-bypass.py", ["--url", ep, "--json"] + (["--token", tokv] if tokv else []) + _mt, timeout=60); ran = d is not None
             for f in (d or {}).get("findings", []):
                 add_finding(f.get("severity", "h"), "Auth bypass — " + (f.get("technique") or f.get("name") or "access control"), f.get("detail") or "", ep, cls="Auth bypass", verdict="confirmed")
@@ -2730,7 +2732,12 @@ def scan_cell(ep, cls, tok, tok2, method="GET"):
             # IS the probe: it injects the class-specific payload, reads the response, and returns a hard
             # verified true/false. 0-token, so it runs in the fast sweep without touching the rate limit.
             ov, om, oe = _det_oracle(cls, cls, ep)
-            ran = ov in (True, False)   # oracle executed → cell genuinely covered (true OR negative)
+            # ov is True (finding confirmed), False (no vuln, oracle ran), or None (oracle not applicable
+            # / verify-finding had no handler for this cls). None must stay None so the cell lands in
+            # NO_TOOL instead of being logged as "errored" — `None in (True, False)` evaluates to the
+            # Python bool False (via __eq__), which makes `ran is False` true and triggers a misleading
+            # "errored (unknown)" warning for every oracle-not-applicable cell.
+            ran = True if ov is True else (False if ov is False else None)
             if ov is True:
                 sev, lab = _ORACLE_CELL[cls]
                 add_finding(sev, lab + (" — " + om if om else ""), oe, ep, cls=cls, verdict="confirmed",
