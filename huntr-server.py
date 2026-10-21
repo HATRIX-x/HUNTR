@@ -125,6 +125,11 @@ def is_process(pid, marker):
     except Exception:
         return False
     try:  # Linux: confirm the PID is actually OUR process, not a reused/unrelated one
+        # A zombie (state 'Z') has already exited — its cmdline still reads as our process
+        # because the kernel hasn't reclaimed the entry yet, but it is NOT running. Treat as dead.
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        if stat.split(")")[1].split()[0].strip() == "Z":
+            return False
         cmd = Path(f"/proc/{pid}/cmdline").read_bytes()
         return marker.encode() in cmd
     except Exception:
@@ -1016,7 +1021,31 @@ class H(BaseHTTPRequestHandler):
                     "no running hunt (the recorded process is gone or no longer this hunt) — stale "
                     "run.pid, nothing was signaled"}, 404)
             try:
-                os.killpg(os.getpgid(pid), sig)
+                pgid = os.getpgid(pid)
+                if act == "stop":
+                    # A stopped (SIGSTOP'd / paused) process cannot handle SIGTERM until resumed —
+                    # the signal queues silently and the process stays alive in state T, permanently
+                    # blocking delete with "hunt is running — stop it first". Fix: wake it with
+                    # SIGCONT first, then SIGTERM. If still alive after 1s, escalate to SIGKILL.
+                    try:
+                        os.killpg(pgid, signal.SIGCONT)  # resume if paused
+                    except Exception:
+                        pass
+                    import time as _ht
+                    _ht.sleep(0.05)  # give it a moment to wake
+                    os.killpg(pgid, signal.SIGTERM)
+                    # background SIGKILL escalation — fire and forget so we don't block the request
+                    def _ensure_dead(p, g):
+                        _ht.sleep(1.5)
+                        if is_process(p, "hunt-run.py"):
+                            try:
+                                os.killpg(g, signal.SIGKILL)
+                            except Exception:
+                                pass
+                    import threading as _thr
+                    _thr.Thread(target=_ensure_dead, args=(pid, pgid), daemon=True).start()
+                else:
+                    os.killpg(pgid, sig)
             except Exception as e:
                 return self._send({"ok": False, "error": str(e)[:120]}, 500)
             if act == "stop":
@@ -1236,7 +1265,35 @@ class H(BaseHTTPRequestHandler):
                 # stop it first" even though no hunt is running at all. Verify it's actually still
                 # hunt-run.py before refusing.
                 if is_process(pid, "hunt-run.py"):
-                    return self._send({"ok": False, "error": "hunt is running — stop it first"}, 409)
+                    # Check run.json status — if it says stopped/done/error the hunt already
+                    # finished but the process is still around (common when paused then stopped:
+                    # SIGTERM queues on a SIGSTOP'd process and is never handled). Try to kill it
+                    # before refusing. SIGCONT wakes a stopped process so it can receive SIGTERM.
+                    rf_check = hd / "run.json"
+                    run_status = ""
+                    try:
+                        run_status = json.loads(rf_check.read_text()).get("status", "")
+                    except Exception:
+                        pass
+                    if run_status in ("stopped", "done", "error", "paused"):
+                        # Status says it shouldn't be running — forcibly terminate it
+                        try:
+                            pgid = os.getpgid(pid)
+                            os.killpg(pgid, signal.SIGCONT)
+                            import time as _dt; _dt.sleep(0.05)
+                            os.killpg(pgid, signal.SIGTERM)
+                            _dt.sleep(1.0)
+                            if is_process(pid, "hunt-run.py"):
+                                os.killpg(pgid, signal.SIGKILL)
+                            _dt.sleep(0.3)
+                        except Exception:
+                            pass
+                        # If still alive after SIGKILL, we can't delete safely
+                        if is_process(pid, "hunt-run.py"):
+                            return self._send({"ok": False, "error": "hunt is running — stop it first"}, 409)
+                        # else: process is dead now, fall through to delete
+                    else:
+                        return self._send({"ok": False, "error": "hunt is running — stop it first"}, 409)
             except Exception:
                 pass
             import shutil
