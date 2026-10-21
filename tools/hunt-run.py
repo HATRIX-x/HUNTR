@@ -1317,6 +1317,13 @@ def phase_surface():
 
     if result:
         endpoints = result.get("endpoints", [])
+    # HTML-decode URLs: katana scrapes hrefs from raw HTML where & is encoded as &amp;
+    # Storing "?foo=1&amp;bar=2" instead of "?foo=1&bar=2" causes every authz/param scan
+    # cell to fail with "errored (unknown)" because the server never sees a valid query string.
+    import html as _html
+    for _ep in endpoints:
+        if "&amp;" in _ep.get("url", ""):
+            _ep["url"] = _html.unescape(_ep["url"])
     STATE["endpoints"] = endpoints
     STATE["stats"]["endpoints"] = len(endpoints)
     flush()
@@ -1671,6 +1678,8 @@ def phase_discover(deadline=None):
         if sig in seen_sig:
             continue
         seen_sig.add(sig)
+        import html as _html
+        u = _html.unescape(u) if "&amp;" in u else u
         STATE["endpoints"].append({"url": u, "host": h})
         added += 1
     STATE["stats"]["endpoints"] = len(STATE["endpoints"])
