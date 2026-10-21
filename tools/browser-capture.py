@@ -79,7 +79,23 @@ const APIISH=/(\/cgi-bin\/|\/api\/|\/v\d+\/|\/index\/service\/|action=|\/graphql
     try{
       const browser=await chromium.connectOverCDP('http://127.0.0.1:'+CDP_PORT);
       const contexts=browser.contexts();
-      ctx = contexts.length ? contexts[0] : await browser.newContext({userAgent:UA,ignoreHTTPSErrors:true});
+      if(contexts.length){
+        // Playwright-managed browser (_auto_cdp launch) — contexts() is populated normally.
+        ctx = contexts[0];
+      } else {
+        // Real user Chrome: browser.contexts() returns [] because Chrome doesn't expose its
+        // browser contexts through CDP in the way Playwright expects. DO NOT call
+        // browser.newContext() — that creates an isolated incognito context with ZERO
+        // cookies/localStorage, exactly the bug the user hit ("had to login manually").
+        //
+        // Fix: browser.newPage() on a CDP-connected real Chrome opens a page in the DEFAULT
+        // browser context (the real Chrome profile, with the user's actual session).
+        // We grab that page's context so all subsequent newPage() calls also land in the
+        // same real-session context and inherit every cookie + localStorage entry.
+        const _seed = await browser.newPage();
+        ctx = _seed.context();   // ← THE real default Chrome context (full session)
+        await _seed.close();     // close seed tab, keep the context object live
+      }
       authMode='cdp';
     }catch(e){ ctx=null; }
   }

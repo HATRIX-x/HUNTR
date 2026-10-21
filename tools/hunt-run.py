@@ -762,6 +762,98 @@ def phase_scope():
         str(len([a for a in WEB_ASSETS if not _asset_host(a)[1]])) + " exact host(s) · mode: " + MODE + "-box")
 
 
+def _cloud_recon():
+    """Probe common S3 bucket name variants for the target brand (unauthenticated data leaks).
+
+    A single publicly readable S3 bucket is routinely a critical/high finding and takes <10s to
+    check. We probe /<brand>/, /<brand>-dev/, /<brand>-backup/ etc. with a single HTTP GET;
+    the XML ListBucketResult response is unambiguous proof. Does NOT enumerate bucket contents —
+    just confirms existence + public access.  Non-fatal: any network error silently skips."""
+    import urllib.request as _ur
+    import urllib.error as _ue
+    # derive the root brand name — "acme" from "acme.example.com"
+    root = re.sub(r"^\*\.", "", TARGET).split("/")[0].strip()
+    root_parts = root.split(".")
+    brand = root_parts[-2] if len(root_parts) >= 2 else root_parts[0]
+    brand = re.sub(r"[^a-z0-9]", "", brand.lower())
+    if not brand or len(brand) < 3:
+        return
+    variants = [brand, brand + "-dev", brand + "-staging", brand + "-test",
+                brand + "-backup", brand + "-data", brand + "-assets",
+                brand + "-static", brand + "-media", brand + "-prod",
+                brand + "-files", brand + "-uploads", brand + "-public"]
+    found = 0
+    for v in variants:
+        # S3 virtual-hosted style
+        s3_url = f"https://{v}.s3.amazonaws.com/"
+        try:
+            req = _ur.Request(s3_url, headers={"User-Agent": "Mozilla/5.0"})
+            with _ur.urlopen(req, timeout=5) as r:
+                body = r.read(4096).decode("utf-8", "ignore")
+                if "ListBucketResult" in body or "<Contents>" in body:
+                    add_finding("c", "Open S3 bucket — publicly readable",
+                                f"s3://{v} lists objects unauthenticated at {s3_url}",
+                                s3_url, cls="Misconfigured cloud storage", verdict="confirmed")
+                    found += 1
+        except (_ue.HTTPError, _ue.URLError, Exception):
+            pass
+    if found:
+        log("ok", f"✓ cloud recon · {found} open S3 bucket(s) — CRITICAL finding(s) added")
+    else:
+        log("out", f"→ cloud recon · no open S3 buckets found for {brand} variants")
+
+
+def _github_dork():
+    """Search GitHub for credential files in the target org's public repos.
+
+    Requires GITHUB_TOKEN env var. Finds .env files, DB_PASSWORD, AWS keys etc. A leaked
+    secret in a public repo is an instant critical finding. Silently skips if no token."""
+    import urllib.request as _ur
+    import urllib.parse as _up
+    gh_token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if not gh_token:
+        return   # silent skip — GITHUB_TOKEN is optional
+    # derive org from PROGRAM or apex of TARGET
+    org_raw = (PROGRAM or apex(TARGET) or TARGET).split(".")[0].lower()
+    org = re.sub(r"[^a-z0-9\-]", "", org_raw)
+    if not org or len(org) < 3:
+        return
+    dork_queries = [
+        f"org:{org} filename:.env",
+        f"org:{org} AWS_SECRET_ACCESS_KEY",
+        f"org:{org} DB_PASSWORD",
+        f"org:{org} secret_key language:Python",
+        f"org:{org} api_key language:YAML",
+    ]
+    headers = {
+        "Authorization": f"Bearer {gh_token}",
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "huntr/1.0",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    found = 0
+    for q in dork_queries:
+        url = "https://api.github.com/search/code?q=" + _up.quote(q) + "&per_page=5"
+        try:
+            req = _ur.Request(url, headers=headers)
+            with _ur.urlopen(req, timeout=10) as r:
+                data = json.loads(r.read().decode("utf-8", "ignore"))
+                for item in (data.get("items") or [])[:3]:
+                    file_url = item.get("html_url") or item.get("url") or ""
+                    repo = item.get("repository", {}).get("full_name") or ""
+                    add_finding("c", "GitHub secret exposure — " + (item.get("name") or "credentials"),
+                                f"Query: {q}\nRepo: {repo}\nFile: {file_url}\n"
+                                "Public repo contains credential file — rotate immediately.",
+                                file_url, cls="Secret/credential leak", verdict="confirmed")
+                    found += 1
+        except Exception:
+            pass
+    if found:
+        log("ok", f"✓ github dork · {found} secret file(s) in {org}'s public repos — CRITICAL")
+    else:
+        log("out", f"→ github dork · no exposed secrets in {org}'s public repos")
+
+
 def phase_recon():
     """Delegates to tools/recon.py — the resumable, failure-classifying recon
     primitive (also what /autopilot drives). Replaces the old inline version
@@ -840,6 +932,18 @@ def phase_recon():
         tag = (str(h.get("status")) + " " if h.get("status") else "") + (h.get("title") or "")
         log("out", "→ " + h.get("host", "?") + ("  [" + tag.strip() + "]" if tag.strip() else ""))
     log("ok", "✓ " + str(len(hosts)) + " host(s) from " + str(len(WEB_ASSETS)) + " asset(s) · " + str(len(live)) + " live")
+
+    # ── Cloud asset discovery ────────────────────────────────────────────────────────────────
+    # Probe S3 bucket variants derived from the target brand name (unauthenticated data leaks).
+    # A single open bucket with PII/keys is routinely a critical/high finding — worth the 10-20
+    # fast HEAD probes even when the main recon found nothing interesting.
+    _cloud_recon()
+
+    # ── GitHub secret dorking ─────────────────────────────────────────────────────────────────
+    # Only if GITHUB_TOKEN is set. Search public repos for credential files (.env, config.yml,
+    # etc.) belonging to the target's GitHub org — leaked API keys, DB passwords, cloud creds.
+    _github_dork()
+
     stage("Recon", 45)
 
 
@@ -1524,6 +1628,37 @@ def phase_active():
     # per-endpoint class probes (cors/redirect/idor/authz/param/race) are now owned by
     # the adaptive coverage loop (phase_adaptive) so EVERY applicable cell gets covered.
 
+    # 4) GraphQL deep schema mapping — fire graphql-map.py on every /graphql endpoint
+    # to extract the full schema, detect batch-query rate-limit bypass, admin mutations,
+    # and IDOR-candidate fields. Runs in phase_active (deterministic — no LLM token cost).
+    graphql_eps = [e["url"] for e in STATE["endpoints"]
+                   if re.search(r"/graphql|/gql\b", e.get("url", ""), re.I)]
+    if graphql_eps and (HERE / "graphql-map.py").exists():
+        gql_tok = (_creds().get("session_token") or "").strip()
+        for gql_ep in graphql_eps[:4]:
+            log("cmd", "$ graphql-map — schema · batch · IDOR · admin · " + gql_ep)
+            gql_args = ["--url", gql_ep, "--json"]
+            if gql_tok:
+                gql_args += ["--token", gql_tok]
+            gd = tool_json("graphql-map.py", gql_args, timeout=120)
+            for f in (gd or {}).get("findings", []):
+                add_finding(f.get("severity", "m"), "GraphQL — " + (f.get("name") or f.get("type", "weakness")),
+                            f.get("detail") or f.get("description") or "", gql_ep, cls="graphql",
+                            verdict="confirmed", det=True)
+            # inject new operation endpoints so the adaptive sweep covers them
+            import urllib.parse as _gqlparse
+            for op in (gd or {}).get("operations", []):
+                op_url = gql_ep + "?op=" + _gqlparse.quote(str(op.get("name", "")))
+                if op_url not in {e["url"] for e in STATE["endpoints"]}:
+                    STATE["endpoints"].append({"url": op_url, "method": "POST",
+                                               "cls_hint": op.get("cls", "graphql"),
+                                               "source": "graphql-map"})
+            if (gd or {}).get("operations"):
+                log("ok", "✓ graphql-map · " + str(len(gd.get("operations", []))) +
+                    " operation(s) · " + str(len(gd.get("findings", []))) + " finding(s) · " + gql_ep)
+        flush()
+    stage("Exploit", 84)
+
     # LLM: prioritized hypotheses for what to test next (uses your linked Claude account)
     if (HERE / "hypo-gen.py").exists() and eps:
         log("cmd", "$ hypothesize — highest-ROI attack ideas not yet tested")
@@ -1654,6 +1789,187 @@ def phase_authed():
             log("warn", "→ authtest agent skipped: " + str(_e)[:120])
 
 
+def phase_biz_logic_map():
+    """Map the application's business model BEFORE attacking it — the biggest gap in naive scanners.
+
+    Top-tier hunters don't fire probes randomly; they first understand:
+      - Entities: core domain objects (User, Workspace, Order, Payment, Subscription, Token...)
+      - Role hierarchy: what privilege levels exist and what each one is allowed to do
+      - State machines: multi-step flows worth attacking (checkout, invite, password-reset, etc.)
+      - Value flows: where money / credits / quota are debited or credited (primary race targets)
+      - Trust boundaries: what the app trusts implicitly (user-supplied IDs, self-signed JWTs)
+
+    The model is stored in STATE["biz_logic"] and consumed by:
+      - phase_plan:          adds entity-aware IDOR/BOLA flows + state-machine attacks to the plan
+      - phase_race_critical: extends STATEFUL_RE with discovered value-flow endpoint paths
+      - phase_authz_matrix:  uses the role hierarchy to build a systematic test matrix
+
+    Skipped in NO_LLM mode (pure deterministic run) or when the surface hasn't been mapped yet."""
+    if NO_LLM or not STATE.get("endpoints"):
+        return
+    biz_tool = HERE / "biz-logic-map.py"
+    if not biz_tool.exists():
+        return
+    stage("Plan", 34)
+    log("cmd", "$ biz-logic-map — entity model · role hierarchy · state machines · value flows")
+    ep_sample = [e["url"] for e in STATE["endpoints"][:80]]
+    spa_flows = STATE.get("spa_flows") or STATE.get("discovery", {}).get("api_calls", [])
+    d = tool_json("biz-logic-map.py", [
+        "--endpoints-json", json.dumps(ep_sample),
+        "--flows-json", json.dumps((spa_flows or [])[:30]),
+        "--program", str(PROGRAM or TARGET),
+        "--json"
+    ], timeout=150)
+    if not isinstance(d, dict) or not d.get("entities"):
+        log("out", "→ biz-logic-map: no model produced" + ((" (" + _LAST_TOOL_ERR + ")") if _LAST_TOOL_ERR else ""))
+        return
+    STATE["biz_logic"] = d
+    entities = d.get("entities", [])
+    flows_biz = d.get("flows", [])
+    value_eps = d.get("value_endpoints", [])
+    # Extend STATEFUL_RE with value-flow endpoint path fragments the LLM identified —
+    # so phase_race_critical and applicable_classes both pick them up automatically.
+    if value_eps:
+        import urllib.parse as _bizparse
+        frags = "|".join(
+            re.escape(_bizparse.urlparse(u).path.rstrip("/").rsplit("/", 1)[-1])
+            for u in value_eps[:30] if u and "/" in u
+        )
+        if frags:
+            global STATEFUL_RE
+            STATEFUL_RE = STATEFUL_RE.rstrip(")") + "|" + frags + ")"
+    log("ok", "✓ biz-logic · " + str(len(entities)) + " entit" + ("y" if len(entities) == 1 else "ies") +
+        " · " + str(len(flows_biz)) + " flow(s) · " + str(len(value_eps)) + " value endpoint(s)")
+    flush()
+
+
+def phase_race_critical():
+    """Dedicated race-condition sweep on value-flow endpoints BEFORE the generic adaptive loop.
+
+    Race conditions on payment/credit/limit/coupon operations are the highest EV-per-hour
+    finding class in bug bounty — routinely $5–15k bounties found in 30 minutes. The adaptive
+    sweep treats `race` the same as any other class (one cell at a time). This phase fires
+    20-thread concurrent bursts SPECIFICALLY against every endpoint whose URL matches
+    STATEFUL_RE (now expanded by phase_biz_logic_map with the target's own value-flow paths).
+
+    If token2 is available, we also test a cross-account race: attacker fires a request AS
+    the victim's object (token2 victim, token attacker) to catch cross-tenant balance races."""
+    race_tool = HERE / "race-fire.py"
+    if not race_tool.exists():
+        return
+    c = _creds()
+    tok = (c.get("session_token") or "").strip()
+    if not tok and not (c.get("cookie") or "").strip():
+        return   # unauthenticated — race conditions on value flows require a session
+    tok2 = (c.get("token2") or "").strip()
+    stateful_eps = [e["url"] for e in STATE["endpoints"] if re.search(STATEFUL_RE, e.get("url", ""), re.I)]
+    if not stateful_eps:
+        return
+    log("cmd", "$ race-fire (critical) — " + str(len(stateful_eps)) + " value-flow endpoint(s) · 25 threads each")
+    stage("Plan", 42)
+    raced_count = 0
+    for ep in stateful_eps[:20]:
+        # infer method from endpoint (POST for mutation-ish paths, GET otherwise)
+        _meth = "POST" if re.search(r"(redeem|checkout|purchase|pay|charge|transfer|subscribe|grant|allocat|claim|convert|merge|revoke)", ep.lower()) else "GET"
+        _args = ["--url", ep, "--method", _meth, "--count", "25", "--json"]
+        _ah = _auth_headers()
+        if tok and not tok.startswith("session-identity"):
+            _args += ["--token", tok]
+        elif (c.get("cookie") or "").strip():
+            _args += ["--cookie", (c.get("cookie") or "").strip()]
+        for k, v in _ah.items():
+            _args += ["--header", f"{k}: {v}"]
+        rd = tool_json("race-fire.py", _args, timeout=45)
+        raced_count += 1
+        for f in (rd or {}).get("findings", []):
+            add_finding(f.get("severity", "h"), "Race condition — " + (f.get("name") or f.get("type", "duplicate operation")),
+                        f.get("detail") or f.get("description") or "", ep, cls="race", verdict="confirmed", det=True)
+        # cross-account race: if tok2 exists, try victim's endpoint with attacker's token
+        if tok2 and (rd or {}).get("findings"):
+            _args2 = [a for a in _args if a not in (tok, "--token")]
+            _args2 += ["--token", tok2, "--cross-token", tok]
+            rd2 = tool_json("race-fire.py", _args2, timeout=45)
+            for f in (rd2 or {}).get("findings", []):
+                add_finding("c", "Cross-account race condition — " + (f.get("name") or "balance manipulation"),
+                            f.get("detail") or "", ep, cls="race", verdict="confirmed", det=True)
+        mark_tested(ep, "race")
+    if raced_count:
+        log("ok", "✓ race-critical · " + str(raced_count) + " endpoint(s) raced · " +
+            str(len([f for f in STATE["findings"] if f.get("cls") == "race"])) + " finding(s)")
+    flush()
+
+
+def phase_authz_matrix():
+    """Systematic authorization matrix: every available identity × high-value endpoints.
+
+    Complements agent-authtest (which does LLM-driven IDOR/BOLA diffing) with two things it
+    doesn't do:
+
+    1. BFLA (Broken Function-Level Authorization): test EVERY admin/management/privileged
+       endpoint with a REGULAR user token. Can a normal user call /api/admin/*, /manage/*,
+       /debug/*, /actuator/*, /internal/*? This is a pure HTTP sweep — no LLM needed.
+
+    2. Role boundary sweep: if phase_biz_logic_map identified roles, probe each role's
+       exclusive endpoints with a lower-privilege token. Even without biz_logic, the pattern
+       match on /admin|/internal|/manage|/staff|/superuser covers the most common cases.
+
+    Findings are added as `authz` class with `verdict=confirmed` when a ≥200 response with
+    meaningful content is returned to a token that should be denied."""
+    c = _creds()
+    tok = (c.get("session_token") or "").strip()
+    if not tok and not (c.get("cookie") or "").strip():
+        return
+    eps = [e["url"] for e in STATE["endpoints"]]
+    if not eps:
+        return
+    # Admin / management / privileged endpoints
+    priv_eps = [u for u in eps if re.search(r"(/admin|/internal|/debug|/actuator|/manage|/staff|/superuser|/sudo|/root|/privilege|/system)", u.lower())]
+    # Also add role-specific endpoints from the biz_logic model
+    biz = STATE.get("biz_logic") or {}
+    for ep in (biz.get("admin_endpoints") or []):
+        if ep not in priv_eps:
+            priv_eps.append(ep)
+    if not priv_eps:
+        return
+    log("cmd", "$ authz-matrix — " + str(len(priv_eps)) + " privileged endpoint(s) · regular-user probe")
+    import urllib.request as _amur
+    import urllib.error as _amue
+    _ah = _auth_headers()
+    _ck = (c.get("cookie") or "").strip()
+    found = 0
+    for ep in priv_eps[:40]:
+        _ok, _why = _in_scope(ep)
+        if not _ok:
+            continue
+        try:
+            req_h = {"User-Agent": "Mozilla/5.0"}
+            if tok and not tok.startswith("session-identity"):
+                req_h["Authorization"] = tok if tok.startswith("Bearer ") else "Bearer " + tok
+            elif _ck:
+                req_h["Cookie"] = _ck
+            for k, v in _ah.items():
+                req_h[k] = v
+            req = _amur.Request(ep, headers=req_h)
+            with _amur.urlopen(req, timeout=8) as r:
+                status = r.status
+                body = r.read(2048).decode("utf-8", "ignore")
+                # Flag if: 200 OK with non-trivial body that isn't a login redirect or generic 404
+                if status == 200 and len(body) > 200 and not re.search(r"(login|sign.?in|not found|404|forbidden|unauthorized)", body.lower()):
+                    add_finding("h", "BFLA — privileged endpoint accessible to regular user",
+                                f"GET {ep} returned HTTP 200 ({len(body)}B) with a regular session.\n"
+                                "Expected: 403/404 or redirect to login.",
+                                ep, cls="authz", verdict="confirmed", det=True)
+                    found += 1
+                    mark_tested(ep, "authz")
+        except (_amue.HTTPError, _amue.URLError, Exception):
+            mark_tested(ep, "authz")   # 403/404 = correctly blocked, still counts as tested
+    if found:
+        log("ok", "✓ authz-matrix · " + str(found) + " BFLA finding(s) — privileged endpoints accessible")
+    else:
+        log("ok", "✓ authz-matrix · " + str(len(priv_eps)) + " privileged endpoint(s) probed · all blocked (correct)")
+    flush()
+
+
 def _stack():
     p = (PROGRAM + " " + TARGET).lower()
     s = ["saas", "api"]
@@ -1751,7 +2067,7 @@ def build_coverage():
     (HUNT_DIR / "coverage.tsv").write_text("\n".join(lines) + "\n")
 
 
-STATEFUL_RE = r"(redeem|coupon|voucher|order|checkout|cart|transfer|claim|vote|invite|apply|withdraw|balance|credit|gift|refund|payout)"
+STATEFUL_RE = r"(redeem|coupon|voucher|order|checkout|cart|transfer|claim|vote|invite|apply|withdraw|balance|credit|gift|refund|payout|purchase|payment|pay|charge|subscribe|subscription|upgrade|downgrade|renew|limit|quota|consume|unlock|activate|deactivate|bulk|batch|exchange|convert|merge|split|allocat|assign|grant|revoke)"
 RANK = {"ssti": 0, "sqli": 0, "idor": 1, "ssrf": 1, "mass-assignment": 1, "authz": 2, "xss": 3, "nosqli": 3,
         "lfi": 3, "ldap": 3, "xpath": 3, "prototype-pollution": 3, "oauth": 2, "file-upload": 3, "race": 4,
         "jwt": 5, "param": 6, "crlf": 6, "host-header": 6, "web-cache-deception": 7, "cors": 7, "redirect": 8,
@@ -1841,6 +2157,9 @@ def applicable_classes(ep):
     # cross-site WebSocket hijacking: ws-ish endpoints
     if re.search(r"(/ws\b|/websocket|/socket|/stomp|/hub|/cable|/sockjs)", path) or low.startswith(("ws://", "wss://")):
         cl.append("websocket")
+    # webhook IDOR / event-stream hijack: can the caller register to receive another user's events?
+    if re.search(r"(/webhook|/hooks?|/callback|/notify|/event|/subscribe|/push|/notification)", path):
+        cl += ["idor", "authz", "ssrf"]   # ssrf because the server fetches the registered URL
     if re.search(STATEFUL_RE, low):
         cl.append("race")
     return list(dict.fromkeys(cl))
@@ -5892,6 +6211,10 @@ def _auto_cdp():
 
     port = _free_cdp_port()
     _CDP_USER_DATA.mkdir(parents=True, exist_ok=True)
+    # Open Chrome directly at the target root so the operator sees exactly where to log in.
+    # A fresh profile (first run) will show the target's login page instead of a blank tab.
+    _lithost = re.sub(r"^\*\.", "", TARGET).split("/")[0].strip()
+    _target_url = f"https://{_lithost}/"
     cmd = [
         chrome,
         f"--remote-debugging-port={port}",
@@ -5901,6 +6224,7 @@ def _auto_cdp():
         "--disable-translate", "--disable-extensions",
         "--disable-popup-blocking",
         "--window-size=1280,800",
+        _target_url,   # open directly at the target — operator knows what to log into
     ]
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -6041,9 +6365,12 @@ def main():
                 phase_surface()
                 phase_discover(deadline)  # ACTIVE discovery — unlinked paths + spec walk + BFS
                 phase_spa_capture()       # SPA runtime API discovery (real browser)
-                phase_memory_recall()     # long-term memory — analogous past situations
+                phase_memory_recall()     # long-term memory — analogous past situations (BEFORE plan so it informs it)
                 phase_active()            # Layer 1 — deterministic sweep; LLM gets real scan evidence
                 phase_authed()
+                phase_biz_logic_map()     # GOD METHODOLOGY: map entities/roles/flows/value-ops before attacking
+                phase_authz_matrix()      # GOD METHODOLOGY: BFLA sweep — privileged endpoints with regular token
+                phase_race_critical()     # GOD METHODOLOGY: 25-thread race bursts on all value-flow endpoints
         else:
             log("out", "→ resume: skipping recon/surface (reusing mapped surface); continuing the hunt")
         if not (SOURCE_ASSETS and not WEB_ASSETS):
