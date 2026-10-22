@@ -3035,10 +3035,17 @@ def _graphify_surface_digest():
 
     The graph is built by phase_discover / phase_surface writing raw recon into
     <HUNT_DIR>/recon/ and then calling `graphify` on it. When present it gives us:
-      - the 8 highest-betweenness endpoints (most connected → widest attack surface)
+      - the 12 highest-degree endpoints (most connected → widest attack surface) to
+        replace the flat endpoint list with (fewer, better-chosen URLs = fewer tokens)
       - untested cells ranked by graph centrality instead of raw order
-      - cross-endpoint relationships the flat list can't express
-    """
+
+    Deliberately does NOT also dump cross-community edges or the full node list into the
+    digest (it used to — that duplicated graph_endpoints verbatim inside the same JSON
+    blob every single round). Claude's briefs (_phase_claude_code_hunt, phase_recon_agent)
+    are told the graph FILES exist and how to query them on demand (`graphify path A B`,
+    `graphify explain X`, or just `jq`/`grep` graphify-out/graph.json directly) — pulling
+    exactly the relationship it's curious about costs far fewer tokens than pre-loading a
+    guess at which 8 edges might matter into every single turn whether needed or not."""
     graph_json = HUNT_DIR / "graphify-out" / "graph.json"
     if not graph_json.exists():
         return None
@@ -3053,11 +3060,12 @@ def _graphify_surface_digest():
         top_eps = [{"url": n.get("id", ""), "degree": n.get("degree", 0),
                     "community": n.get("community_name", n.get("community", ""))}
                    for n in ep_nodes[:12]]
-        # surface edges that cross community boundaries — these are the attack paths
-        cross_edges = [e for e in g.get("edges", [])
-                       if e.get("source_community") != e.get("target_community")][:8]
-        return {"graph_endpoints": top_eps, "cross_community_edges": cross_edges,
-                "total_graph_nodes": len(nodes)}
+        communities = len(set(n.get("community") for n in nodes if n.get("community") is not None))
+        return {"graph_endpoints": top_eps, "total_graph_nodes": len(nodes),
+                "total_graph_edges": len(g.get("edges", [])), "communities": communities,
+                "query_hint": "graphify-out/graph.json exists — `graphify path \"A\" \"B\"` for the "
+                               "shortest relationship between two endpoints/entities, `graphify explain "
+                               "\"X\"` for a node's neighbors, or grep/jq the file directly for more"}
     except Exception:
         return None
 
@@ -3249,7 +3257,11 @@ def phase_recon_agent(budget_sec=600):
         "another enumeration pass on a specific lead. For any single URL you want to check, "
         f"`python3 {HERE}/exec-http.py --url <url> [--method GET|POST]` from this directory is scope-"
         "guarded and auto-captures evidence — prefer it over raw curl when you're probing a specific "
-        "endpoint, but this phase is discovery, not exploitation, so it's a recommendation, not a rule.\n\n"
+        "endpoint, but this phase is discovery, not exploitation, so it's a recommendation, not a rule.\n"
+        + (("A graph of the surface crawled so far exists at " + str(HUNT_DIR / "graphify-out" / "graph.json") +
+            " — `graphify path \"A\" \"B\"` / `graphify explain \"X\"` or grep/jq it directly if it's "
+            "faster than re-deriving a relationship by eye.\n") if (HUNT_DIR / "graphify-out" / "graph.json").exists() else "")
+        + "\n"
         f"Stay on: {scope_summary}. Write anything new you find to {HUNT_DIR}/agent-recon.json as a single "
         'JSON object: {"endpoints":[{"url":...,"host":...,"note":...}], "hosts":[{"host":...}], '
         '"tech_notes":"...", "secrets":["..."]}.\n\n'
@@ -4609,8 +4621,17 @@ def _phase_claude_code_hunt(lead_deadline, tok, tok2, authed, max_budget=None):
         '{"title","severity":"critical|high|medium|low|info","cls","endpoint","evidence","reproduction"}. '
         "evidence = what you actually observed (status/body/headers/payload). reproduction = numbered "
         "steps. Do this as you go, not all at the end — if you run out of time partway through, "
-        "whatever you've already written is kept.\n\n"
-        "## What's already known about this target\n"
+        "whatever you've already written is kept.\n"
+        + (("7. A knowledge graph of this target's surface exists at " + str(HUNT_DIR / "graphify-out" / "graph.json") +
+            " (" + str((HUNT_DIR / 'graphify-out' / 'graph.json').stat().st_size // 1024) + "KB). Before guessing "
+            "which endpoint relates to which, query it instead of reading the whole file: `graphify path "
+            '"<endpoint-or-entity-A>" "<endpoint-or-entity-B>"` for the shortest relationship between two '
+            "things (add --undirected if it reports no path — recon edges aren't always meaningfully "
+            'directional), `graphify explain "<node>"` for what connects to one node, or `jq`/`grep` the '
+            "JSON directly for something specific. This is usually cheaper and more precise than scrolling "
+            "the whole endpoint list looking for a pattern.\n"
+            ) if (HUNT_DIR / "graphify-out" / "graph.json").exists() else "")
+        + "\n## What's already known about this target\n"
         f"Tech/scope hosts: {scope_summary}\n"
         + (f"Business logic model: {json.dumps(biz)[:1500]}\n" if biz else "")
         + (f"Reward table: {json.dumps(prog_intel.get('reward_table'))[:800]}\n" if prog_intel.get("reward_table") else "")
@@ -7194,6 +7215,13 @@ def main():
                 phase_biz_logic_map()     # GOD METHODOLOGY: map entities/roles/flows/value-ops before attacking
                 phase_authz_matrix()      # GOD METHODOLOGY: BFLA sweep + mass-assign on write endpoints
                 phase_race_critical()     # GOD METHODOLOGY: 25-thread race bursts + logic-fuzz on all value-flow endpoints
+                # Rebuild the surface graph NOW, not just once back in phase_surface(). By this point
+                # phase_recon_agent + phase_discover + phase_spa_capture have all added endpoints the
+                # initial crawl never saw — the graph Claude's hunting phase queries (_phase_claude_code_
+                # hunt / phase_recon_agent) should reflect the FULL surface, not just what existed before
+                # recon finished. _build_surface_graph is `--update` (incremental), so this is cheap.
+                if not NO_LLM and STATE.get("endpoints"):
+                    _build_surface_graph(STATE["endpoints"])
         else:
             log("out", "→ resume: skipping recon/surface (reusing mapped surface); continuing the hunt")
         if not (SOURCE_ASSETS and not WEB_ASSETS):
