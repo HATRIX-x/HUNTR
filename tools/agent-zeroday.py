@@ -79,7 +79,7 @@ if TEST_TOP:
     reply, tlog, err = A.run_agent(system, user, TOOLS, handlers, max_rounds=10, max_tokens=2200, timeout=90)
 else:
     reply = None
-    for mdl in ("claude-haiku-5-5", "claude-sonnet-5-5"):
+    for mdl in ("claude-haiku-4-5-20251001", "claude-sonnet-4-6"):
         try:
             reply, err = A.lc().call_llm(system, user, model=mdl, provider="anthropic", max_tokens=2200, timeout=90)
         except Exception as e:

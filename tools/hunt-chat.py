@@ -58,7 +58,7 @@ lines.append("Operator: " + msg)
 user = "\n".join(lines)
 
 text = None
-for mdl, to in (("claude-sonnet-5-5", 90), ("claude-haiku-5-5", 75)):
+for mdl, to in (("claude-sonnet-4-6", 90), ("claude-haiku-4-5-20251001", 75)):
     try:
         text, err = lc.call_llm(sys_p, user, model=mdl, provider="anthropic", max_tokens=1200, timeout=to)
     except Exception as e:

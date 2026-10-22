@@ -205,7 +205,7 @@ def _llm_enrich(plan, inv, program):
     usr = (f"PROGRAM: {program}\nSEVERITY FOCUS: funds loss, account takeover, cross-user data (IDOR/BOLA), "
            f"business-logic (fee/yield/reward abuse), auth bypass.\nENDPOINTS ({len(sample)} of {len(inv)}):\n"
            + "\n".join(sample))
-    model = os.environ.get("HUNT_MODEL_STRONG", "claude-opus-5-5")
+    model = os.environ.get("HUNT_MODEL_STRONG", "claude-opus-4-8")
     txt, err = llm_client.call_llm(sysmsg, usr, model=model, max_tokens=2000)
     if err and not txt:
         plan["note"] += " (llm err: " + str(err)[:60] + ")"; return plan

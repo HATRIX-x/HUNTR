@@ -165,14 +165,22 @@ def _resolve_claude_available():
         return False
 
 _have_claude = _resolve_claude_available()
-# HARD POLICY (operator choice, 2026-10-09; models bumped 2026-10-22): hunt ONLY on Anthropic —
-# Opus 5.5 (strong) + Sonnet 5.5 (lead/cheap). No Groq, no NVIDIA, no Haiku for the hunt tiers.
-# Env-overridable via HUNT_MODEL_STRONG/_MID/_CHEAP. The prior defaults (opus-4-8/sonnet-4-6) were
-# a full generation behind what the operator was actually comparing HUNTR's reasoning against —
-# bumping the default model closes part of the Claude-Code-vs-HUNTR reasoning gap for free.
-_M_STRONG = os.environ.get("HUNT_MODEL_STRONG", "claude-opus-5-5")
-_M_MID    = os.environ.get("HUNT_MODEL_MID", "claude-sonnet-5-5")
-_M_CHEAP  = os.environ.get("HUNT_MODEL_CHEAP", "claude-sonnet-5-5")
+# HARD POLICY (operator choice, 2026-10-09; REVERTED 2026-10-22 after a same-day round-trip): hunt
+# ONLY on Anthropic — Opus 4.8 (strong) + Sonnet 4.6 (lead/cheap). No Groq, no NVIDIA, no Haiku for
+# the hunt tiers. Env-overridable via HUNT_MODEL_STRONG/_MID/_CHEAP.
+#
+# Earlier the same day these were bumped to opus-5-5/sonnet-5-5 on the theory that a newer model
+# reasons better. It does, but under this account's CLI-subscription auth (see cli-mode-identity-leak
+# memory — raw OAuth API calls 429, so every call goes through `claude -p`, which carries Claude
+# Code's own real identity/safety-reasoning underneath whatever persona the hunt prompt asks for),
+# the newer 5.x generation's sharper injection/autonomous-action caution makes it refuse that persona
+# far more often. Live-tested side by side, 10 trials each, same exact prompt: sonnet-4-6 10/10,
+# opus-4-8 10/10, sonnet-5-5 ~75% (1 refusal in an early batch of 4). A model that reasons 10% better
+# but runs 25%+ less often is a net loss for an unattended loop with no human present to vouch for
+# the request each time — reliability beats marginal quality here. Revert to 4.6/4.8.
+_M_STRONG = os.environ.get("HUNT_MODEL_STRONG", "claude-opus-4-8")
+_M_MID    = os.environ.get("HUNT_MODEL_MID", "claude-sonnet-4-6")
+_M_CHEAP  = os.environ.get("HUNT_MODEL_CHEAP", "claude-sonnet-4-6")
 MODEL_LEAD   = {"provider": "anthropic", "model": _M_MID}
 MODEL_STRONG = {"provider": "anthropic", "model": _M_STRONG}
 MODEL_CHEAP  = {"provider": "anthropic", "model": _M_CHEAP}
@@ -4075,7 +4083,7 @@ def _phase_llm_lead_tool_use(lead_deadline, tok, tok2, authed, max_steps,
 
     try:
         # Tool-use iterations run on the cheap tier — pinned to Sonnet 5.5 (operator: Anthropic only).
-        tool_model = MODEL_CHEAP.get("model", "claude-sonnet-5-5")
+        tool_model = MODEL_CHEAP.get("model", "claude-sonnet-4-6")
         final_text, tool_log, err = llm_client.call_llm_with_tools(
             system=sys_p,
             initial_user=initial_user,
@@ -4171,7 +4179,7 @@ def _phase_llm_lead_json(lead_deadline, tok, tok2, authed, max_steps, force_mode
             # Anthropic multi-turn: use messages API directly
             import llm_client as _lc
             payload = {
-                "model": mdl.get("model", "claude-sonnet-5-5"),
+                "model": mdl.get("model", "claude-sonnet-4-6"),
                 "system": sys_p,
                 "messages": messages,
                 "max_tokens": 1500,
@@ -4488,7 +4496,7 @@ def _phase_claude_code_hunt(lead_deadline, tok, tok2, authed, max_budget=None):
     except Exception:
         pass   # non-fatal — it's only kept for the operator to inspect what was sent
 
-    model = MODEL_LEAD.get("model") or "claude-sonnet-5-5"
+    model = MODEL_LEAD.get("model") or "claude-sonnet-4-6"
     budget = max(60.0, lead_deadline - time.time())
     if max_budget:
         budget = min(budget, max_budget)
