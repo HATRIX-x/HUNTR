@@ -2068,9 +2068,18 @@ function renderCoverage(){
 }
 
 /* ─── terminal drawer ─── */
+// #term-body's height is a pure CSS transition (.22s, see the rule above) — opening/closing it
+// resizes the graph canvas's container but is NOT a window resize event, so graphInit's
+// window.addEventListener('resize',...) never fires and the canvas's backing-store dimensions
+// (canvas.width/height, g.w/g.h) go stale: the browser then stretches the old raster to fit the
+// new CSS box until something else happens to trigger an actual resize. Call g._resize() after
+// the transition completes (230ms, matching the existing scroll/focus timeouts below) so the
+// canvas catches up on its own, every time, instead of only on the next incidental window resize.
+function _resizeGraphCanvas(){ if(S.graph && S.graph._resize) S.graph._resize(); }
 function setTerm(open){
   S.termOpen=open;
   document.getElementById('term-panel').classList.toggle('open',open);
+  setTimeout(_resizeGraphCanvas,230);
   if(open){
     const log=document.getElementById('term-log');
     setTimeout(()=>{log.scrollTop=log.scrollHeight;document.getElementById('term-input').focus();},230);
@@ -2083,6 +2092,7 @@ function toggleTermMax(){
   p.classList.toggle('max',max);
   document.getElementById('tb-max').textContent = max ? '⤡' : '⤢';
   document.getElementById('tb-max').title = max ? 'restore terminal' : 'maximize terminal';
+  setTimeout(_resizeGraphCanvas,240);
   setTimeout(()=>{ const log=document.getElementById('term-log'); log.scrollTop=log.scrollHeight; document.getElementById('term-input').focus(); },240);
 }
 
@@ -2552,7 +2562,16 @@ function graphSync(run){
     else if(save){ x=save[0]; y=save[1]; }
     else if(aRadius){ x=g.w/2+Math.cos(aAngle)*aRadius+(Math.random()-.5)*16; y=g.h/2+Math.sin(aAngle)*aRadius+(Math.random()-.5)*16; }
     else { x=g.w/2+(Math.random()-.5)*60; y=g.h/2+(Math.random()-.5)*60; }
-    const n=Object.assign({id,type,label,vx:0,vy:0,x,y,aAngle:aAngle||0,aRadius:aRadius||0,
+    // Freeze the spring-physics anchor (aAngle/aRadius) for a node that already exists — ONLY a
+    // genuinely new node gets the freshly computed one. HR/ER (the ring radii graphTick pulls every
+    // node toward) scale with min(g.w,g.h), so a canvas resize (e.g. the TERMINAL drawer opening/
+    // closing — a pure CSS height change, no browser window resize, see setTerm()) used to recompute
+    // a fresh anchor for EVERY node on the next graphSync, and graphTick would visibly drag the
+    // entire already-oriented layout to the new target — the exact "nodes move suddenly and
+    // aggressively" bug reported live 2026-10-23. x/y (today's position) was already preserved for
+    // existing nodes; aAngle/aRadius (tomorrow's PULL target) was not — same bug, the other half.
+    const aA=old?old.aAngle:(aAngle||0), aR=old?old.aRadius:(aRadius||0);
+    const n=Object.assign({id,type,label,vx:0,vy:0,x,y,aAngle:aA,aRadius:aR,
       ph:old?old.ph:Math.random()*6.283, ph2:old?old.ph2:Math.random()*6.283,
       // zBase (+ per-node zJit, breathing in graphDraw) is the node's pseudo-3D depth —
       // x/y/z all move independently over time, which is as close to "4D" as a flat
