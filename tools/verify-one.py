@@ -162,7 +162,7 @@ payload = json.dumps({"target": d.get("target", ""), "findings": [item]})
 text = None
 # Haiku first: fast + available; Sonnet is rate-limited (429) on Pro and its retry backoff
 # would stall the re-verify for minutes. Haiku 4.5 judges these reliably.
-for mdl in (("claude-haiku-4-5-20251001", 90), ("claude-sonnet-4-6", 120)):
+for mdl in (("claude-haiku-5-5", 90), ("claude-sonnet-5-5", 120)):
     try:
         text, err = lc.call_llm(sys_p, payload, model=mdl[0], provider="anthropic",
                                 max_tokens=1600, timeout=mdl[1])
@@ -202,7 +202,7 @@ if verdict in ("confirmed", "likely") and not j.get("drop"):
                             "confirming_evidence": item["evidence"],
                             "confirm_repro": j.get("repro", "")})[:3000]
     ctext = None
-    for cm in ("claude-haiku-4-5-20251001", "claude-sonnet-4-6"):
+    for cm in ("claude-haiku-5-5", "claude-sonnet-5-5"):
         try:
             ctext, _ce = lc.call_llm(crit_sys, crit_user, model=cm, provider="anthropic", max_tokens=500, timeout=60)
         except Exception:

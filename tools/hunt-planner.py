@@ -76,7 +76,7 @@ system = (
 user = "Knowledge-graph digest:\n" + json.dumps(digest)[:7000]
 
 reply = None
-for mdl in ("claude-haiku-4-5-20251001", "claude-sonnet-4-6"):
+for mdl in ("claude-haiku-5-5", "claude-sonnet-5-5"):
     try:
         reply, err = A.lc().call_llm(system, user, model=mdl, provider="anthropic", max_tokens=2200, timeout=90)
     except Exception as e:

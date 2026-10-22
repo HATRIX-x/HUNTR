@@ -1113,7 +1113,7 @@ async function api(path, body){
   try{
     const o = body ? {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)} : {};
     const r = await fetch(API+path,{signal:AbortSignal.timeout(8000),...o});
-    return r.ok ? r.json() : null;
+    try{ return await r.json(); }catch{ return {ok:r.ok}; }
   }catch{ return null; }
 }
 // long-running (agent / reverify can take minutes)
@@ -1539,7 +1539,8 @@ function renderHeader(run){
   const tail = parts.length ? ' · '+parts.join(' · ') : '';
   if(st==='running'){
     sdot.classList.add('run');
-    stext.innerHTML=`<b>${esc(nm)}</b> · ${esc(stage)}${tail}`;
+    const bgNote = run.stage_parallel ? ` <span style="opacity:.6">(+ ${esc(run.stage_parallel)})</span>` : '';
+    stext.innerHTML=`<b>${esc(nm)}</b> · ${esc(stage)}${bgNote}${tail}`;
     pp.removeAttribute('hidden');ps.removeAttribute('hidden');pr.setAttribute('hidden','');
     document.getElementById('tb-livedot').classList.add('run');
   }else if(st==='done'){
@@ -2229,8 +2230,28 @@ async function ctl(action){
     if(ans===null) return;   // cancelled — stay paused
     const v=parseFloat(ans); if(!isNaN(v)) body.cost_cap_usd=Math.max(0,v);
   }
-  await api('/api/hunt/control',body);
-  if(action==='stop') stopPoll();
+  // Give immediate visual feedback so the operator knows the click landed
+  const btnId = action==='stop'?'tb-stop':action==='pause'?'tb-pause':null;
+  const btn = btnId && document.getElementById(btnId);
+  const origLabel = btn && btn.innerHTML;
+  if(btn){ btn.disabled=true; btn.innerHTML=action==='stop'?'■ Stopping…':'⏸ Pausing…'; }
+
+  const r = await api('/api/hunt/control',body);
+
+  // After stop: keep polling so the UI updates to "stopped" on its own — never kill the poll
+  // here. The existing doPoll() logic already calls stopPoll() once status becomes done/stopped.
+  // Previously stopPoll() was called immediately after the request, so the status dot never
+  // updated and the user had to refresh manually.
+  if(action==='stop'){
+    if(r && !r.ok) flash(r.error||'Stop failed','no');
+    setTimeout(()=>{ if(btn){ btn.disabled=false; btn.innerHTML=origLabel||'■ Stop'; } }, 3000);
+    if(!S.pollId) poll(); // ensure polling is running so status update arrives
+  }
+  if(action==='pause'){
+    if(r && !r.ok) flash(r.error||'Pause failed','no');
+    setTimeout(()=>{ if(btn){ btn.disabled=false; btn.innerHTML=origLabel||'⏸ Pause'; } }, 3000);
+    if(!S.pollId) poll();
+  }
   if(action==='resume'){ S.cLog=0; document.getElementById('term-log').innerHTML=''; S.autoFlipped=false; poll(); }
 }
 

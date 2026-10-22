@@ -165,11 +165,14 @@ def _resolve_claude_available():
         return False
 
 _have_claude = _resolve_claude_available()
-# HARD POLICY (operator choice, 2026-10-09): hunt ONLY on Anthropic — Opus 4.8 (strong) + Sonnet 4.6
-# (lead/cheap). No Groq, no NVIDIA, no Haiku. Env-overridable via HUNT_MODEL_STRONG/_MID/_CHEAP.
-_M_STRONG = os.environ.get("HUNT_MODEL_STRONG", "claude-opus-4-8")
-_M_MID    = os.environ.get("HUNT_MODEL_MID", "claude-sonnet-4-6")
-_M_CHEAP  = os.environ.get("HUNT_MODEL_CHEAP", "claude-sonnet-4-6")
+# HARD POLICY (operator choice, 2026-10-09; models bumped 2026-10-22): hunt ONLY on Anthropic —
+# Opus 5.5 (strong) + Sonnet 5.5 (lead/cheap). No Groq, no NVIDIA, no Haiku for the hunt tiers.
+# Env-overridable via HUNT_MODEL_STRONG/_MID/_CHEAP. The prior defaults (opus-4-8/sonnet-4-6) were
+# a full generation behind what the operator was actually comparing HUNTR's reasoning against —
+# bumping the default model closes part of the Claude-Code-vs-HUNTR reasoning gap for free.
+_M_STRONG = os.environ.get("HUNT_MODEL_STRONG", "claude-opus-5-5")
+_M_MID    = os.environ.get("HUNT_MODEL_MID", "claude-sonnet-5-5")
+_M_CHEAP  = os.environ.get("HUNT_MODEL_CHEAP", "claude-sonnet-5-5")
 MODEL_LEAD   = {"provider": "anthropic", "model": _M_MID}
 MODEL_STRONG = {"provider": "anthropic", "model": _M_STRONG}
 MODEL_CHEAP  = {"provider": "anthropic", "model": _M_CHEAP}
@@ -215,6 +218,9 @@ def check_pause():
 # is in play. Under the subscription (HUNT_LLM_VIA_CLI=1) there is no per-call billing at all, so
 # llm_client._LAST_USAGE comes back {} and _record_llm_cost() correctly adds nothing but a call count.
 _MODEL_PRICE = {
+    "claude-opus-5-5": (5.00, 25.00), "claude-sonnet-5-5": (3.00, 15.00),
+    "claude-haiku-5-5": (1.00, 5.00), "claude-sonnet-5": (3.00, 15.00),
+    # older generations kept so a hunt resumed/override-pinned to them still prices correctly
     "claude-opus-4-8": (5.00, 25.00), "claude-sonnet-4-6": (3.00, 15.00),
     "claude-haiku-4-5": (1.00, 5.00), "claude-sonnet-4-5": (3.00, 15.00),
 }
@@ -3924,6 +3930,27 @@ def _phase_llm_lead_tool_use(lead_deadline, tok, tok2, authed, max_steps,
         "4. Attack: hypothesis → bash/http_request → verify → scan_endpoint → record_finding\n"
         "5. Chain: CORS+XSS=ATO, IDOR+info=data breach, open-redirect+OAuth=token hijack\n"
         "6. record_finding ONLY with OBSERVED evidence (response body, tool output, scanner proof)\n\n"
+        "DOORS NOT WALLS: treat 403/404/405/500/WAF as a signal and an opening, never a stop. 403 = the "
+        "resource exists and is worth protecting → bypass it (headers, path tricks, method swap, encoding). "
+        "404 = the route is hidden → find the sibling/versioned/shadow route. 500 = your input broke logic "
+        "→ that's an injection/logic signal, dig in. After you understand the target, HYPOTHESISE "
+        "target-specific bugs (the invariant the dev assumed + the one request that breaks it) — don't just "
+        "run known checks and report whatever comes back.\n\n"
+        "BE SKEPTICAL — the deterministic scanners running alongside you produce real false positives "
+        "(e.g. a rate-limit probe matching a 3-letter string inside a random UUID, or a guessed-URL "
+        "fallback testing a 404 page as if it were a real endpoint). Before record_finding, verify from "
+        "the ACTUAL response, not from what a URL or param name merely suggests. Confirmation bar per class:\n"
+        "   • Open redirect: CONFIRMED only by a 3xx status whose Location header points to an EXTERNAL "
+        "domain you control, or a body meta/JS redirect to it. A 200, a rewrite header, or the param merely "
+        "echoed in the body is NOT a redirect.\n"
+        "   • CORS: CONFIRMED only if Access-Control-Allow-Origin reflects an attacker origin AND "
+        "Access-Control-Allow-Credentials: true. ACAO: * without creds is informational.\n"
+        "   • XSS/SSTI: CONFIRMED only if the payload executes/evaluates unescaped in the response, not if "
+        "it is HTML-escaped or merely reflected as text.\n"
+        "   • Auth/rate-limit bypass: CONFIRMED only against an endpoint you verified is a REAL auth-related "
+        "endpoint (read its response body/schema first) — not one that merely matches an OTP/MFA/verify "
+        "pattern in its URL string (that pattern can appear inside an unrelated ID, slug, or UUID).\n"
+        "If evidence is ambiguous, keep digging or skip it — never upgrade 'reflected' to 'confirmed'.\n\n"
         "Skill playbook and past wins on similar targets are below — apply matching technique FIRST."
     )
 
@@ -4035,8 +4062,8 @@ def _phase_llm_lead_tool_use(lead_deadline, tok, tok2, authed, max_steps,
     tools = _hunt_tools(authed)
 
     try:
-        # Tool-use iterations run on the cheap tier — now pinned to Sonnet 4.6 (operator: Anthropic only).
-        tool_model = MODEL_CHEAP.get("model", "claude-sonnet-4-6")
+        # Tool-use iterations run on the cheap tier — pinned to Sonnet 5.5 (operator: Anthropic only).
+        tool_model = MODEL_CHEAP.get("model", "claude-sonnet-5-5")
         final_text, tool_log, err = llm_client.call_llm_with_tools(
             system=sys_p,
             initial_user=initial_user,
@@ -4098,16 +4125,27 @@ def _phase_llm_lead_json(lead_deadline, tok, tok2, authed, max_steps, force_mode
     # findings; this "propose" wording gets real proposals every round.
     sys_p = (
         "You are an elite bug bounty hunter on target " + str(TARGET) + ". You do NOT have network access "
-        "yourself — this harness performs every HTTP request on your behalf and reports the REAL result "
-        "back to you next turn. Reply STRICT JSON only, naming ONE step for the harness to run:\n"
+        "or a shell yourself — this harness performs every request/command on your behalf and reports the "
+        "REAL result back to you next turn. Reply STRICT JSON only, naming ONE step for the harness to run:\n"
         'Steps: {"propose":"probe","path":"/path"} | '
         '{"propose":"request","method":"GET","url":"…","headers":{},"body":"…"} | '
+        '{"propose":"shell","command":"…"} — run a real shell command (cat/grep the recon files in '
+        + str(HUNT_DIR) + "/ for JS secrets/API routes, or re-run subfinder/httpx/katana/nuclei/gau/jq "
+        "yourself for a narrower slice than the background scan already covered) | "
         '{"propose":"test","endpoint":"…","class":"sqli|xss|ssti|ssrf|cors|redirect|idor|authz"} | '
         '{"propose":"remember","lead":"…","endpoint":"…"} | '
         '{"propose":"finding","severity":"c|h|m|l","title":"…","cls":"…","endpoint":"…","detail":"…","steps":"…"} | '
         '{"propose":"done","summary":"…"}\n'
-        "Only report findings backed by a REAL result you were shown. 401/403 is a lead, not a vuln. "
-        "Previous step results are in the conversation — use them to decide your next proposal."
+        "MANDATORY FIRST STEPS before hypothesizing: shell `cat " + str(HUNT_DIR) + "/nuclei_bg.txt` , "
+        "`cat " + str(HUNT_DIR) + "/gau_bg.txt | head -50` , `cat " + str(HUNT_DIR) + "/subs_bg.txt` — "
+        "background recon may already have findings or routes worth attacking directly.\n"
+        "Only report findings backed by a REAL result you were shown. 401/403 is a lead, not a vuln — "
+        "403 means the resource exists and is worth protecting (try a bypass: headers, path tricks, method "
+        "swap); 404 means the route is hidden (try sibling/versioned/shadow paths); 500 means your input "
+        "broke logic (an injection/logic signal, dig in). Before 'finding', verify from the ACTUAL response "
+        "body — a scanner hit, a URL that merely CONTAINS a keyword (e.g. 'otp'/'confirm' inside an unrelated "
+        "UUID or slug), or a guessed endpoint that 404s is NOT evidence. Never upgrade 'reflected' to "
+        "'confirmed'. Previous step results are in the conversation — use them to decide your next proposal."
     )
 
     # multi-turn conversation thread — LLM sees all previous action results
@@ -4121,7 +4159,7 @@ def _phase_llm_lead_json(lead_deadline, tok, tok2, authed, max_steps, force_mode
             # Anthropic multi-turn: use messages API directly
             import llm_client as _lc
             payload = {
-                "model": mdl.get("model", "claude-sonnet-4-6"),
+                "model": mdl.get("model", "claude-sonnet-5-5"),
                 "system": sys_p,
                 "messages": messages,
                 "max_tokens": 1500,
@@ -4238,6 +4276,24 @@ def _phase_llm_lead_json(lead_deadline, tok, tok2, authed, max_steps, force_mode
                         _note_gated(res.get("url") or url, res.get("status"), step)
                     log("cmd", "$ " + str(plan.get("method","GET")).upper() + " " + url[:80] +
                         " → " + str(res.get("status") or res.get("err",""))[:60])
+
+        elif act == "shell":
+            cmd = str(plan.get("command") or "").strip()
+            if not cmd:
+                res = {"ok": False, "err": "missing command"}
+            else:
+                key = ("shell", cmd[:200])
+                if key in tried:
+                    res = {"ok": False, "err": "already ran"}
+                else:
+                    tried.add(key); cur_key = key
+                    log("cmd", "$ " + cmd[:120])
+                    out, err, rc = sh(["bash", "-c", cmd], timeout=60)
+                    combined = (out + err).strip()
+                    if len(combined) > 3500:
+                        combined = llm_client.summarize_if_large(combined, threshold=3500, label="shell:" + cmd[:40])
+                    res = {"ok": rc == 0, "exit": rc, "output": combined[:3500] or "(no output)"}
+                    flush()
 
         elif act == "test":
             ep = str(plan.get("endpoint") or "").strip()
@@ -6860,15 +6916,35 @@ def main():
             log("out", "→ resume: skipping recon/surface (reusing mapped surface); continuing the hunt")
         if not (SOURCE_ASSETS and not WEB_ASSETS):
             # Web-hunt-only phases (skip for source-only).
-            # ORDER MATTERS on the Pro account: the adaptive coverage loop is 0-token (scan_cell runs
-            # deterministic scanners + oracles, never the LLM), so run it FIRST — its proof is banked
-            # before any LLM-heavy phase can exhaust the rate limit and pause the hunt. The LLM-led
-            # depth phases come AFTER, adding to coverage that is already secured.
+            # REBUILT 2026-10-22 (operator: "these scripts won't find shit — rebuild HUNTR to reason
+            # like Claude"): phase_llm_lead previously ran strictly AFTER phase_adaptive's full
+            # deterministic sweep finished. On a real surface (3733 cells, live Databricks hunt) that
+            # blind scan_cell sweep alone ran 4-5+ HOURS before Claude's reasoning agent got a single
+            # turn — the operator compared the same target hunted by Claude Code directly and found
+            # Claude Code's live reasoning (read the response, form a hypothesis, test it, chain it)
+            # found real signal while HUNTR's scripted sweep mostly produced false positives (see
+            # fp-otp-uuid-oauth-guessed-url memory). Sequencing the thing that actually reasons dead
+            # last behind hours of mechanical pattern-matching meant it barely ran at all.
+            # Fix: run them CONCURRENTLY against the same wall-clock deadline. phase_adaptive is
+            # provably safe to background — it is 0-token (never calls the LLM, so it can never itself
+            # raise RateLimitPause) and only checks time.time() > deadline to stop, no check_pause()
+            # calls inside it. It still proceeds as a coverage backstop, immune to an LLM rate-limit
+            # pause, while phase_llm_lead starts reasoning within seconds instead of hours later.
+            # Thread safety already proven in this codebase: STATE mutations go through _STATE_LOCK
+            # (add_finding/mark_tested), scope-guard's rate limiter is flock-protected for concurrent
+            # requests (see rate-limit-race memory), and phase_llm_lead's own dual-agent BROAD+DEEP
+            # mode already runs itself as two concurrent threads today.
             phase_plan()                                 # target-specific attack plan + flows (flexible)
-            phase_adaptive(deadline)                     # 0-token deterministic coverage — plan-driven
+            if not NO_LLM and not resumed:
+                _adapt_t = threading.Thread(target=phase_adaptive, args=(deadline,), daemon=True)
+                _adapt_t.start()
+                STATE["stage_parallel"] = "0-token coverage sweep running in background"
+                check_pause(); phase_llm_lead(deadline)      # Claude leads — reasons, hypothesizes, chains
+                _adapt_t.join(timeout=max(0, deadline - time.time()))
+                STATE.pop("stage_parallel", None)
+            else:
+                phase_adaptive(deadline)                     # deterministic-only mode / resume: sweep alone
             if not NO_LLM:                               # LLM depth phases (skipped in deterministic-only mode)
-                if not resumed:
-                    check_pause(); phase_llm_lead(deadline)  # LLM-led loop, AFTER deterministic coverage
                 check_pause(); phase_api_test(deadline)      # SPA-first — test captured runtime API
                 check_pause(); phase_ai_direct(deadline)     # Layer 2 — AI-directed (Haiku)
                 check_pause(); phase_exploit_agent(deadline) # Depth — LLM-driven exploitation

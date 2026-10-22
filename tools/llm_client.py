@@ -140,11 +140,14 @@ PROVIDERS = {
         "auth_header": "x-api-key",
         "extra_headers": {"anthropic-version": "2023-06-01"},
         # Anthropic native format — strip keys the Messages API rejects: enable_thinking is not a valid
-        # param; temperature + top_p cannot both be sent (drop top_p); and newer models (Opus 4.8) REJECT
-        # `temperature` outright ("deprecated for this model") → drop it for claude-opus* too.
+        # param; temperature + top_p cannot both be sent (drop top_p). `temperature` itself is REJECTED
+        # outright ("deprecated for this model") by every current Claude model this engine actually
+        # calls — first caught on claude-opus-4-8, but live-tested 2026-10-22 against claude-sonnet-5-5
+        # too (HTTP 400, same message) once the model defaults were bumped to the 5.x generation. Rather
+        # than chase this per-model-prefix again next bump, just never send it — the API's own default
+        # sampling is fine for this engine's use (JSON-action proposals, not creative writing).
         "format_request": lambda body: {k: v for k, v in body.items()
-                                        if k not in ("enable_thinking", "top_p")
-                                        and not (k == "temperature" and str(body.get("model", "")).startswith("claude-opus"))},
+                                        if k not in ("enable_thinking", "top_p", "temperature")},
         "parse_response": lambda data: next(
             (c.get("text", "") for c in data.get("content", []) if c.get("type") == "text"),
             (data.get("content", [{}])[0].get("text", "") if data.get("content") else "")),
@@ -223,12 +226,12 @@ def get_provider_config():
 def _default_model(provider):
     """Default model per provider. IDs verified against the live catalogues."""
     defaults = {
-        "anthropic": "claude-sonnet-4-6",
+        "anthropic": "claude-sonnet-5-5",
         # https://build.nvidia.com/models — Nemotron 3 family (real published IDs)
         "nvidia": "nvidia/nemotron-3-ultra-550b-a55b",
         "openai": "gpt-4o",
     }
-    return defaults.get(provider, "claude-sonnet-4-6")
+    return defaults.get(provider, "claude-sonnet-5-5")
 
 
 # Cheap/fast sibling of the flagship, same family — used for mechanical + high-volume work
@@ -268,9 +271,31 @@ def _claude_cli_call(system, user, model, timeout=180):
         env["CLAUDE_CONFIG_DIR"] = os.path.expanduser(cdir)
     # a pure completion: our prompt only, no tool access, no inherited model override
     env.pop("ANTHROPIC_MODEL", None)
-    cmd = [cli, "-p", user or "", "--model", model or "claude-sonnet-4-6"]
+    # --no-session-persistence: WITHOUT this, every "fresh" -p call from the same cwd was actually
+    # resuming/accumulating the SAME persisted on-disk conversation. Caught live 2026-10-22: the exact
+    # same hunting-persona prompt+digest, called 3x in a row, refused 2 of 3 times — one refusal
+    # referenced "a prior response in this session was blocked by a safety classifier" that was never
+    # part of ANY prompt this engine sent. --system-prompt-snapshot defaults to "on" (per `claude -p
+    # --help`): the FIRST system prompt ever sent for a persisted conversation gets cached and REUSED
+    # on every later call tied to that same session, ignoring whatever new --system-prompt text is
+    # passed, until compaction — so calls were drifting onto stale personas/history instead of each
+    # being the clean one-shot completion the rest of this module assumes. --no-session-persistence
+    # makes each call genuinely stateless, which is what a "pure completion" requires in the first place.
+    cmd = [cli, "-p", user or "", "--model", model or "claude-sonnet-5-5", "--no-session-persistence"]
     if system:
-        cmd += ["--append-system-prompt", system]
+        # FULL replace (--system-prompt), not append (--append-system-prompt). `claude -p` is the real
+        # Claude Code product, not a blank completion endpoint — append keeps its OWN baked-in identity/
+        # tool-set/cwd-and-git-awareness underneath whatever persona we ask for. Live-tested 2026-10-22:
+        # with --append-system-prompt, a hunting-agent persona prompt asking for a "propose this step"
+        # JSON reply got refused outright ("I'm Claude Code in /home/hatrix/HUNTR/tools, a git repo on
+        # branch integrate...") — it noticed the real repo it's sitting in and broke character, EVEN
+        # with the working directory set to a neutral path (CWD alone isn't the trigger; the baked-in
+        # system prompt's git/session awareness is). --system-prompt (full replace) +
+        # --exclude-dynamic-system-prompt-sections (strips the per-machine cwd/git/env block entirely)
+        # together gave a clean, in-persona JSON reply. This is the one call site every Anthropic path
+        # in this engine funnels through under the subscription (HUNT_LLM_VIA_CLI=1) — phase_llm_lead's
+        # JSON-action loop, attack-planner, every agent-*.py — so this single fix applies everywhere at once.
+        cmd += ["--system-prompt", system, "--exclude-dynamic-system-prompt-sections"]
     # cross-process throttle: every call site (call_llm, _anthropic_raw_request, summarize_if_large)
     # funnels through here, so this is the one choke point that needs to bound how many `claude -p`
     # subprocesses — across hunt-run.py, its background threads, and every agent-*.py it spawns — hit
@@ -340,10 +365,10 @@ def call_llm(system, user, model=None, max_tokens=None, temperature=None,
     if _cli_mode():
         _m = (model or "").strip()
         if not _m:
-            _m = os.environ.get("HUNT_MODEL_MID") or "claude-sonnet-4-6"
+            _m = os.environ.get("HUNT_MODEL_MID") or "claude-sonnet-5-5"
         _LAST_USAGE = {}  # subscription path: no per-call token/cost accounting exists
         if _m.startswith("claude") or (provider or "").lower().strip() == "anthropic":
-            return _claude_cli_call(system, user, _m if _m.startswith("claude") else "claude-sonnet-4-6",
+            return _claude_cli_call(system, user, _m if _m.startswith("claude") else "claude-sonnet-5-5",
                                     timeout=timeout)
     if provider:
         prov = provider.lower().strip()
@@ -499,9 +524,9 @@ def _anthropic_raw_request(payload, timeout=120):
     # result shaped like an Anthropic /v1/messages response so every caller (call_claude, the summarizer,
     # the lead multi-turn loop) keeps working unchanged. This makes ALL Anthropic paths use the subscription.
     if _cli_mode():
-        model = payload.get("model") or os.environ.get("HUNT_MODEL_MID") or "claude-sonnet-4-6"
+        model = payload.get("model") or os.environ.get("HUNT_MODEL_MID") or "claude-sonnet-5-5"
         if not str(model).startswith("claude"):
-            model = "claude-sonnet-4-6"
+            model = "claude-sonnet-5-5"
         system = payload.get("system") or ""
         parts = []
         for m in payload.get("messages", []):
@@ -559,7 +584,7 @@ def summarize_if_large(text, threshold=3500, label="tool output"):
     _usr = f"Summarize this {label} ({len(text)} chars) — keep only security-relevant findings:\n\n" + text[:16000]
     # CLI mode: run the summarizer through the sanctioned `claude` CLI (subscription), not the raw API.
     if _cli_mode():
-        s, e = _claude_cli_call(_sys, _usr, "claude-sonnet-4-6", timeout=60)
+        s, e = _claude_cli_call(_sys, _usr, "claude-sonnet-5-5", timeout=60)
         if s and not e:
             return f"[summarized from {len(text)} chars]\n{s}"
         return text[:threshold] + f"\n…[truncated: {len(text)} chars total]"
@@ -567,7 +592,7 @@ def summarize_if_large(text, threshold=3500, label="tool output"):
     if not auth:
         return text[:threshold] + f"\n…[truncated: {len(text)} chars total]"
     payload = {
-        "model": "claude-sonnet-4-6",
+        "model": "claude-sonnet-5-5",
         "system": _sys,
         "messages": [{"role": "user", "content": _usr}],
         "max_tokens": 900,
@@ -606,7 +631,7 @@ def call_llm_with_tools(system, initial_user, tools, tool_executor,
         initial_user:   first user message (the hunt digest)
         tools:          list of Anthropic tool definition dicts
         tool_executor:  callable(name: str, input: dict) -> str
-        model:          model id (default: claude-sonnet-4-6)
+        model:          model id (default: claude-sonnet-5-5)
         max_tokens:     per-turn token budget
         timeout:        HTTP timeout per request
         on_tool_call:   optional callback(name, input, result) for logging
@@ -621,7 +646,7 @@ def call_llm_with_tools(system, initial_user, tools, tool_executor,
     # which issues one decision at a time through call_llm (→ CLI). So tool-use still runs on the subscription.
     if _cli_mode():
         return None, [], "cli-mode: native tool-use unavailable — use JSON-action loop"
-    mdl = model or "claude-sonnet-4-6"
+    mdl = model or "claude-sonnet-5-5"
     messages = [{"role": "user", "content": initial_user}]
     tool_calls_log = []
     done_signal = False

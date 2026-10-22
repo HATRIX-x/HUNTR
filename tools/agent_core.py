@@ -19,7 +19,9 @@ IDS = HUNT_DIR / "identities.json"
 EV = HUNT_DIR / "evidence"
 
 # Haiku first: fast + available on Pro; Sonnet is a quality fallback that often 429s.
-MODELS = ("claude-haiku-4-5-20251001", "claude-sonnet-4-6")
+# Bumped 2026-10-22: a generation behind (haiku-4-5/sonnet-4-6) while the operator was actively
+# comparing HUNTR's reasoning quality against current-generation Claude directly.
+MODELS = ("claude-haiku-5-5", "claude-sonnet-5-5")
 
 
 def load_lc():

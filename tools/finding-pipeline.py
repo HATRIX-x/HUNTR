@@ -20,7 +20,7 @@ Input finding JSON (any HUNTR probe's finding, or hand-written) may include:
 
 Usage:
   finding-pipeline.py --finding-file f.json [--program acme] [--stack saas] \
-        [--template h1] [--model claude-sonnet-4-6] [--token JWT] \
+        [--template h1] [--model claude-sonnet-5-5] [--token JWT] \
         [--class idor] [--no-verify] [--no-draft] [--skip-evidence] [--json]
 Exit: 0 SUBMIT · 1 REVIEW · 2 HOLD.
 """
