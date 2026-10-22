@@ -639,6 +639,8 @@ def _check_circuit_breakers():
 _SESSION_CHECK_COOLDOWN = 600   # at most one LIVE probe per 10 minutes, not per flush() call
 _session_last_check = [0.0]
 _session_bad_streak = [0]
+_pausing_for_creds = [False]   # reentrancy guard — _pause_for_creds's own flush() re-enters
+                                # _check_session_health, which must not probe/pause a 2nd time
 
 
 def _session_probe_url():
@@ -648,6 +650,49 @@ def _session_probe_url():
         p = _up.urlparse(host)
         return f"{p.scheme}://{p.hostname or host}/"
     return "https://" + host.split("/")[0] + "/"
+
+
+def _pause_for_creds(msg):
+    """Self-pause for a missing/dead session — operator directive 2026-10-23: "if it lacks creds
+    the hunt pauses and a pop-up appears... to make sure everything works perfectly in grey box and
+    white box hunting." Grey/white-box hunting that silently runs black-box-only (no creds ever
+    supplied) or silently keeps hammering every authenticated class with a dead token (session
+    expired mid-hunt — see _check_session_health's docstring for the exact incident this already
+    existed to make VISIBLE, but never actually stopped) defeats half the hunt's purpose with
+    nothing forcing the operator to notice.
+
+    Uses the EXACT same mechanism the operator's own Pause button already uses (self-SIGSTOP, not
+    the RateLimitPause-exception path) — deliberately NOT the exception/process-exit/--resume-
+    relaunch route, because relaunching re-enters main() with resumed=True, which skips every phase
+    gated `if not resumed:` — including phase_authed() itself. That would mean providing creds and
+    resuming would never actually trigger the authenticated pass it just paused to wait for.
+    SIGSTOP instead freezes this exact process at this exact line; the operator's Resume action (or
+    /api/hunt/creds auto-resuming once fresh creds are saved) sends SIGCONT, and execution falls
+    right back out of this function, in the same call stack, about to retry with live data since
+    _creds() re-reads from disk every call — no relaunch, no skipped phase, no re-run of completed
+    work either."""
+    with _STATE_LOCK:
+        STATE["status"] = "paused"
+        STATE["paused_reason"] = "creds-required"
+        STATE["creds_alert"] = {"ts": time.time(), "msg": msg}
+        STATE.setdefault("logs", []).append({"t": "err", "v": "⏸ PAUSED — " + msg})
+        if len(STATE["logs"]) > 400:
+            STATE["logs"] = STATE["logs"][-400:]
+    flush()
+    try:
+        import signal as _sig
+        os.kill(os.getpid(), _sig.SIGSTOP)
+    except Exception:
+        pass
+    # execution resumes HERE once SIGCONT arrives (operator clicked Resume, or /api/hunt/creds
+    # auto-resumed after saving fresh creds) — same process, same call stack, nothing re-run.
+    with _STATE_LOCK:
+        if STATE.get("paused_reason") == "creds-required":
+            STATE["status"] = "running"
+            STATE.pop("paused_reason", None)
+            STATE.pop("creds_alert", None)
+            STATE.setdefault("logs", []).append({"t": "ok", "v": "▷ hunt resumed"})
+    flush()
 
 
 def _check_session_health():
@@ -704,6 +749,18 @@ def _check_session_health():
     STATE["logs"].append({"t": "err", "v": "⚠ SESSION ALERT — " + msg + ". Update credentials to keep hunting authenticated."})
     if len(STATE["logs"]) > 400:
         STATE["logs"] = STATE["logs"][-400:]
+    # ESCALATE 2026-10-23: a banner alone was easy to miss — "the operator only finds out when they
+    # notice 0 authed findings long after the fact" was the exact bug this function already existed
+    # to fix, but it only ever made the degradation VISIBLE, never actually stopped it. Self-pause
+    # (reentrancy-guarded: _pause_for_creds's own flush() call re-enters this function, which would
+    # otherwise probe/append-log a second time before the first SIGSTOP even lands).
+    if not _pausing_for_creds[0]:
+        _pausing_for_creds[0] = True
+        try:
+            _pause_for_creds(msg + ". Update credentials to resume authenticated hunting.")
+        finally:
+            _pausing_for_creds[0] = False
+            _session_bad_streak[0] = 0  # fresh read after resume, whatever the operator did
 
 
 def log(t, v):
@@ -2286,10 +2343,30 @@ def phase_authed():
                 log("warn", "→ auto-auth did not establish a session: " + str(ad.get("evidence", ""))[:120])
         except Exception as _e:
             log("warn", "→ auto-auth skipped: " + str(_e)[:100])
-    if MODE == "black" or not tok:
-        if MODE != "black" and not tok:
-            log("out", "→ no session token supplied — authenticated surface skipped (black-box recon only)")
+    if MODE == "black":
         return
+    if not tok:
+        # Grey/white-box hunting with NO session at all defeats half the hunt's purpose (auth-bypass/
+        # IDOR/authz-matrix/race-critical/exploit-agent all need one) — this used to be a single log
+        # line easy to miss in a wall of recon output, and the hunt would run its FULL budget testing
+        # only the unauthenticated surface with nothing forcing the operator to notice. Pause and wait
+        # instead (operator directive 2026-10-23).
+        _pause_for_creds(
+            "Grey/white-box hunt has no session — supply a session token, cookie, or auth header "
+            "(or switch this hunt to Black box if that's intentional) to test the authenticated surface.")
+        # Woke up (SIGCONT) — re-read creds fresh; _creds() hits disk every call, so /api/hunt/creds
+        # having written new ones while paused is picked up here with no relaunch needed.
+        c = _creds()
+        tok = (c.get("session_token") or "").strip()
+        ah = _auth_headers()
+        ah_cookie = (c.get("cookie") or "").strip()
+        if not tok and (ah or ah_cookie):
+            tok = "session-identity"
+        if not tok:
+            # Operator resumed without actually adding a session — respect that as a deliberate
+            # choice to proceed black-box-style rather than re-pausing in a loop.
+            log("out", "→ resumed with no session still supplied — continuing black-box recon only")
+            return
     tok_bare = re.sub(r"^Bearer\s+", "", tok, flags=re.I).strip()
     tok2 = (c.get("token2") or "").strip()
     stage("Authed", 72)

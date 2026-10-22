@@ -1917,17 +1917,40 @@ class H(BaseHTTPRequestHandler):
                 pass
             # the operator just supplied fresh creds — clear any stale-session alert so the
             # dashboard banner drops immediately instead of waiting for the next health probe.
+            # If the hunt actually SELF-PAUSED over this (see hunt-run.py's _pause_for_creds —
+            # grey/white-box with no session, or a dead session detected mid-hunt), also wake it
+            # right now: same SIGCONT the operator's own Resume button sends, so providing fresh
+            # creds here is the ONE action needed — no separate Resume click required.
+            resumed = False
             try:
                 rf = hd / "run.json"
                 if rf.exists():
                     rd = json.loads(rf.read_text())
+                    changed = False
                     if rd.pop("session_alert", None) is not None:
+                        changed = True
+                    if rd.pop("creds_alert", None) is not None:
+                        changed = True
+                    was_paused_for_creds = (rd.get("status") == "paused"
+                                            and rd.get("paused_reason") == "creds-required")
+                    if was_paused_for_creds:
+                        try:
+                            pid = int((hd / "run.pid").read_text().strip())
+                            if is_process(pid, "hunt-run.py"):
+                                import signal as _sig
+                                os.killpg(os.getpgid(pid), _sig.SIGCONT)
+                                resumed = True
+                                # engine clears status/paused_reason itself on waking (same place
+                                # it set them) — don't race it by also writing those fields here.
+                        except Exception:
+                            pass
+                    if changed and not resumed:
                         tmp = rf.with_suffix(".json.tmp")
                         tmp.write_text(json.dumps(rd))
                         tmp.replace(rf)
             except Exception:
                 pass
-            return self._send({"ok": True})
+            return self._send({"ok": True, "auto_resumed": resumed})
         if u.path == "/api/hunt/creds/test":
             # Verify a candidate cred actually does something, BEFORE (or after) committing it —
             # fires the same request anon vs with-creds through scope-guard and diffs them, plus
