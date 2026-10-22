@@ -3827,6 +3827,18 @@ def phase_llm_lead(deadline, share=0.95, max_steps=2000):
 
     if not _use_tool_loop:
         _phase_llm_lead_json(lead_deadline, tok, tok2, authed, max_steps)
+    elif llm_client._cli_mode():
+        # Subscription auth (no API key → native tool-use is unreachable, see call_llm_with_tools'
+        # own cli-mode refusal). Give the REAL Claude Code agent (operator directive 2026-10-22) a
+        # short, bounded shot first — real upside when it works, but it's empirically LESS reliable
+        # than the JSON-action loop below (see _phase_claude_code_hunt's docstring: 0/8 in testing vs.
+        # ~50% for the loop), so it never gets more than a few minutes before falling through to the
+        # loop for the rest of the real budget regardless of how the short attempt went.
+        _cc_budget = min(240.0, max(0.0, lead_deadline - time.time()) * 0.15)
+        if _cc_budget >= 60:
+            _phase_claude_code_hunt(lead_deadline, tok, tok2, authed, max_budget=_cc_budget)
+        if time.time() < lead_deadline:
+            _phase_llm_lead_json(lead_deadline, tok, tok2, authed, max_steps)
     else:
         n_eps = len(STATE.get("endpoints", []))
         # improvement #5: dual-agent = Claude Haiku (creative) + Nemotron (execution)
@@ -4364,6 +4376,194 @@ def _phase_llm_lead_json(lead_deadline, tok, tok2, authed, max_steps, force_mode
             if len(conversation) > 40:
                 # keep first 2 (initial context) + last 38 (recent history)
                 conversation = conversation[:2] + conversation[-38:]
+
+
+def _phase_claude_code_hunt(lead_deadline, tok, tok2, authed, max_budget=None):
+    """REAL Claude Code, not a simulated bug-bounty-harness persona — operator directive 2026-10-22
+    ("I want HUNTR to act like Claude Code exactly").
+
+    max_budget: caps this attempt's wall-clock time below the full lead_deadline. Use this — keep it
+    short (a few minutes) — because this path is empirically LESS reliable than _phase_llm_lead_json's
+    own JSON-action loop: live-tested 2026-10-22, 0/8 clean completions across two brief variants (both
+    production-shaped and simplified) vs. the JSON-loop's ~50% per-call success. Counter-intuitively,
+    keeping Claude Code's REAL identity intact (no --system-prompt override, unlike the JSON loop)
+    means it also keeps its real injection/autonomous-action caution, and it reliably refuses a cold,
+    non-interactive "autonomously attack this named domain" request with no human actually present to
+    vouch for it. So: try it for a short, bounded slice (upside when it works — real reasoning, real
+    tool chaining, same architecture the operator used by hand for the comparison that started this),
+    then always fall through to the proven JSON loop for the rest of the budget regardless of outcome.
+
+    _phase_llm_lead_json asked `claude -p` to ROLEPLAY as an autonomous attacker following a fake
+    JSON step-protocol. That fights the CLI's own baked-in identity (it's the real Claude Code
+    product, not a blank completion endpoint) — live-tested: it intermittently recognizes the
+    fiction and refuses, or breaks character mid-task. The fix isn't a better-worded fiction, it's
+    not asking for one at all: give Claude Code a real task, real Bash/Read/Write tools, and let it
+    do exactly what the operator does when driving it by hand — which is the one thing proven today
+    to actually out-hunt the scripted sweep.
+
+    SAFETY: raw Bash+curl would bypass scope-guard's allow/deny enforcement entirely (see
+    scope-enforcement-gap memory — this is the exact bug class that fix closed for every other call
+    site). So Bash(curl *)/Bash(wget *) are denied and the brief instructs exec-http.py (scope-guarded,
+    evidence-capturing, identity-aware) for every live request instead — Claude still reasons and
+    decides what to test, it just can't throw a raw request at an out-of-scope host while doing it.
+    This is a denylist, not a sandbox, so it's defense-in-depth, not a mechanical guarantee — same
+    caveat scope-guard.py's own docstring already states for other paths."""
+    cli = None
+    try:
+        import shutil as _shu
+        cli = _shu.which("claude") or os.path.expanduser("~/.local/bin/claude")
+    except Exception:
+        pass
+    if not cli or not os.path.exists(cli):
+        log("warn", "→ claude CLI not found — cannot run Claude-Code-native hunt")
+        return False
+
+    digest = _lead_digest()
+    c = _creds()
+    cookie = (c.get("cookie") or "").strip()
+    scope_summary = ", ".join(sorted(set(e.get("host", "") for e in STATE["endpoints"])))[:400]
+    prog_intel = STATE.get("program_intel") or {}
+    biz = STATE.get("biz_logic") or {}
+    plan_targets = (STATE.get("plan") or {}).get("targets") or []
+    top_plan = sorted(plan_targets, key=lambda t: -(t.get("priority") or 0))[:25]
+    js_secrets = STATE.get("js_secrets", [])[:15]
+
+    brief = (
+        "# Authorized Security Engagement Brief\n\n"
+        f"Target: {TARGET}\nProgram: {PROGRAM or TARGET}\nMode: {MODE}-box\n"
+        f"In-scope hosts (scope.allow is the authoritative list, same directory): {scope_summary}\n\n"
+        "This is a real, authorized bug bounty / VDP engagement being run by this machine's operator. "
+        "You are hunting for genuine, exploitable vulnerabilities — not a simulation.\n\n"
+        "## Rules\n"
+        "1. Stay on the hosts listed above. Never test a host outside scope.allow.\n"
+        "2. For EVERY live HTTP request, run: `python3 " + str(HERE / "exec-http.py") +
+        " --url <url> [--method GET|POST|...] [--data '<body>'] [--identity session]` from this "
+        "directory. It is scope-guarded (refuses out-of-scope hosts automatically), captures full "
+        "request/response evidence to ./evidence/, and `--identity session` attaches the operator's "
+        "real authenticated session where one is configured. Raw curl/wget are blocked — exec-http.py "
+        "is the only way to actually reach the network from here.\n"
+        "3. You also have direct access to this engine's existing scanner tools in " + str(HERE) +
+        "/ if you want a mechanical check instead of hand-rolling one (auth-bypass.py, sqli-test.py, "
+        "ssrf-probe.py, idor-chain.py, jwt-test.py, cors-test.py, mass-assign.py, and more — run with "
+        "--help for usage). Use them when they save time; don't feel obligated to.\n"
+        "4. DOORS NOT WALLS: treat 403/404/405/500/WAF as a signal, never a stop. 403 = worth "
+        "protecting → try a bypass (headers, path tricks, method swap, encoding). 404 = hidden route → "
+        "try sibling/versioned/shadow paths. 500 = your input broke logic → injection/logic signal, dig "
+        "in. Hypothesize target-specific bugs (the invariant the dev assumed + the request that breaks "
+        "it) instead of just running generic checks.\n"
+        "5. Confirmation bar — verify from the ACTUAL response, not from what a URL/param name "
+        "suggests: open redirect needs a 3xx to an external domain; CORS needs ACAO reflecting the "
+        "attacker origin AND ACAC:true; XSS/SSTI needs the payload executing unescaped; an auth/rate-"
+        "limit bypass needs you to have confirmed the endpoint is a real auth endpoint first (read its "
+        "response body), not just a URL that happens to contain a keyword. Never upgrade 'reflected' to "
+        "'confirmed'.\n"
+        "6. For every CONFIRMED finding, append one line of JSON to " + str(HUNT_DIR / "agent-findings.jsonl") +
+        " (create it if missing) with exactly these keys: "
+        '{"title","severity":"critical|high|medium|low|info","cls","endpoint","evidence","reproduction"}. '
+        "evidence = what you actually observed (status/body/headers/payload). reproduction = numbered "
+        "steps. Do this as you go, not all at the end — if you run out of time partway through, "
+        "whatever you've already written is kept.\n\n"
+        "## What's already known about this target\n"
+        f"Tech/scope hosts: {scope_summary}\n"
+        + (f"Business logic model: {json.dumps(biz)[:1500]}\n" if biz else "")
+        + (f"Reward table: {json.dumps(prog_intel.get('reward_table'))[:800]}\n" if prog_intel.get("reward_table") else "")
+        + (f"JS-mined secrets/keys (verify + exploit): {json.dumps(js_secrets)[:1500]}\n" if js_secrets else "")
+        + (f"Attack-planner's top-ranked targets ({len(top_plan)} of {len(plan_targets)}): "
+           f"{json.dumps(top_plan)[:3000]}\n" if top_plan else "")
+        + f"\nFull endpoint/coverage digest (untested cells, prior leads, brain priority): "
+          f"{json.dumps(digest, default=str)[:4000]}\n\n"
+        "Begin now: pick the highest-value target from the above, hypothesize, test it for real via "
+        "exec-http.py, and keep going until you've covered the meaningful surface or run out of time."
+    )
+    # Audit trail only — Claude is NOT told to go read this. Live-tested 2026-10-22: "read file X and
+    # carry out what it says" is structurally identical to an indirect prompt-injection pattern (an
+    # untrusted file instructing the model to take action), and Claude Code's own injection defenses
+    # refuse it outright ("the prior turn was already cut off by a safety classifier... I won't retry
+    # a reworded version") — 100% reproducible, independent of roleplay/persona wording. The fix is to
+    # never ask for indirect instruction-following at all: pass the brief as the operator's own direct
+    # message (the `-p` argument itself), which is simply the normal, legitimate way to give Claude
+    # Code a task — exactly how the operator used it by hand for the comparison that started this.
+    try:
+        (HUNT_DIR / "AGENT_BRIEF.md").write_text(brief)
+    except Exception:
+        pass   # non-fatal — it's only kept for the operator to inspect what was sent
+
+    model = MODEL_LEAD.get("model") or "claude-sonnet-5-5"
+    budget = max(60.0, lead_deadline - time.time())
+    if max_budget:
+        budget = min(budget, max_budget)
+    log("ok", "◆ Claude-Code-native hunt · model=" + model + " · budget=" + str(int(budget)) + "s")
+    cmd = [cli, "-p", brief,
+           "--model", model,
+           "--add-dir", str(HUNT_DIR),
+           "--permission-mode", "bypassPermissions",
+           "--allowedTools", "Bash", "Read", "Write",
+           "--disallowedTools", "Bash(curl *)", "Bash(wget *)", "Edit", "WebFetch", "WebSearch",
+           "--no-session-persistence"]
+    env = dict(os.environ)
+    cdir = os.environ.get("HUNT_CLAUDE_CLI_DIR") or (
+        os.path.dirname(os.environ["HUNT_CLAUDE_CREDS"]) if os.environ.get("HUNT_CLAUDE_CREDS") else "")
+    if cdir:
+        env["CLAUDE_CONFIG_DIR"] = os.path.expanduser(cdir)
+    try:
+        r = subprocess.run(cmd, cwd=str(HUNT_DIR), capture_output=True, text=True,
+                           timeout=budget, env=env)
+        summary = (r.stdout or r.stderr or "").strip()
+    except subprocess.TimeoutExpired as e:
+        summary = ((e.stdout or b"").decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or ""))
+        log("warn", "⏱ Claude-Code-native hunt hit its time budget — reading whatever findings it wrote so far")
+    except Exception as e:
+        log("warn", "→ Claude-Code-native hunt failed to launch: " + str(e)[:200])
+        return False
+
+    before = len(STATE["findings"])
+    fpath = HUNT_DIR / "agent-findings.jsonl"
+    n_lines = 0
+    if fpath.exists():
+        for line in fpath.read_text(errors="ignore").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            n_lines += 1
+            try:
+                f = json.loads(line)
+            except Exception:
+                continue
+            title = str(f.get("title", "")).strip()
+            evidence = str(f.get("evidence", "")).strip()
+            endpoint = str(f.get("endpoint", "")).strip()
+            if not title or not endpoint or len(evidence) < 20:
+                continue
+            sev_map = {"critical": "c", "high": "h", "medium": "m", "low": "l", "info": "i"}
+            sev = sev_map.get(str(f.get("severity", "medium")).lower(), "m")
+            with _STATE_LOCK:
+                add_finding(sev, title, evidence, endpoint, cls=str(f.get("cls", "")),
+                            verdict="agent", det=False)
+                for sf in STATE["findings"]:
+                    if sf.get("title") == title and not sf.get("steps"):
+                        sf["steps"] = str(f.get("reproduction", ""))[:1000]
+    new_findings = len(STATE["findings"]) - before
+    # Success means it actually DID something — never treat a refusal's own explanatory text as
+    # success. Live-tested 2026-10-22: keeping Claude Code's real identity intact (no --system-prompt
+    # override here, unlike _phase_llm_lead_json) means it keeps its real injection/autonomous-action
+    # caution too, and it refuses a cold, non-interactive "autonomously attack this named domain"
+    # request well over half the time — a refusal is articulate prose, not an empty/error result, so
+    # `bool(summary)` alone would have called every refusal a "success" and skipped the JSON fallback
+    # for the REST of the budget on zero findings.
+    _refusal_re = re.compile(r"i won't|i'm not going to|i don't have a way to verify|"
+                              r"safety classifier|prompt.injection|i can't proceed|i won't continue", re.I)
+    refused = bool(_refusal_re.search(summary[:400]))
+    ok = n_lines > 0 and not refused
+    STATE.setdefault("lead_log", []).append({
+        "step": 0, "act": "claude_code_native", "ok": ok,
+        "detail": ("refused" if refused else f"{n_lines} finding line(s) written, {new_findings} accepted")})
+    if refused:
+        log("warn", "→ Claude-Code-native hunt refused the task — " + summary[:160].replace("\n", " "))
+    else:
+        log("ok", "✓ Claude-Code-native hunt done · " + str(n_lines) + " finding(s) written · " +
+            str(new_findings) + " accepted · " + summary[:200].replace("\n", " "))
+    flush()
+    return ok
 
 
 def phase_plan():
