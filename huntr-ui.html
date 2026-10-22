@@ -1799,13 +1799,14 @@ function card(f,idx,isNR,wide){
   if(f.remediation) body+=sec('Fix',`<div class="fc-sec-txt">${esc(f.remediation)}</div>`);
   if(f.poc) body+=sec('PoC'+(f.poc_verified?' ✓ verified':''),`<pre class="fc-pre">${esc(f.poc)}</pre>`);
   if(f.report) body+=sec('Report',`<pre class="fc-pre">${esc(f.report)}</pre>`);
+  // Re-verify/Build PoC/Draft report/Evidence/Share proof removed 2026-10-23 (operator directive:
+  // "I want the whole verification process to be automated by claude and drafted with claude either,
+  // I want the user to only read the report"). All five are now fully automatic — phase_verify/
+  // phase_ai_judge/phase_adversarial_verify (verification), phase_supervisor's EV-ranked dispatch
+  // over agent-exploit.py (PoC) and agent-report.py (report) — run unattended as part of every hunt.
+  // Copy is kept: the user still needs to get the finished f.report text out of the dashboard.
   body+=`<div class="fc-acts">
-    <button class="fc-btn verify" onclick="event.stopPropagation();reverify(${idx})">⟳ Re-verify</button>
-    <button class="fc-btn agent" onclick="event.stopPropagation();runAgent('/api/hunt/exploit',{fi:${idx}},'building PoC for #${idx}')">⚔ Build PoC</button>
-    <button class="fc-btn agent" onclick="event.stopPropagation();runAgent('/api/hunt/report',{fi:${idx}},'drafting report for #${idx}')">✎ Draft report</button>
     <button class="fc-btn copy" onclick="event.stopPropagation();copyReport(${idx})">Copy</button>`;
-  if(f.endpoint) body+=`<button class="fc-btn no" onclick="event.stopPropagation();openEvidence('${jesc(f.endpoint)}')">⛋ Evidence</button>`;
-  if(f.verdict==='confirmed') body+=`<button class="fc-btn no" onclick="event.stopPropagation();shareProof(${idx})">⇗ Share proof</button>`;
   if(isNR) body+=`<button class="fc-btn ok" onclick="event.stopPropagation();triage(${idx},'confirmed')">✓ Confirm</button>
     <button class="fc-btn no" onclick="event.stopPropagation();triage(${idx},'false_positive')">✗ Dismiss</button>`;
   body+=`</div></div>`;
@@ -2280,16 +2281,6 @@ function copyReport(idx){
   });
 }
 
-// standalone, shareable proof page for ONE finding — a real link to hand a client, attach to a
-// bounty submission, or drop in Slack, grounded in the same trust tiers the dashboard itself shows.
-function shareProof(idx){
-  const url=location.origin+'/proof?target='+encodeURIComponent(S.target)+'&fi='+idx;
-  const done=()=>flash('Proof link copied — opens without the dashboard','ok');
-  navigator.clipboard.writeText(url).then(done).catch(()=>{
-    const ta=Object.assign(document.createElement('textarea'),{value:url,style:'position:fixed;opacity:0'});
-    document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);done();
-  });
-}
 
 /* ─── advanced ─── */
 // Credentials & run options are collapsed by default (toggleAdv) so the form doesn't open
@@ -2874,9 +2865,6 @@ function openDetail(n){
       ${(f.impact_text||f.reco)?`<div class="gd-sec"><div class="gd-sec-lbl">Impact</div><div class="gd-sec-txt">${esc(f.impact_text||f.reco)}</div></div>`:''}
       ${steps.length?`<div class="gd-sec"><div class="gd-sec-lbl">Reproduce</div><div class="gd-sec-txt">${steps.map((s,i)=>(i+1)+'. '+esc(s)).join('<br>')}</div></div>`:''}
       <div class="gd-acts">
-        <button class="gd-btn p" onclick="runAgent('/api/hunt/exploit',{fi:${n.fi}},'building PoC for #${n.fi}')">⚔ Build PoC</button>
-        <button class="gd-btn s" onclick="reverify(${n.fi})">⟳ Re-verify</button>
-        <button class="gd-btn s" onclick="runAgent('/api/hunt/report',{fi:${n.fi}},'report for #${n.fi}')">✎ Report</button>
         <button class="gd-btn s" onclick="showView('findings');setTimeout(()=>{const e=document.querySelector('.fc[data-idx=&quot;${n.fi}&quot;]');if(e){e.classList.add('open');e.scrollIntoView({behavior:'smooth',block:'start'});}},80)">Open card</button>
       </div>`;
   } else if(n.type==='chain'){

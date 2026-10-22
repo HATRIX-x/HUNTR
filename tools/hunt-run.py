@@ -6633,85 +6633,6 @@ def _src_hunt_repo(repo_url, tmpdir):
             _parse_findings(text, "")
 
 
-def phase_auto_reports():
-    """Auto-generate full AI reports for all confirmed/likely findings that don't have one yet."""
-    import re as _re
-    targets = [(i, f) for i, f in enumerate(STATE.get("findings", []))
-               if f.get("verdict") in ("confirmed", "likely", "true_positive")
-               and not f.get("noise")          # don't waste tokens reporting non-bugs / low-noise
-               and not f.get("ai_report")]
-    if not targets:
-        return
-    stage("Reports", 98)
-    log("ok", f"✦ generating reports for {len(targets)} finding(s)…")
-    scope = STATE.get("scope") or TARGET
-    program = STATE.get("program") or scope
-
-    def _sec(text, header):
-        m = _re.search(r'##\s+' + header + r'\s*\n(.*?)(?=\n##\s+|\Z)', text, _re.S | _re.I)
-        return m.group(1).strip() if m else ""
-
-    for fi, f in targets:
-        try:
-            prompt = (
-                "You are a senior bug-bounty researcher writing a submittable vulnerability report for an "
-                "authorized program — the kind a triager accepts without asking for more. Precise, "
-                "reproducible, impact-first; never exaggerate and never invent evidence not present below.\n\n"
-                f"Finding data:\n"
-                f"- Title: {f.get('title','')}\n"
-                f"- Class: {f.get('cls','')}\n"
-                f"- Severity: {f.get('sev','')} (label: {f.get('label','')})\n"
-                f"- CVSS: {f.get('cvss','unscored')}\n"
-                f"- Endpoint: {f.get('endpoint','')}\n"
-                f"- Evidence / raw detail: {(f.get('detail') or '')[:1500]}\n"
-                f"- Proof: {json.dumps(f.get('proof') or {})[:600]}\n"
-                f"- Existing steps: {(f.get('steps') or 'none')[:800]}\n"
-                f"- Remediation hint: {(f.get('remediation') or 'none')[:400]}\n"
-                f"- Program: {program}\n"
-                f"- Scope: {scope}\n\n"
-                "Write EXACTLY these sections (no preamble, no meta-commentary, no text outside them):\n\n"
-                "## Summary\n[2-4 sentences: what the bug is, where, who can trigger it, the concrete "
-                "security consequence. No hedge words ('could potentially', 'may be possible') — state "
-                "what IS proven.]\n\n"
-                "## Vulnerability Details\n[Root cause: the broken assumption or missing control, exact "
-                "HTTP method/parameter/header/logic flaw.]\n\n"
-                "## Steps to Reproduce\n[NUMBERED steps. EACH step has a fenced code block with the literal "
-                "request (method, path, headers, body or curl) AND the ACTUAL response — status + the "
-                "decisive body/header snippet — taken VERBATIM from the evidence/proof above. Build from a "
-                "baseline request to the exploited one so the difference is undeniable. Never fabricate a "
-                "request, response, header or value not present in the evidence above.]\n\n"
-                "## Impact\n[Concrete, attacker-POV, business-relevant — what is read/written/escalated. "
-                "No generic boilerplate.]\n\n"
-                "## Remediation\n[Specific, actionable fix for THIS root cause, not generic advice.]"
-            )
-            text = llm_call("", prompt, max_tokens=2500, _model=MODEL_REPORT)
-            if not text:
-                # PREVIOUSLY: silent `continue` — a finding that should have gotten a submission-
-                # grade report just quietly stayed without one, with zero trace of why (rate limit
-                # that outlasted llm_call's own retries? a genuine crash?). llm_call already sets
-                # _LLM_LAST_ERR on failure — just nobody here was reading it.
-                log("warn", f"  ✗ no report generated for F{fi} ({f.get('title','')[:50]}) — " +
-                    (_LLM_LAST_ERR.get("e") or "LLM returned empty")[:150] +
-                    " — resume the hunt to retry")
-                continue
-            f["reco"] = _sec(text, "Summary") or f.get("reco", "")
-            if _sec(text, "Steps to Reproduce"):
-                f["steps"] = _sec(text, "Steps to Reproduce")
-            if _sec(text, "Impact"):
-                f["impact_text"] = _sec(text, "Impact")
-            if _sec(text, "Remediation"):
-                f["remediation"] = _sec(text, "Remediation")
-            if _sec(text, "Vulnerability Details"):
-                f["vuln_detail"] = _sec(text, "Vulnerability Details")
-            f["ai_report"] = text
-            f["ai_report_ts"] = int(time.time())
-            STATE["findings"][fi] = f
-            flush()
-            log("ok", f"  ✓ F{fi} · {f.get('title','')[:60]}")
-        except Exception as e:
-            log("warn", f"  ✗ report failed for F{fi}: {e}")
-
-
 def _reload_findings():
     """Pull findings/chains back from run.json after an agent subprocess rewrote it, so STATE
     and the next flush() stay consistent. Call immediately after each tool, before any log()."""
@@ -6792,7 +6713,14 @@ def phase_supervisor(deadline=None):
     safety net for anything this budget-capped loop doesn't reach."""
     if "--no-supervisor" in sys.argv or not STATE.get("findings"):
         return
-    deadline = deadline or (time.time() + min(900, 90 + 60 * len(STATE["findings"])))
+    # Budget bumped 2026-10-23 (900s/90+60N → 1800s/150+90N): this used to be tuned around a target
+    # that was failing FAST (see the MAX_ATTEMPTS comment below) — agent-exploit.py returning a clean
+    # {"ok": false} in a couple seconds meant the old ceiling was already generous. Now that the root
+    # cause is fixed and verify/exploit/report/postexploit genuinely run their full reasoning loop
+    # (tens of seconds each, real HTTP round trips via exec-http.py), the same wall-clock ceiling
+    # covers far fewer real actions. Operator directive: no manual buttons, the user should only need
+    # to read a FINISHED report — that requires enough budget to actually reach every eligible finding.
+    deadline = deadline or (time.time() + min(1800, 150 + 90 * len(STATE["findings"])))
     stage("Supervisor", 99)
     flush()
     env = dict(os.environ, HUNT_DIR=str(HUNT_DIR))
@@ -6800,14 +6728,21 @@ def phase_supervisor(deadline=None):
     SEV_EV = {"c": 4, "h": 3, "m": 2, "l": 1, "i": 0}
     WEAK = ("likely", "needs_triage", "needs_review", "manual", "agent")
 
-    # CAUGHT LIVE against a real target: with no retry cap, a persistently ineffective action (one
-    # that runs, exits clean, but never actually sets poc/report/etc.) gets re-queued by _actions()
-    # forever — nothing in the state ever changes, so it's the single highest-EV action EVERY round.
-    # A live run spun this exact way 2228 times with zero progress before the budget ran out (root
-    # cause that round: agent-exploit.py structurally can't run under CLI-subscription auth and
-    # returns a clean {"ok": false} every time — now also caught by _sup_run's classification above,
-    # but the cap here is the real fix: it bounds the damage from ANY persistently-failing action,
-    # including ones a future change might introduce, not just this one root cause.
+    # CAUGHT LIVE against a real target (historical, root cause now fixed 2026-10-23 — see
+    # cli-mode-identity-leak memory): with no retry cap, a persistently ineffective action (one that
+    # runs, exits clean, but never actually sets poc/report/etc.) gets re-queued by _actions() forever
+    # — nothing in the state ever changes, so it's the single highest-EV action EVERY round. A live run
+    # spun this exact way 2228 times with zero progress before the budget ran out. Root cause THEN:
+    # agent-exploit.py/agent-report.py/agent-postexploit.py all go through agent_core.run_agent() →
+    # llm_client.call_llm() → _claude_cli_call() under CLI-subscription auth, and that call used
+    # --append-system-prompt, which kept Claude Code's own real identity underneath the agent's
+    # persona and got refused outright — a clean, fast, 100%-reproducible {"ok": false} every time.
+    # Fixed by the same --system-prompt full-replace + --exclude-dynamic-system-prompt-sections +
+    # --no-session-persistence change made to llm_client._claude_cli_call this session — live-verified
+    # 2026-10-23: agent-exploit.py and agent-report.py both now complete successfully end to end
+    # (real exec-http.py round trip, real PoC, real submission-grade report written to f["report"]).
+    # The cap stays anyway — it bounds the damage from ANY persistently-failing action, including ones
+    # a future change might introduce, not just this one (now-fixed) root cause.
     MAX_ATTEMPTS = 2
     attempts = {}
     exhausted = set()
@@ -7310,7 +7245,11 @@ def main():
         phase_hard_triage()                          # FINAL authority: prove-it-or-lead; info-class capped
         if not NO_LLM:
             phase_learn()                                # close the loop → learned rules for the NEXT hunt
-            phase_auto_reports()                         # auto-generate AI reports for confirmed findings
+            # REMOVED phase_auto_reports() 2026-10-23: redundant with phase_supervisor's agent-report.py
+            # dispatch below (same job, submission-grade template, correct "report" field) AND it had a
+            # real bug — it wrote its own report summary into f["reco"], clobbering phase_economics'
+            # routing decision ("submit"/"needs-work"/"hold-duplicate") with prose. phase_supervisor
+            # never touches f["reco"], so removing this is a strict fix, not just a dedup.
             check_pause(); phase_supervisor(deadline)     # EV-ranked coordinator — does the highest-value work first
             check_pause(); phase_agentic_polish(deadline) # deterministic safety net for whatever the supervisor didn't reach
             # dedup again LAST too, same reasoning as hard_triage below: phase_supervisor/agentic_polish
