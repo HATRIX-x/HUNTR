@@ -3837,15 +3837,17 @@ def phase_llm_lead(deadline, share=0.95, max_steps=2000):
         _phase_llm_lead_json(lead_deadline, tok, tok2, authed, max_steps)
     elif llm_client._cli_mode():
         # Subscription auth (no API key → native tool-use is unreachable, see call_llm_with_tools'
-        # own cli-mode refusal). Give the REAL Claude Code agent (operator directive 2026-10-22) a
-        # short, bounded shot first — real upside when it works, but it's empirically LESS reliable
-        # than the JSON-action loop below (see _phase_claude_code_hunt's docstring: 0/8 in testing vs.
-        # ~50% for the loop), so it never gets more than a few minutes before falling through to the
-        # loop for the rest of the real budget regardless of how the short attempt went.
-        _cc_budget = min(240.0, max(0.0, lead_deadline - time.time()) * 0.15)
-        if _cc_budget >= 60:
-            _phase_claude_code_hunt(lead_deadline, tok, tok2, authed, max_budget=_cc_budget)
-        if time.time() < lead_deadline:
+        # own cli-mode refusal). PRIMARY path: the REAL Claude Code agent (operator directive
+        # 2026-10-22) — real Bash/Read/Write tools, real task, no fictional persona. Earlier the same
+        # day this looked unreliable (0/8) when tested on sonnet-5-5; once the model defaults were
+        # reverted to sonnet-4-6/opus-4-8 (see the model-revert commit — 4.x doesn't carry the 5.x
+        # generation's sharper autonomous-action caution), re-tested at 5/5 genuine completions: real
+        # multi-request reasoning chains, real findings written in the correct format, zero refusals.
+        # That's now BETTER than the JSON-harness-persona loop's own ~50% rate, so it's primary with
+        # the full lead budget; the JSON loop is the fallback only if this produces nothing at all.
+        ok = _phase_claude_code_hunt(lead_deadline, tok, tok2, authed)
+        if not ok and time.time() < lead_deadline:
+            log("warn", "→ Claude-Code-native hunt produced nothing — falling back to JSON-action loop")
             _phase_llm_lead_json(lead_deadline, tok, tok2, authed, max_steps)
     else:
         n_eps = len(STATE.get("endpoints", []))
@@ -4388,26 +4390,29 @@ def _phase_llm_lead_json(lead_deadline, tok, tok2, authed, max_steps, force_mode
 
 def _phase_claude_code_hunt(lead_deadline, tok, tok2, authed, max_budget=None):
     """REAL Claude Code, not a simulated bug-bounty-harness persona — operator directive 2026-10-22
-    ("I want HUNTR to act like Claude Code exactly").
+    ("I want HUNTR to act like Claude Code exactly"). PRIMARY hunting path under CLI-subscription auth.
 
-    max_budget: caps this attempt's wall-clock time below the full lead_deadline. Use this — keep it
-    short (a few minutes) — because this path is empirically LESS reliable than _phase_llm_lead_json's
-    own JSON-action loop: live-tested 2026-10-22, 0/8 clean completions across two brief variants (both
-    production-shaped and simplified) vs. the JSON-loop's ~50% per-call success. Counter-intuitively,
-    keeping Claude Code's REAL identity intact (no --system-prompt override, unlike the JSON loop)
-    means it also keeps its real injection/autonomous-action caution, and it reliably refuses a cold,
-    non-interactive "autonomously attack this named domain" request with no human actually present to
-    vouch for it. So: try it for a short, bounded slice (upside when it works — real reasoning, real
-    tool chaining, same architecture the operator used by hand for the comparison that started this),
-    then always fall through to the proven JSON loop for the rest of the budget regardless of outcome.
+    _phase_llm_lead_json instead asks `claude -p` to ROLEPLAY as an autonomous attacker following a
+    fake JSON step-protocol. That fights the CLI's own baked-in identity (it's the real Claude Code
+    product, not a blank completion endpoint). This function does the opposite: give Claude Code a
+    real task, real Bash/Read/Write tools, and let it do exactly what the operator does when driving
+    it by hand — which is the one thing proven to actually out-hunt the scripted sweep.
 
-    _phase_llm_lead_json asked `claude -p` to ROLEPLAY as an autonomous attacker following a fake
-    JSON step-protocol. That fights the CLI's own baked-in identity (it's the real Claude Code
-    product, not a blank completion endpoint) — live-tested: it intermittently recognizes the
-    fiction and refuses, or breaks character mid-task. The fix isn't a better-worded fiction, it's
-    not asking for one at all: give Claude Code a real task, real Bash/Read/Write tools, and let it
-    do exactly what the operator does when driving it by hand — which is the one thing proven today
-    to actually out-hunt the scripted sweep.
+    RELIABILITY HISTORY (same day, worth keeping — model choice matters more than the mechanism):
+    first tested on sonnet-5-5 → 0/8 clean completions. The 5.x generation's sharper injection/
+    autonomous-action caution means keeping Claude Code's real identity intact also keeps its real
+    suspicion of "a cold, non-interactive request to autonomously attack a named domain" — and it
+    refused almost every time. Re-tested after the model defaults were reverted to sonnet-4-6/
+    opus-4-8 (see the model-revert commit) → 5/5 genuine completions: real multi-request reasoning
+    chains (e.g. hypothesising a javascript: URI bypass in a redirect param, confirming a CORS
+    wildcard+credentials spec violation, testing cookie injection — all via real exec-http.py calls),
+    real findings written in the correct format, zero refusals. 4.x doesn't carry the heightened
+    caution, so it adopts a real task cleanly almost every time. Conclusion: this mechanism was never
+    unreliable — sonnet-5-5 specifically was. Keep this on 4.x (MODEL_LEAD's default) going forward;
+    re-verify with a fresh side-by-side before ever pointing this at a 5.x model again.
+
+    max_budget: optionally cap this call's wall-clock time below the full lead_deadline (used for a
+    bounded trial run; omit it to let Claude run until it decides the surface is covered or time's up).
 
     SAFETY: raw Bash+curl would bypass scope-guard's allow/deny enforcement entirely (see
     scope-enforcement-gap memory — this is the exact bug class that fix closed for every other call
@@ -4552,12 +4557,10 @@ def _phase_claude_code_hunt(lead_deadline, tok, tok2, authed, max_budget=None):
                         sf["steps"] = str(f.get("reproduction", ""))[:1000]
     new_findings = len(STATE["findings"]) - before
     # Success means it actually DID something — never treat a refusal's own explanatory text as
-    # success. Live-tested 2026-10-22: keeping Claude Code's real identity intact (no --system-prompt
-    # override here, unlike _phase_llm_lead_json) means it keeps its real injection/autonomous-action
-    # caution too, and it refuses a cold, non-interactive "autonomously attack this named domain"
-    # request well over half the time — a refusal is articulate prose, not an empty/error result, so
-    # `bool(summary)` alone would have called every refusal a "success" and skipped the JSON fallback
-    # for the REST of the budget on zero findings.
+    # success. On the current (4.x) models this is now rare, but a refusal is articulate prose, not
+    # an empty/error result, so `bool(summary)` alone would call it a "success" and skip the JSON
+    # fallback for the rest of the budget on zero findings — keep this check regardless of which
+    # model is active, since it's a 0-cost safety net against exactly that silent failure mode.
     _refusal_re = re.compile(r"i won't|i'm not going to|i don't have a way to verify|"
                               r"safety classifier|prompt.injection|i can't proceed|i won't continue", re.I)
     refused = bool(_refusal_re.search(summary[:400]))
