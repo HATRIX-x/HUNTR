@@ -1026,6 +1026,8 @@ button,input,select,textarea{font-family:inherit;}
         <span id="graph-zoom-lbl">100%</span>
         <span class="gtb-sep"></span>
         <button class="gtb-btn wide" onclick="graphFit()" title="Fit the whole graph in view">⤢ Fit</button>
+        <span class="gtb-sep"></span>
+        <button class="gtb-btn wide" onclick="openDeepGraph()" title="Claude-extracted semantic graph — entities, trust boundaries, exploit-chain relationships (separate from this live structural view)">⬡ Deep graph</button>
       </div>
       <div id="graph-insights"><div id="gi-body"></div></div>
       <div id="graph-detail"><div id="gd-body"></div></div>
@@ -2629,6 +2631,15 @@ function graphFit(animate){
   const tx=g.w/2-((minX+maxX)/2)*k, ty=g.h/2-((minY+maxY)/2)*k;
   if(animate===false){ g.tf.k=k; g.tf.x=tx; g.tf.y=ty; graphSave(); }
   else { g.tfTarget={x:tx,y:ty,k}; }
+}
+// The Claude-semantic graph (graphify-out/graph.html — entities, trust boundaries, exploit-chain
+// REQUIRES/ENABLES relationships extracted from prose, not just the structural live graph above)
+// is a separate artifact the server already knows how to serve (/api/surface-graph,
+// /surface-graph-frame) — this was backend-only until now with no UI entry point.
+async function openDeepGraph(){
+  const r=await apiLongGet('/api/surface-graph?target='+encodeURIComponent(S.target));
+  if(!r||!r.available){ flash('Deep semantic graph not built yet for this target','no'); return; }
+  window.open(API+r.url, '_blank');
 }
 function graphZoom(f){ const g=S.graph; if(!g) return; const cx=g.w/2, cy=g.h/2;
   const base=g.tfTarget||g.tf;

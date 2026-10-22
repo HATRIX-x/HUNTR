@@ -87,6 +87,34 @@ def record_chain(inp):
     chains.append(c)
     return "recorded chain" + ("" if directly_tested else " (marked UNTESTED — no matching http_request seen)")
 
+def _graph_query(inp):
+    """Query the target's exploit-chain knowledge graph (hunt-run.py's _build_surface_graph with
+    deep=True writes findings.md with REQUIRES/ENABLES framing per confirmed finding before building
+    it — see that function's docstring). Deterministic graph traversal, not an LLM call — fast,
+    0-token. Falls back gracefully if no graph exists yet (early hunt, or claude CLI unavailable)."""
+    graph_path = A.HUNT_DIR / "graphify-out" / "graph.json"
+    if not graph_path.exists():
+        return "no knowledge graph available for this target yet"
+    kind = str(inp.get("kind") or "path").strip().lower()
+    try:
+        if kind == "explain":
+            node = str(inp.get("node") or "").strip()
+            if not node:
+                return "explain needs 'node'"
+            args = ["graphify", "explain", node, "--graph", str(graph_path)]
+        else:
+            a, b = str(inp.get("a") or "").strip(), str(inp.get("b") or "").strip()
+            if not a or not b:
+                return "path needs 'a' and 'b'"
+            args = ["graphify", "path", a, b, "--graph", str(graph_path)]
+            if inp.get("undirected"):
+                args.append("--undirected")
+        r = A.subprocess.run(args, capture_output=True, text=True, timeout=20)
+        return (r.stdout or r.stderr or "no result")[:2000]
+    except Exception as e:
+        return "graph query failed: " + str(e)[:150]
+
+
 tools = [
     A.http_tool_def(has_sess),
     {"name": "record_chain", "description": "Record a multi-step chain across findings that raises impact. "
@@ -98,8 +126,20 @@ tools = [
          "findings": {"type": "array", "items": {"type": "integer"}, "description": "finding indices involved"},
          "status": {"type": "string", "enum": ["proven", "plausible"]}},
          "required": ["title", "impact", "steps"]}},
+    {"name": "graph_query", "description": "Query the exploit-chain knowledge graph built from this "
+     "target's confirmed findings (each tagged with what it REQUIRES and what it ENABLES). "
+     "kind='path': shortest relationship between two finding titles/endpoints — set a and b. Add "
+     "undirected:true if it reports no path (chain edges aren't always meaningfully directional). "
+     "kind='explain': everything connected to one node — set node. Use this to find chain candidates "
+     "systematically (a finding whose ENABLES might satisfy another's REQUIRES) instead of only "
+     "eyeballing the flat finding list below.",
+     "input_schema": {"type": "object", "properties": {
+         "kind": {"type": "string", "enum": ["path", "explain"]},
+         "a": {"type": "string"}, "b": {"type": "string"},
+         "node": {"type": "string"}, "undirected": {"type": "boolean"}},
+         "required": ["kind"]}},
 ]
-handlers = {"http_request": _http_handler_logged, "record_chain": record_chain}
+handlers = {"http_request": _http_handler_logged, "record_chain": record_chain, "graph_query": _graph_query}
 
 system = (
     "You are an exploit-chaining agent. Given a set of findings on one target, find combinations that "
@@ -118,9 +158,20 @@ system = (
     "responses) is evidence the request did NOT reach application code — it proves nothing about what "
     "runs behind that wall, so do not build a narrative assuming it does. If you have not tested a "
     "specific endpoint named in your chain, say so plainly instead of writing as if you observed it. "
-    "Call record_chain for each credible chain. status=proven is only honored if you probed the exact "
-    "cited endpoint — otherwise it will be downgraded and marked untested automatically. Be honest — "
-    "if no real chain exists, say so and record nothing. End with a 2-4 line summary."
+    "You MUST call record_chain for every credible chain BEFORE writing your final summary — "
+    "describing a chain in prose without also calling record_chain for it means it is silently lost, "
+    "never written to run.json. Never present a chain as 'recorded' or 'confirmed by the graph' in "
+    "your summary unless you actually called record_chain (and, for graph claims, graph_query) for it "
+    "first in this session — narrating what you would have done is not the same as doing it. "
+    "status=proven is only honored if you probed the exact cited endpoint — otherwise it will be "
+    "downgraded and marked untested automatically. Be honest — if no real chain exists, say so and "
+    "record nothing.\n\n"
+    "Before guessing which findings combine, try graph_query — a knowledge graph built from these "
+    "exact findings, each tagged with what it REQUIRES and what it ENABLES, may already encode the "
+    "chain relationship you're looking for (e.g. graph_query(kind='path', a='<finding A title or "
+    "endpoint>', b='<finding B title or endpoint>')). It's deterministic graph traversal, 0 extra "
+    "tokens — cheaper and more precise than reasoning over the whole finding list from scratch.\n\n"
+    "End with a 2-4 line summary."
     + A.skill_for(by_name="chain-builder", budget=2600))
 user = "Findings on target " + str(run.get("target", "")) + ":\n" + A.json.dumps(digest)[:5000]
 

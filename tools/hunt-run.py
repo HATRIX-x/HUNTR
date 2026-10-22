@@ -312,20 +312,13 @@ def llm_call(system, user, max_tokens=1600, timeout=100, _model=None):
     return None
 
 
-def llm_json(system, user, max_tokens=1600, timeout=100, _model=None):
-    """llm_call + robustly extract a JSON object/array from the reply."""
-    txt = llm_call(system, user, max_tokens, timeout, _model=_model)
-    if not txt:
-        return None
-    # strip ```json fences, then try the whole thing before falling back to a span search
-    t = re.sub(r"^\s*```(?:json)?\s*|\s*```\s*$", "", txt.strip(), flags=re.I | re.M).strip()
-    for cand in (t,):
-        try:
-            return json.loads(cand)
-        except Exception:
-            pass
-    # balanced-bracket scan from the FIRST container bracket (so an array of objects isn't mistaken
-    # for its first element), to its matching close (handles trailing prose)
+def _extract_json_from_text(t):
+    """Balanced-bracket, string-aware scan for the first JSON object/array in text, from its
+    opening bracket to its own matching close — NOT a greedy regex span to the last bracket
+    anywhere in the text, which breaks the moment trailing prose after the real JSON contains any
+    stray brace (a URL path param like /api/users/ID_PLACEHOLDER in a summary is enough).
+    Shared by llm_json() and _call_llm_threaded() — same bug class, same fix, one place to get it
+    right. See agent_core._extract_json_object's docstring for the live incident that found this."""
     firsts = [(t.find(o), o, c) for o, c in (("{", "}"), ("[", "]")) if t.find(o) >= 0]
     for _, open_ch, close_ch in sorted(firsts):
         i = t.find(open_ch)
@@ -350,6 +343,20 @@ def llm_json(system, user, max_tokens=1600, timeout=100, _model=None):
                     except Exception:
                         break
     return None
+
+
+def llm_json(system, user, max_tokens=1600, timeout=100, _model=None):
+    """llm_call + robustly extract a JSON object/array from the reply."""
+    txt = llm_call(system, user, max_tokens, timeout, _model=_model)
+    if not txt:
+        return None
+    # strip ```json fences, then try the whole thing before falling back to a span search
+    t = re.sub(r"^\s*```(?:json)?\s*|\s*```\s*$", "", txt.strip(), flags=re.I | re.M).strip()
+    try:
+        return json.loads(t)
+    except Exception:
+        pass
+    return _extract_json_from_text(t)
 
 
 _LAST_TOOL_ERR = None  # set by tool_json() on failure; scan_cell()'s single "cell errored"
@@ -1273,37 +1280,184 @@ def phase_recon():
     # etc.) belonging to the target's GitHub org — leaked API keys, DB passwords, cloud creds.
     _github_dork()
 
+
+def _merge_into_global_graph():
+    """Merge this hunt's final exploit-chain graph into a persistent, cross-hunt knowledge graph
+    (~/.huntr/global-graph/graph.json) — operator directive 2026-10-23 ("what other features can we
+    add"). A per-hunt graph only knows this ONE target; a graph that accumulates across every hunt
+    this operator has run can answer questions a single hunt never could: "has this exact WAF/CDN
+    fingerprint shown this bypass before, on a different target?", "which tech-stack signature most
+    often correlates with which vuln class?" — patterns hunt-brain.py's flat similarity search can
+    miss because it has no structured relationship model, just text-similarity recall.
+
+    Deterministic (`graphify merge-graphs`), 0 LLM tokens, fast — safe to run synchronously at hunt
+    end. Silently skips if this hunt produced no graph or graphify is unavailable."""
+    this_graph = HUNT_DIR / "graphify-out" / "graph.json"
+    if not this_graph.exists():
+        return
+    try:
+        global_dir = Path.home() / ".huntr" / "global-graph"
+        global_dir.mkdir(parents=True, exist_ok=True)
+        global_graph = global_dir / "graph.json"
+        if global_graph.exists():
+            out, err, rc = sh(["graphify", "merge-graphs", str(global_graph), str(this_graph),
+                               "--out", str(global_graph)], timeout=120)
+        else:
+            import shutil as _shu5
+            _shu5.copy(str(this_graph), str(global_graph))
+            rc = 0
+        if rc == 0:
+            log("ok", "◆ merged into cross-hunt knowledge graph · " + str(global_graph))
+        else:
+            log("out", "→ cross-hunt graph merge skipped (" + (err or "").strip()[:80] + ")")
+    except Exception as e:
+        log("out", "→ cross-hunt graph merge skipped (" + str(e)[:80] + ")")
+
     stage("Recon", 45)
 
 
-def _build_surface_graph(endpoints):
-    """Build / incrementally update a graphify knowledge graph from the crawled surface.
+def _build_surface_graph(endpoints, deep=False, update=False, blocking=False):
+    """Build / update a graphify knowledge graph of the target's surface — Claude-driven, not just
+    structural. Writes into <HUNT_DIR>/graphify-out/.
 
-    Writes into <HUNT_DIR>/graphify-out/. The graph is small (endpoints + JS + specs) so
-    extraction is fast and uses zero LLM tokens (pure AST / structural pass). The result
-    feeds _lead_digest() and the dashboard's surface-graph tab. Silently skips if graphify
-    is not installed."""
+    REBUILT 2026-10-23 (operator: "connect the graph to claude to make claude smarter, stronger, use
+    less tokens... what other features can we add"). The bare `graphify <dir> --update` subprocess
+    call only does fast structural/AST extraction (free, no LLM) — it can pull URL path structure but
+    can't understand that a sentence describing an IDOR means "this finding ENABLES cross-user data
+    read" or that two endpoints share a trust boundary. Semantic extraction needs either GEMINI_API_KEY
+    (not set here) or a host agent doing the reasoning — and we already have a proven mechanism for
+    that: invoke `claude -p "/graphify <dir>"` so a REAL Claude Code session (not a bare completion)
+    runs the actual graphify SKILL, which dispatches its own subagents to extract entities/relationships
+    from prose with its own reasoning. Live-verified 2026-10-23 against a tiny test corpus: a sentence
+    merely mentioning "potential IDOR" produced a standalone `IDOR Vulnerability on /api/orders/{id}`
+    node, and the extraction found a genuine cross-community edge linking it to an admin role-check —
+    relationships no bare structural pass could find. Falls back to the bare binary (structural-only,
+    still useful) if the `claude` CLI is unavailable. Runs in a background thread — Claude-driven
+    extraction takes real minutes, must never block the hunt pipeline.
+
+    deep=True also writes findings.md with explicit REQUIRES/ENABLES framing per confirmed finding —
+    this is what turns `graphify path "unauthenticated" "admin-panel"` into a genuine multi-hop
+    exploit-chain query instead of a structural URL-adjacency guess (same pattern arXiv 2610.20902
+    describes: encode pre/post-conditions as edges, query the chain instead of re-reasoning over every
+    finding from scratch). Call deep=True AFTER findings exist (post-hunt), not during initial recon.
+
+    update=True passes --update to the skill invocation for an incremental re-extract (this graph
+    already exists from an earlier deep=False pre-hunt call) instead of a fresh build.
+
+    blocking=True waits for the build instead of firing a daemon thread. Only use this for the
+    LAST build of a hunt (after phase_hard_triage's final pass, right before the process exits) —
+    a daemon thread started this close to process exit can be killed mid-build the moment main()
+    returns, silently losing the one graph build that actually has confirmed findings to encode."""
     recon_dir = HUNT_DIR / "recon"
     try:
         recon_dir.mkdir(parents=True, exist_ok=True)
-        # Write a plain endpoint list as a text file so graphify can ingest it
         ep_file = recon_dir / "endpoints.txt"
         ep_file.write_text("\n".join(e["url"] for e in endpoints) + "\n")
+
+        # POISONING DEFENSE (GraphRAG-under-fire: arXiv 2501.14050 — a hostile target can plant
+        # misleading content in crawled responses specifically to manipulate graph-based agent
+        # reasoning). Tag provenance so Claude's extraction — and later readers of the graph —
+        # know which nodes come from untrusted target-controlled data vs. HUNTR's own analysis.
+        (recon_dir / "PROVENANCE.md").write_text(
+            "# Provenance — trust level of each file in this corpus\n\n"
+            "- endpoints.txt: crawled directly from the TARGET. Untrusted data — a URL path or "
+            "parameter name is whatever the target server chose to serve, not a verified fact.\n"
+            "- biz-logic.md (if present): HUNTR's own pattern-matched analysis of the crawled "
+            "surface — moderate trust, still derived from target-controlled input.\n"
+            "- findings.md (if present): HUNTR's own CONFIRMED findings, each independently proven "
+            "by a deterministic oracle (real HTTP request + real response check) before being "
+            "recorded — high trust, this is HUNTR's verified output, not raw target content.\n"
+        )
+
+        biz = STATE.get("biz_logic") or {}
+        if biz:
+            lines = ["# Business Logic Model\n"]
+            if biz.get("entities"):
+                lines.append("## Entities\n" + "\n".join("- " + str(e) for e in biz["entities"][:30]) + "\n")
+            if biz.get("roles"):
+                lines.append("## Roles\n" + "\n".join("- " + str(r) for r in biz["roles"][:15]) + "\n")
+            if biz.get("flows"):
+                lines.append("## Flows\n" + "\n".join("- " + str(f) for f in biz["flows"][:20]) + "\n")
+            if biz.get("value_endpoints"):
+                lines.append("## Value-flow endpoints (money/credits/quota — race-condition targets)\n" +
+                             "\n".join("- " + str(u) for u in biz["value_endpoints"][:20]) + "\n")
+            if biz.get("admin_endpoints"):
+                lines.append("## Admin/privileged endpoints (BFLA targets)\n" +
+                             "\n".join("- " + str(u) for u in biz["admin_endpoints"][:20]) + "\n")
+            if biz.get("trust_boundaries"):
+                lines.append("## Trust boundaries — what the app trusts WITHOUT verifying\n" +
+                             "\n".join("- " + str(t.get("signal", "")) + ": " + str(t.get("example_url", ""))
+                                      for t in biz["trust_boundaries"][:15]) + "\n")
+            if len(lines) > 1:
+                (recon_dir / "biz-logic.md").write_text("\n".join(lines))
+
+        if deep:
+            findings = [f for f in STATE.get("findings", [])
+                       if f.get("verdict") in ("confirmed", "likely", "true_positive")
+                       and not f.get("noise")]
+            if findings:
+                lines = ["# Confirmed Findings — Exploit Chain Model\n",
+                         "Each finding states what it REQUIRES (precondition) and what it ENABLES "
+                         "(postcondition). Use this to find multi-step attack chains: a chain exists "
+                         "when one finding's ENABLES satisfies another's REQUIRES.\n"]
+                for f in findings[:40]:
+                    cls_l = str(f.get("cls", "")).lower()
+                    requires = ("an authenticated session" if cls_l in ("idor", "authz", "race", "bola")
+                               else "no authentication (reachable pre-auth)")
+                    lines.append("## " + str(f.get("title", "")))
+                    lines.append("- Endpoint: " + str(f.get("endpoint", "")))
+                    lines.append("- Class: " + str(f.get("cls", "")))
+                    lines.append("- Severity: " + str(f.get("sev", "")))
+                    lines.append("- Requires: " + requires)
+                    lines.append("- Enables: " + str(f.get("detail", ""))[:300])
+                    if f.get("impact_evidence"):
+                        lines.append("- Proven impact (independently escalated): " + str(f["impact_evidence"])[:300])
+                    lines.append("")
+                (recon_dir / "findings.md").write_text("\n".join(lines))
     except Exception:
         return
-    try:
-        out, err, rc = sh(
-            ["graphify", str(recon_dir), "--no-viz", "--update",
-             "--out", str(HUNT_DIR / "graphify-out")],
-            timeout=60,
-        )
+
+    def _run():
+        cli = None
+        try:
+            import shutil as _shu3
+            cli = _shu3.which("claude") or os.path.expanduser("~/.local/bin/claude")
+        except Exception:
+            pass
+        if cli and os.path.exists(cli):
+            try:
+                cmd_txt = "/graphify recon" + (" --update" if update else "")
+                r = subprocess.run(
+                    [cli, "-p", cmd_txt,
+                     "--model", MODEL_LEAD.get("model") or "claude-sonnet-4-6",
+                     "--add-dir", str(HUNT_DIR),
+                     "--permission-mode", "bypassPermissions",
+                     "--allowedTools", "Bash", "Read", "Write",
+                     "--disallowedTools", "WebFetch", "WebSearch",
+                     "--no-session-persistence"],
+                    cwd=str(HUNT_DIR), capture_output=True, text=True, timeout=600,
+                    env=dict(os.environ))
+                if (HUNT_DIR / "graphify-out" / "graph.json").exists():
+                    log("ok", "◆ surface graph built (Claude-driven semantic extraction" +
+                        (", deep/exploit-chain" if deep else "") + ") · " +
+                        str(len(endpoints)) + " endpoints → graphify-out/")
+                    return
+            except Exception:
+                pass
+        # Fallback: bare binary, structural-only (still useful, just thinner — no semantic
+        # relationships from biz-logic.md/findings.md, since that needs a reasoning pass).
+        out, err, rc = sh(["graphify", str(recon_dir), "--no-viz", "--update",
+                           "--out", str(HUNT_DIR / "graphify-out")], timeout=60)
         if rc == 0:
-            log("ok", "◆ surface graph built · " + str(len(endpoints)) + " endpoints → graphify-out/")
+            log("ok", "◆ surface graph built (structural only — claude CLI unavailable) · " +
+                str(len(endpoints)) + " endpoints → graphify-out/")
         else:
-            # graphify not installed or failed — non-fatal
             log("out", "→ surface graph skipped (" + (err.strip() or "graphify not found")[:80] + ")")
-    except Exception as _e:
-        log("out", "→ surface graph skipped (" + str(_e)[:80] + ")")
+
+    if blocking:
+        _run()
+    else:
+        threading.Thread(target=_run, daemon=True).start()
 
 
 def phase_surface():
@@ -4337,18 +4491,17 @@ def _phase_llm_lead_json(lead_deadline, tok, tok2, authed, max_steps, force_mode
             if data:
                 content = data.get("content", [])
                 text = "\n".join(b.get("text","") for b in content if b.get("type")=="text").strip()
-                # parse JSON directly from the text response
+                # parse JSON directly from the text response — balanced-bracket scan, not a greedy
+                # span regex (see _extract_json_from_text's docstring for the live incident class
+                # this avoids: trailing prose with a stray brace, e.g. a URL path param like
+                # /api/users/{id} in a summary, used to silently swallow a real proposed action).
                 try:
-                    import json as _json
-                    return _json.loads(text)
+                    return json.loads(text)
                 except Exception:
-                    import re as _re2
-                    m = _re2.search(r'\{[^{}]{10,}(?:[^{}]|\{[^{}]*\})*\}', text)
-                    if m:
-                        try:
-                            return _json.loads(m.group())
-                        except Exception:
-                            pass
+                    pass
+                parsed = _extract_json_from_text(text)
+                if parsed is not None:
+                    return parsed
                 return None
             return None
         else:
@@ -7216,12 +7369,14 @@ def main():
                 phase_authz_matrix()      # GOD METHODOLOGY: BFLA sweep + mass-assign on write endpoints
                 phase_race_critical()     # GOD METHODOLOGY: 25-thread race bursts + logic-fuzz on all value-flow endpoints
                 # Rebuild the surface graph NOW, not just once back in phase_surface(). By this point
-                # phase_recon_agent + phase_discover + phase_spa_capture have all added endpoints the
-                # initial crawl never saw — the graph Claude's hunting phase queries (_phase_claude_code_
-                # hunt / phase_recon_agent) should reflect the FULL surface, not just what existed before
-                # recon finished. _build_surface_graph is `--update` (incremental), so this is cheap.
+                # phase_recon_agent + phase_discover + phase_spa_capture + phase_biz_logic_map have all
+                # added content the initial crawl never had — the graph Claude's hunting phase queries
+                # (_phase_claude_code_hunt / phase_recon_agent) should reflect the full enriched surface
+                # (including the business-logic model now in biz-logic.md), not just the bare endpoint
+                # list from before recon finished. update=True: incremental re-extract on the graph
+                # phase_surface() already built, not a fresh one.
                 if not NO_LLM and STATE.get("endpoints"):
-                    _build_surface_graph(STATE["endpoints"])
+                    _build_surface_graph(STATE["endpoints"], update=True)
         else:
             log("out", "→ resume: skipping recon/surface (reusing mapped surface); continuing the hunt")
         if not (SOURCE_ASSETS and not WEB_ASSETS):
@@ -7296,6 +7451,14 @@ def main():
             # so re-running it here is cheap and simply fixes up whatever dedup just reshuffled.
             phase_economics()
             phase_hard_triage()                          # run again LAST — polish cannot smuggle anything past the gate
+            # POST-HUNT deep graph rebuild: findings are now fully settled (post-supervisor PoC/
+            # report/impact, post-dedup, post-economics) — this is the one build that actually has
+            # confirmed findings to encode as REQUIRES/ENABLES exploit-chain edges (see
+            # _build_surface_graph's deep= docstring). Feeds any later chain-building or report
+            # enrichment a real attack-chain graph to query instead of a flat finding list.
+            if not NO_LLM and STATE.get("endpoints"):
+                _build_surface_graph(STATE["endpoints"], deep=True, update=True, blocking=True)
+                _merge_into_global_graph()
         STATE["status"] = "done"
         stage("Done", 100)
         nf = len(_real_findings()); cov = STATE["coverage"]

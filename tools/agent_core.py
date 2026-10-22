@@ -204,6 +204,51 @@ def _extract_param(text):
     return m.group(1) if m else None
 
 
+def _extract_json_object(text):
+    """Find the first balanced {...} object in text and parse it. Replaces a naive
+    `re.search(r"\\{.*\\}", text, re.S)`, which is GREEDY and matches from the first `{` to the
+    LAST `}` anywhere in the whole string — including any `{`/`}` that shows up later in trailing
+    prose (a URL path param like `/api/users/{id}` in a chain-building summary is enough to break
+    it). Caught live 2026-10-23: agent-chain.py's model correctly proposed a record_chain action,
+    but the reply's own summary text mentioned `/api/users/{id}` AFTER the JSON block, so the old
+    regex's span ran off the end of the real JSON into unrelated prose, json.loads() on that
+    garbled span threw, action became None, and the whole reply silently fell through to being
+    treated as a finished plain-text answer — the chain was never recorded despite the model
+    clearly intending to record it. A depth-tracked, string-aware scan stops at the FIRST
+    object's own matching close brace regardless of what appears afterward."""
+    if not text:
+        return None
+    i = text.find("{")
+    if i < 0:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for j in range(i, len(text)):
+        ch = text[j]
+        if esc:
+            esc = False
+            continue
+        if ch == "\\" and in_str:
+            esc = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[i:j + 1])
+                except Exception:
+                    return None
+    return None
+
+
 def _json_action_loop(system, user, tools, handlers, max_rounds=6, max_tokens=1600, timeout=60):
     """Fallback for CLI-subscription mode (HUNT_LLM_VIA_CLI=1), where `claude -p` has no native
     tool-calling, so call_llm_with_tools refuses outright. Pre-runs any network/browser-side-effecting
@@ -267,13 +312,7 @@ def _json_action_loop(system, user, tools, handlers, max_rounds=6, max_tokens=16
         if not out:
             err = call_err or "no response"
             break
-        m = re.search(r"\{.*\}", out, re.S)
-        action = None
-        if m:
-            try:
-                action = json.loads(m.group(0))
-            except Exception:
-                action = None
+        action = _extract_json_object(out)
         if not isinstance(action, dict) or not model_tools:
             reply_text = out.strip()
             break
@@ -288,7 +327,7 @@ def _json_action_loop(system, user, tools, handlers, max_rounds=6, max_tokens=16
             result = "error: " + str(e)[:200]
         result = str(result)
         tool_log.append({"name": name, "input": {k: inp.get(k) for k in list(inp)[:4]}, "result": result[:600]})
-        transcript += ("\n\n[assistant proposed]\n" + m.group(0) +
+        transcript += ("\n\n[assistant proposed]\n" + json.dumps(action) +
                        "\n\n[harness ran it for real — RESULT for " + name + "]\n" + result[:3000])
     if reply_text is None and err is None:
         err = "max rounds reached without a final answer"
