@@ -3186,6 +3186,140 @@ def phase_memory_recall():
     flush()
 
 
+def phase_recon_agent(budget_sec=600):
+    """Agentic recon ENRICHMENT, not a replacement for recon.py/surface.py. Those stay exactly as
+    they are — fast, cheap, checkpointed, resumable, and don't need judgment (running subfinder is
+    not a decision). What a fixed script sequence can't do is notice "this is a GraphQL endpoint,
+    check introspection" or "this JS references an internal admin panel, go find it" and act on it.
+    This phase runs AFTER the deterministic pipeline has a baseline, hands Claude that baseline, and
+    lets it decide what ADDITIONAL targeted exploration is worth doing — same real-Claude-Code
+    mechanism as _phase_claude_code_hunt (real task, real Bash/Read/Write, no fictional persona),
+    proven reliable on sonnet-4-6/opus-4-8 (see claude-code-native-vs-json-loop memory). Bounded to a
+    modest fixed budget (default 10min) since this is enrichment, not the main event — the attack
+    phase gets the real budget.
+
+    Unlike _phase_claude_code_hunt, this does NOT force exec-http.py/deny curl: recon tools
+    (subfinder/httpx/katana/gau/whatweb/dnsx) take a domain and operate within it by construction,
+    the same trust level the existing deterministic recon.py/surface.py already run at (no scope-guard
+    wrapper either). The brief still states the scope boundary explicitly and recommends exec-http.py
+    for any one-off URL probe (gets evidence capture for free), but it's guidance, not a hard gate —
+    appropriate for discovery, not exploitation."""
+    if not STATE.get("hosts") and not STATE.get("endpoints"):
+        log("out", "→ recon-agent skipped: no baseline surface to build on yet")
+        return
+    cli = None
+    try:
+        import shutil as _shu2
+        cli = _shu2.which("claude") or os.path.expanduser("~/.local/bin/claude")
+    except Exception:
+        pass
+    if not cli or not os.path.exists(cli):
+        return
+
+    stage("Recon-agent", 48)
+    hosts = STATE.get("hosts", [])[:40]
+    endpoints = STATE.get("endpoints", [])[:60]
+    prog_intel = STATE.get("program_intel") or {}
+    mobile = STATE.get("mobile") or {}
+    scope_summary = ", ".join(sorted(set(h.get("host", "") for h in STATE.get("hosts", []))))[:400] or TARGET
+
+    brief = (
+        "# Recon Enrichment Task\n\n"
+        f"Target: {TARGET}\nProgram: {PROGRAM or TARGET}\n"
+        f"In-scope hosts: {scope_summary}\n\n"
+        f"Deterministic recon already ran and found {len(hosts)} host(s), {len(endpoints)} endpoint(s). "
+        "Your job is NOT to redo that — it's to look at what's already here and decide what ADDITIONAL "
+        "targeted exploration is worth doing, the way you would if you were driving this by hand and "
+        "noticed something interesting partway through.\n\n"
+        f"## Baseline already found\n"
+        f"Hosts: {json.dumps(hosts, default=str)[:2000]}\n"
+        f"Sample endpoints: {json.dumps(endpoints, default=str)[:3000]}\n"
+        + (f"Program intel: {json.dumps(prog_intel, default=str)[:1000]}\n" if prog_intel else "")
+        + (f"Mobile findings: {json.dumps(mobile, default=str)[:800]}\n" if mobile else "")
+        + "\n## What to look for\n"
+        "- A GraphQL endpoint → check introspection (`graphql-map.py` exists in " + str(HERE) + "/ if useful)\n"
+        "- Signs of a mobile backend → look for versioned/internal API routes\n"
+        "- JS referencing an internal tool, admin panel, or hidden route → try to find it\n"
+        "- A tech stack with known default paths (Next.js /_next, Supabase /rest/v1, WordPress /wp-json) "
+        "→ probe them\n"
+        "- Anything in subfinder/gau/wayback history that looks more interesting than what's in the "
+        "baseline list\n\n"
+        "## Tools\n"
+        "You have real Bash access. subfinder/httpx/katana/gau/whatweb/dnsx are installed if you want "
+        "another enumeration pass on a specific lead. For any single URL you want to check, "
+        f"`python3 {HERE}/exec-http.py --url <url> [--method GET|POST]` from this directory is scope-"
+        "guarded and auto-captures evidence — prefer it over raw curl when you're probing a specific "
+        "endpoint, but this phase is discovery, not exploitation, so it's a recommendation, not a rule.\n\n"
+        f"Stay on: {scope_summary}. Write anything new you find to {HUNT_DIR}/agent-recon.json as a single "
+        'JSON object: {"endpoints":[{"url":...,"host":...,"note":...}], "hosts":[{"host":...}], '
+        '"tech_notes":"...", "secrets":["..."]}.\n\n'
+        "Begin now: review what's known, pick the 2-4 most promising leads, investigate them for real, "
+        "and write what you find. Stop once you've covered them or you're repeating yourself."
+    )
+
+    env = dict(os.environ)
+    cdir = os.environ.get("HUNT_CLAUDE_CLI_DIR") or (
+        os.path.dirname(os.environ["HUNT_CLAUDE_CREDS"]) if os.environ.get("HUNT_CLAUDE_CREDS") else "")
+    if cdir:
+        env["CLAUDE_CONFIG_DIR"] = os.path.expanduser(cdir)
+    model = MODEL_LEAD.get("model") or "claude-sonnet-4-6"
+    log("ok", "◆ recon-agent · model=" + model + " · budget=" + str(budget_sec) + "s")
+    cmd = [cli, "-p", brief,
+           "--model", model,
+           "--add-dir", str(HUNT_DIR),
+           "--permission-mode", "bypassPermissions",
+           "--allowedTools", "Bash", "Read", "Write",
+           "--no-session-persistence"]
+    try:
+        r = subprocess.run(cmd, cwd=str(HUNT_DIR), capture_output=True, text=True,
+                           timeout=budget_sec, env=env)
+        summary = (r.stdout or r.stderr or "").strip()
+    except subprocess.TimeoutExpired:
+        summary = ""
+        log("warn", "⏱ recon-agent hit its time budget — reading whatever it found so far")
+    except Exception as e:
+        log("warn", "→ recon-agent failed to launch: " + str(e)[:200])
+        return
+
+    rpath = HUNT_DIR / "agent-recon.json"
+    if not rpath.exists():
+        log("out", "→ recon-agent found nothing new · " + summary[:160].replace("\n", " "))
+        return
+    try:
+        rd = json.loads(rpath.read_text(errors="ignore"))
+    except Exception as e:
+        log("warn", "→ recon-agent wrote unparseable agent-recon.json: " + str(e)[:120])
+        return
+
+    added_eps = added_hosts = 0
+    existing_urls = {e["url"] for e in STATE["endpoints"]}
+    for e in rd.get("endpoints", []) or []:
+        u = str(e.get("url", "")).strip()
+        if not u or u in existing_urls:
+            continue
+        STATE["endpoints"].append({"url": u, "host": str(e.get("host") or "")})
+        existing_urls.add(u)
+        added_eps += 1
+    existing_hosts = {h.get("host") for h in STATE.get("hosts", [])}
+    for h in rd.get("hosts", []) or []:
+        hn = str(h.get("host", "")).strip()
+        if not hn or hn in existing_hosts:
+            continue
+        STATE.setdefault("hosts", []).append({"host": hn})
+        existing_hosts.add(hn)
+        added_hosts += 1
+    if rd.get("secrets"):
+        STATE.setdefault("js_secrets", []).extend(
+            {"source": "recon-agent", "value": str(s)[:200]} for s in rd["secrets"][:20])
+    if rd.get("tech_notes"):
+        STATE["recon_agent_notes"] = str(rd["tech_notes"])[:1500]
+    STATE["stats"]["endpoints"] = len(STATE["endpoints"])
+    log("ok", "✓ recon-agent · +" + str(added_eps) + " endpoint(s) · +" + str(added_hosts) +
+        " host(s) · " + summary[:150].replace("\n", " "))
+    flush()
+    stage("Recon-agent", 50)
+
+
 def _phase_js_mine():
     """Pre-LLM JS mining — extract hidden API routes, tokens, and params from all JS files.
 
@@ -7115,6 +7249,8 @@ def main():
                 phase_surface()
                 phase_discover(deadline)  # ACTIVE discovery — unlinked paths + spec walk + BFS
                 phase_spa_capture()       # SPA runtime API discovery (real browser)
+                if not NO_LLM:
+                    phase_recon_agent()    # Claude reviews the baseline surface, decides what's worth digging into further
                 phase_memory_recall()     # long-term memory — analogous past situations (BEFORE plan so it informs it)
                 # STRATUM 2 — Attack
                 phase_active()            # Layer 1 — deterministic sweep; LLM gets real scan evidence (+ graphql-map + ws-probe + ssrf-probe)
