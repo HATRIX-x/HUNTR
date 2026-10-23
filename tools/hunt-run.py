@@ -2070,6 +2070,31 @@ def phase_spa_capture():
     tok = (c.get("session_token") or "").strip()
     ua = (c.get("ua") or "").strip()
 
+    # INJECT the operator's own session into the CDP-attached browser — operator directive
+    # 2026-10-23: "HUNTR must take the session I provided... not need to login manually... like
+    # claude does." Live-tested root cause: a CDP-attached Chrome (fresh-launched OR an existing one
+    # whose stored profile session had simply expired) is NOT automatically logged in just because
+    # HUNTR is attached to it — js-api-harvest.py/browser-capture.py both only ever read whatever
+    # session already happens to be in that browser; nothing ever pushed the operator's own cookie
+    # INTO it. addCookies() goes through CDP's Network.setCookie, so it works for HttpOnly cookies
+    # too (document.cookie injection wouldn't). Live-verified end to end against the real target this
+    # fixed: cookie injected → navigated straight to an authenticated dashboard route (no login wall)
+    # → the very next browser-capture.py run (previously 0 calls every time) recorded real
+    # /system/v1/user* traffic — exactly the endpoint family every one of this target's 50+ known
+    # critical bugs lives under. 0-cost when it's a no-op (CDP down, or already logged in and the
+    # cookie values are identical) — just best-effort, never blocks the rest of the phase on failure.
+    if cdp and cookie and (HERE / "cdp-login-session.py").exists():
+        try:
+            lr = tool_json("cdp-login-session.py", ["--cdp-port", cdp, "--url", url, "--cookie", cookie], timeout=35)
+            if lr and lr.get("ok"):
+                if lr.get("looks_logged_in"):
+                    log("ok", "✓ CDP session injected · landed on " + str(lr.get("final_url", ""))[:90])
+                else:
+                    log("warn", "→ CDP session injected but still looks logged-out — " +
+                        str(lr.get("evidence", ""))[:120])
+        except Exception:
+            pass
+
     # ── STATIC bundle harvest (CDP) — the real fix for SPA blindness ──────────────────────────────
     # katana sees only linked HTML and the passive XHR capture below records only what the app FIRES on
     # a bare load (near-nothing on a server-rendered SPA). The API the app DECLARES lives as path

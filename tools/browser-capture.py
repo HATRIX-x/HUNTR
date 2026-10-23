@@ -120,7 +120,17 @@ const APIISH=/(\/cgi-bin\/|\/api\/|\/v\d+\/|\/index\/service\/|action=|\/graphql
   if(b) await b.close();
   const arr=Object.values(calls);
   console.log(JSON.stringify({calls:arr,count:arr.length,auth_mode:authMode}));
-})().catch(e=>console.log(JSON.stringify({calls:[],error:String(e).slice(0,200)})));
+  process.exit(0);
+})().catch(e=>{console.log(JSON.stringify({calls:[],error:String(e).slice(0,200)})); process.exit(1);});
+// connectOverCDP (the CDP-attach path) leaves the WebSocket/event-loop handles open — without an
+// explicit process.exit(), node never naturally terminates once b (the fresh-launch browser) is
+// null, which is exactly the CDP-attach case. CAUGHT LIVE 2026-10-23: this script was completing
+// its ENTIRE capture successfully and printing the correct JSON result, then hanging on the open
+// CDP connection until the outer Python subprocess.run's own timeout (SECS+120s) killed it — which
+// (see the except block below) was then discarding the already-successful result entirely and
+// reporting a bare timeout error instead. Every CDP-based SPA capture this session was silently
+// paying this full timeout tax at minimum, and any one whose node process got killed before this
+// fix would have LOST real captured data that had already been printed.
 """
 
 tf = tempfile.NamedTemporaryFile("w", suffix=".js", delete=False)
@@ -134,6 +144,25 @@ try:
     os.unlink(tf.name)
     line = next((l for l in reversed((r.stdout or "").splitlines()) if l.strip().startswith("{")), None)
     res = json.loads(line) if line else {"calls": [], "error": (r.stderr or "no output")[:160]}
+except subprocess.TimeoutExpired as e:
+    # DEFENSE IN DEPTH for the bug fixed above: subprocess.run captures stdout incrementally even
+    # when it ultimately times out, and attaches whatever was captured to e.stdout/e.output before
+    # raising — the previous bare `except Exception` discarded this unconditionally, so a successful
+    # capture that happened to finish just before the timeout fired was reported as a total failure
+    # with zero data recovered. Try to parse real results out of it before giving up.
+    partial = (e.stdout or "") if isinstance(e.stdout, str) else (e.stdout or b"").decode("utf-8", "replace")
+    line = next((l for l in reversed(partial.splitlines()) if l.strip().startswith("{")), None)
+    try:
+        os.unlink(tf.name)
+    except Exception:
+        pass
+    if line:
+        try:
+            res = json.loads(line)
+        except Exception:
+            res = {"calls": [], "error": "timed out after " + str(SECS + 120) + "s (unparseable partial output)"}
+    else:
+        res = {"calls": [], "error": "timed out after " + str(SECS + 120) + "s"}
 except Exception as e:
     res = {"calls": [], "error": str(e)[:160]}
 if OUT:
