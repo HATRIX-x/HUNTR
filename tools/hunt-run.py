@@ -652,29 +652,29 @@ def _session_probe_url():
     return "https://" + host.split("/")[0] + "/"
 
 
-def _pause_for_creds(msg):
-    """Self-pause for a missing/dead session — operator directive 2026-10-23: "if it lacks creds
-    the hunt pauses and a pop-up appears... to make sure everything works perfectly in grey box and
-    white box hunting." Grey/white-box hunting that silently runs black-box-only (no creds ever
-    supplied) or silently keeps hammering every authenticated class with a dead token (session
-    expired mid-hunt — see _check_session_health's docstring for the exact incident this already
-    existed to make VISIBLE, but never actually stopped) defeats half the hunt's purpose with
-    nothing forcing the operator to notice.
+def _self_pause(reason, msg):
+    """Self-pause the hunt for a problem that needs the operator's attention — generalized
+    2026-10-23 from the original creds-only version after a live incident showed the SAME silent-
+    degradation class applies beyond just sessions (see _pause_for_cdp's docstring). Grey/white-box
+    hunting that silently degrades (no session, dead session, or — the live case — a dead CDP
+    connection leaving an SPA's real API surface completely undiscovered) defeats the hunt's
+    purpose with nothing forcing the operator to notice.
 
     Uses the EXACT same mechanism the operator's own Pause button already uses (self-SIGSTOP, not
     the RateLimitPause-exception path) — deliberately NOT the exception/process-exit/--resume-
     relaunch route, because relaunching re-enters main() with resumed=True, which skips every phase
-    gated `if not resumed:` — including phase_authed() itself. That would mean providing creds and
-    resuming would never actually trigger the authenticated pass it just paused to wait for.
+    gated `if not resumed:` — including the exact phase that hit the problem. That would mean
+    fixing the problem and resuming would never actually trigger the pass it paused to wait for.
     SIGSTOP instead freezes this exact process at this exact line; the operator's Resume action (or
-    /api/hunt/creds auto-resuming once fresh creds are saved) sends SIGCONT, and execution falls
-    right back out of this function, in the same call stack, about to retry with live data since
-    _creds() re-reads from disk every call — no relaunch, no skipped phase, no re-run of completed
-    work either."""
+    an API endpoint auto-resuming once the fix is saved) sends SIGCONT, and execution falls right
+    back out of this function, in the same call stack, about to retry with live data — no relaunch,
+    no skipped phase, no re-run of completed work either.
+
+    reason: the paused_reason value the UI keys off (e.g. "creds-required", "cdp-required")."""
     with _STATE_LOCK:
         STATE["status"] = "paused"
-        STATE["paused_reason"] = "creds-required"
-        STATE["creds_alert"] = {"ts": time.time(), "msg": msg}
+        STATE["paused_reason"] = reason
+        STATE["creds_alert"] = {"ts": time.time(), "msg": msg}   # one shared alert field for the UI
         STATE.setdefault("logs", []).append({"t": "err", "v": "⏸ PAUSED — " + msg})
         if len(STATE["logs"]) > 400:
             STATE["logs"] = STATE["logs"][-400:]
@@ -684,15 +684,39 @@ def _pause_for_creds(msg):
         os.kill(os.getpid(), _sig.SIGSTOP)
     except Exception:
         pass
-    # execution resumes HERE once SIGCONT arrives (operator clicked Resume, or /api/hunt/creds
-    # auto-resumed after saving fresh creds) — same process, same call stack, nothing re-run.
+    # execution resumes HERE once SIGCONT arrives — same process, same call stack, nothing re-run.
     with _STATE_LOCK:
-        if STATE.get("paused_reason") == "creds-required":
+        if STATE.get("paused_reason") == reason:
             STATE["status"] = "running"
             STATE.pop("paused_reason", None)
             STATE.pop("creds_alert", None)
             STATE.setdefault("logs", []).append({"t": "ok", "v": "▷ hunt resumed"})
     flush()
+
+
+def _pause_for_creds(msg):
+    """Self-pause for a missing/dead session — operator directive 2026-10-23: "if it lacks creds
+    the hunt pauses and a pop-up appears... to make sure everything works perfectly in grey box and
+    white box hunting." See _check_session_health's docstring for the exact silent-degradation
+    incident this exists to actually stop, not just make visible."""
+    _self_pause("creds-required", msg)
+
+
+def _pause_for_cdp(msg):
+    """Self-pause when CDP (the mechanism that discovers an SPA's REAL API surface — see
+    phase_spa_capture) is configured but unreachable. CAUGHT LIVE 2026-10-23: a grey-box hunt
+    against a Vue.js SPA finished with 0 findings while a months-long manual engagement against the
+    SAME target had 50+ confirmed critical bugs (IDOR, auth bypass, ATO chains) living entirely
+    under /system/v1/* — a path space the hunt's own endpoint list had ZERO entries for. Root cause:
+    the operator's CDP session (port configured in creds, alive at hunt start — _auto_cdp only
+    checks liveness ONCE, at start) died sometime before phase_spa_capture actually ran. Both
+    js-api-harvest.py and browser-capture.py correctly reported "Connection refused" — this was
+    never a silent code bug — but NOTHING escalated that into anything the operator would ever see:
+    just two log lines that get rotated out of the 400-entry buffer by the rest of the hunt. The
+    hunt then spent its entire budget thoroughly testing a surface that was structurally incapable
+    of containing the real bugs, with no indication anything had gone wrong. Same fix class as
+    _pause_for_creds — just for the OTHER thing that silently guts a grey/white-box hunt's value."""
+    _self_pause("cdp-required", msg)
 
 
 def _check_session_health():
@@ -2006,13 +2030,52 @@ def phase_spa_capture():
     ua = (c.get("ua") or "").strip()
     stage("SPA-capture", 84)
 
+    # CAUGHT LIVE 2026-10-23: a grey-box hunt against a Vue.js SPA finished with 0 findings while a
+    # months-long manual engagement against the SAME target had 50+ confirmed critical bugs (IDOR,
+    # auth bypass, full ATO chains) living entirely under /system/v1/* — a path space this hunt's
+    # endpoint list had ZERO entries for. Root cause: the CDP port in creds was alive when the hunt
+    # STARTED (_auto_cdp only checks liveness once, then moves on) but had died by the time THIS
+    # phase actually ran — js-api-harvest.py and browser-capture.py both correctly reported
+    # "Connection refused", but that was two log lines in a 400-entry ring buffer the rest of the
+    # hunt rotated out before the operator ever saw them. Check liveness HERE, right before use, not
+    # just once at hunt start — and if it's dead, try to self-heal via _auto_cdp() (same persistent
+    # profile dir, so a relaunch recovers the actual logged-in session) before accepting degraded
+    # coverage silently.
+    cdp = str(c.get("cdp_port") or "").strip()
+    if cdp and not _cdp_alive(int(cdp)):
+        log("warn", "⚠ CDP port " + cdp + " configured but unreachable — the SPA's real API surface "
+            "cannot be captured without it. Attempting to re-attach…")
+        _auto_cdp()
+        c = _creds()
+        cdp = str(c.get("cdp_port") or "").strip()
+        if cdp and _cdp_alive(int(cdp)):
+            log("ok", "✓ CDP recovered on port " + cdp)
+        else:
+            _pause_for_cdp(
+                "CDP session is unreachable and could not be auto-recovered — this hunt is grey/white-box "
+                "but cannot capture the app's real runtime API surface (the SPA's own XHR/fetch calls and "
+                "JS-bundle-declared routes). Every scanner will only see the shallow, generic surface. "
+                "Re-attach a live Chrome with --remote-debugging-port (or update the CDP port) to fix this "
+                "before resuming, or resume anyway to accept a black-box-equivalent surface for this app.")
+            c = _creds()
+            cdp = str(c.get("cdp_port") or "").strip()
+            if cdp and _cdp_alive(int(cdp)):
+                log("ok", "✓ CDP attached after resume · " + cdp)
+            else:
+                log("warn", "→ resumed without a live CDP session — SPA capture will cover the "
+                    "unauthenticated/public surface only")
+    # the operator may have also refreshed cookie/token/UA in the same modal while fixing CDP —
+    # re-read everything from creds.json now, not just the cdp_port this block has been tracking.
+    cookie = (c.get("cookie") or "").strip()
+    tok = (c.get("session_token") or "").strip()
+    ua = (c.get("ua") or "").strip()
+
     # ── STATIC bundle harvest (CDP) — the real fix for SPA blindness ──────────────────────────────
     # katana sees only linked HTML and the passive XHR capture below records only what the app FIRES on
     # a bare load (near-nothing on a server-rendered SPA). The API the app DECLARES lives as path
     # literals in its JS bundles; js-api-harvest fetches every loaded bundle in-page over the live CDP
     # session and extracts them. On CoinTR this turned 0 → 530 real /v1 endpoints. Runs whenever a debug
     # Chrome is attached (creds.cdp_port); folds every harvested path into the testable surface.
-    cdp = str(c.get("cdp_port") or "").strip()
     if cdp and (HERE / "js-api-harvest.py").exists():
         log("cmd", "$ js-api-harvest — mining API paths from the SPA's JS bundles (CDP :" + cdp + ")")
         hd = tool_json("js-api-harvest.py", ["--cdp-port", cdp, "--origin", sch + "://" + lithost, "--json"], timeout=120)

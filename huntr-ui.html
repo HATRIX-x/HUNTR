@@ -1559,7 +1559,7 @@ function renderHeader(run){
     pr.removeAttribute('hidden'); pr.textContent='⟳ Re-hunt';
   }else if(st==='paused'){
     const prLbl={'rate-limit':'paused · account rate limit','cost-cap':'paused · spend cap reached',
-      'creds-required':'paused · session required'}[run.paused_reason];
+      'creds-required':'paused · session required','cdp-required':'paused · CDP session unreachable'}[run.paused_reason];
     stext.innerHTML=`<b>${esc(nm)}</b> · ${prLbl||'paused'}${tail}`;
     pp.setAttribute('hidden','');ps.removeAttribute('hidden');pr.removeAttribute('hidden');pr.textContent='▷ Resume';
   }else if(st==='stalled'){
@@ -3134,22 +3134,28 @@ function renderLlmBanner(alert){
   b.removeAttribute('hidden');
 }
 // Auto-pop the Creds modal — not just the passive banner — the moment the engine self-pauses for
-// a missing/dead session (hunt-run.py's _pause_for_creds). Operator directive 2026-10-23: grey/
-// white-box hunting with no working session should be impossible to miss. Guarded by S.credsPopupShownFor
+// a missing/dead session OR an unreachable CDP connection (hunt-run.py's _pause_for_creds /
+// _pause_for_cdp — same modal either way, since it already has token/cookie AND cdp-port fields).
+// Operator directive 2026-10-23: grey/white-box hunting with no working session, or an SPA whose
+// real API surface can't be captured, should be impossible to miss. Guarded by S.credsPopupShownFor
 // so it pops ONCE per distinct pause (identified by its timestamp), not on every ~1-2s poll tick
-// while the operator is mid-typing in the very modal this opened — and resets once the pause clears,
-// so a LATER session death (a fresh pause with a new timestamp) pops again.
+// while the operator is mid-typing in the very modal this opened — and resets once the pause
+// clears, so a LATER pause (a fresh timestamp) pops again.
 function checkCredsRequiredPopup(run){
-  const paused = run.status==='paused' && run.paused_reason==='creds-required';
+  const reason = run.paused_reason;
+  const paused = run.status==='paused' && (reason==='creds-required' || reason==='cdp-required');
   if(!paused){ S.credsPopupShownFor=null; return; }
   const ts = (run.creds_alert&&run.creds_alert.ts) || 'x';
   if(S.credsPopupShownFor===ts) return;
   S.credsPopupShownFor=ts;
-  openCreds((run.creds_alert&&run.creds_alert.msg)||'Grey/white-box hunt paused — a session is required to continue authenticated testing.');
+  const fallback = reason==='cdp-required'
+    ? 'Grey/white-box hunt paused — the CDP session is unreachable and the SPA\'s real API surface cannot be captured.'
+    : 'Grey/white-box hunt paused — a session is required to continue authenticated testing.';
+  openCreds((run.creds_alert&&run.creds_alert.msg)||fallback, reason==='cdp-required');
 }
-function openCreds(urgentMsg){
-  openModal(`<div class="m-title">${urgentMsg?'⚠ Hunt paused — session required':'Credentials'}</div>
-    <div class="m-sub">${urgentMsg?esc(urgentMsg)+' Add one below — the hunt resumes automatically the moment you do.':
+function openCreds(urgentMsg, isCdp){
+  openModal(`<div class="m-title">${urgentMsg?(isCdp?'⚠ Hunt paused — CDP session required':'⚠ Hunt paused — session required'):'Credentials'}</div>
+    <div class="m-sub">${urgentMsg?esc(urgentMsg)+' '+(isCdp?'Re-attach Chrome (CDP port below) or update the session — the hunt resumes automatically the moment you do.':'Add one below — the hunt resumes automatically the moment you do.'):
       'Hand the engine a new session — e.g. after the old one expired or was rotated. '+
       'Test it live before committing, or update straight away. Takes effect on the hunt\'s very next '+
       'authenticated request — no restart needed.'}</div>

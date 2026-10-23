@@ -1932,7 +1932,7 @@ class H(BaseHTTPRequestHandler):
                     if rd.pop("creds_alert", None) is not None:
                         changed = True
                     was_paused_for_creds = (rd.get("status") == "paused"
-                                            and rd.get("paused_reason") == "creds-required")
+                                            and rd.get("paused_reason") in ("creds-required", "cdp-required"))
                     if was_paused_for_creds:
                         try:
                             pid = int((hd / "run.pid").read_text().strip())
