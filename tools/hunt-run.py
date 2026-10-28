@@ -3945,6 +3945,237 @@ def _phase_auth_spa_agent(deadline=None):
     stage("Auth+SPA (agentic)", 86)
 
 
+def _phase_intel_agent(deadline=None):
+    """Stage 3 of the full-agentic rewrite (see HUNTR full-agentic plan, 2026-10-25) — Phase 1:
+    Setup + Program Intel. Replaces phase_program_intel() entirely: one real Claude Code agent
+    gathers public OSINT about the program (known disclosures, leaked secrets, exposed infra,
+    forgotten-but-still-live endpoints, bounty/reward info) and decides for itself what's worth
+    recording, instead of five hardcoded API-call steps.
+
+    phase_source_audit() (the separate code-review path for source-only scope) is NOT folded in here
+    — it already reads files and reasons with no regex/hardcoded patterns ("No regex. No hardcoded
+    patterns. The LLM hunts." — its own docstring), so it already satisfies the full-agentic intent
+    and converting it adds no value; left on the legacy path. phase_scope() also stays — it's plain
+    file I/O (writing scope.allow/deny from the CLI args), not judgment.
+
+    Flag-gated: only called from main() when "intel" is in HUNT_AGENTIC_PHASES. Low risk — this phase
+    is informational context for later phases plus the occasional leaked-secret finding, never a
+    destructive action."""
+    budget = 600.0
+    if deadline:
+        budget = max(90.0, min(budget, deadline - time.time()))
+    prog = (PROGRAM or apex(TARGET) or TARGET).strip()
+    scope_summary = ", ".join(WEB_ASSETS)[:400] or TARGET
+    gh_token_note = ("A GITHUB_TOKEN is set in this environment if you want to use the gh CLI or git "
+                      "for a GitHub org scan." if os.environ.get("GITHUB_TOKEN", "").strip() else
+                      "No GITHUB_TOKEN is set — a GitHub scan is still possible against public repos "
+                      "without one, just rate-limited.")
+    shodan_note = ("A SHODAN_API_KEY is set if you want host/port intelligence from Shodan's API."
+                   if os.environ.get("SHODAN_API_KEY", "").strip() else
+                   "No SHODAN_API_KEY is set — skip Shodan.")
+
+    brief = (
+        "# Program Intel — full agentic phase\n\n"
+        f"Target: {TARGET}\nProgram: {prog}\n\n"
+        f"## In-scope\n{scope_summary}\n\n"
+        "## Your job\n"
+        "Gather public intelligence about this program BEFORE any active probing happens, the way a "
+        "researcher would before starting a real engagement. You have real Bash access — use curl, "
+        "gh, git, whois, or anything else you judge useful; read and interpret the raw output yourself, "
+        "there's no scripted parser behind you. Look for:\n"
+        "- Already-disclosed reports (HackerOne/Bugcrowd/Intigriti public hacktivity for this program) "
+        "— so the hunt doesn't waste time re-finding what's already known.\n"
+        f"- {gh_token_note} A leaked secret/key/credential in a public repo is an instant, serious "
+        "finding — look for .env files, hardcoded API keys, CI/CD misconfig.\n"
+        f"- {shodan_note}\n"
+        "- Wayback Machine / archive.org history for this domain — URLs the app used to link to but "
+        "removed from its SPA; they often still work on the backend even though nothing links to them "
+        "anymore. (`curl 'https://web.archive.org/cdx/search/cdx?url=*.<domain>/*&output=json&"
+        "collapse=urlkey&limit=500&filter=statuscode:200'`)\n"
+        f"- Any bounty/reward amounts in {HUNT_DIR}/scope.md or scope.json, if present, so later "
+        "phases know what severity actually pays here.\n\n"
+        f"## Output — append as you go\n"
+        f"Write one JSON object per line to {HUNT_DIR}/agent-intel.jsonl (create it if missing). Three "
+        "line shapes:\n"
+        '  {"type":"note","key":"disclosures|github|shodan|wayback|rewards","value":...} — any free-form '
+        "JSON you want later phases to see\n"
+        '  {"type":"endpoint","url":"https://.../old-path","host":"...","note":"found via wayback, '
+        'verify it still responds"}\n'
+        '  {"type":"finding","title":"...","severity":"critical|high|medium|low|info","cls":"secret|'
+        'misconfig|...","endpoint":"...","evidence":"...","reproduction":"..."} — only for something '
+        "genuinely confirmed (e.g. a real leaked secret you can show), not a guess\n\n"
+        "Begin now. This is reconnaissance, not exploitation — stay read-only, don't send anything "
+        "destructive. Stop once you've covered the obvious OSINT surface or you're repeating yourself."
+    )
+
+    def _merge(lines):
+        intel = STATE.setdefault("program_intel", {})
+        existing_urls = {e.get("url") for e in STATE.get("endpoints", [])}
+        added_e = added_f = added_n = 0
+        for r in lines:
+            t = r.get("type")
+            if t == "note":
+                k = str(r.get("key", "")).strip()
+                if k:
+                    intel[k] = r.get("value")
+                    added_n += 1
+            elif t == "endpoint":
+                u = str(r.get("url", "")).strip()
+                if u and u not in existing_urls and _in_scope(u)[0]:
+                    STATE["endpoints"].append({"url": u, "host": str(r.get("host") or ""),
+                                                "source": "intel-agent"})
+                    existing_urls.add(u); added_e += 1
+            elif t == "finding":
+                title = str(r.get("title", "")).strip()
+                evidence = str(r.get("evidence", "")).strip()
+                endpoint = str(r.get("endpoint", "")).strip()
+                if not title or not endpoint or len(evidence) < 20:
+                    continue
+                sev_map = {"critical": "c", "high": "h", "medium": "m", "low": "l", "info": "i"}
+                sev = sev_map.get(str(r.get("severity", "medium")).lower(), "m")
+                add_finding(sev, title, evidence, endpoint, cls=str(r.get("cls", "")),
+                            verdict="agent", det=False)
+                added_f += 1
+        log("out", "→ intel agent · " + str(added_n) + " note(s) · +" + str(added_e) +
+            " endpoint(s) · +" + str(added_f) + " finding(s)")
+
+    ok = _run_phase_agent("intel agent", "Intel (agentic)", 10, brief, budget,
+                           HUNT_DIR / "agent-intel.jsonl", _merge)
+    if not ok:
+        STATE.setdefault("program_intel", {})
+        log("out", "→ agentic intel produced nothing — proceeding without pre-hunt OSINT context")
+    flush()
+
+
+def _phase_plan_agent(deadline=None):
+    """Stage 4 of the full-agentic rewrite (see HUNTR full-agentic plan, 2026-10-25) — Phase 4:
+    Business-Logic Modeling + Attack Planning. Replaces phase_biz_logic_map()/phase_authz_matrix()/
+    phase_plan() entirely: one real Claude Code agent reads the known surface, builds its own mental
+    model of the app's entities/roles/value-flows, probes for the most common authorization-boundary
+    bug (a regular token reaching an admin/internal endpoint) using its own judgment, and ranks what's
+    worth testing next — instead of a hardcoded entity-extraction prompt + a fixed admin-path regex +
+    a separate ranking script.
+
+    IMPORTANT compatibility note: phase_adaptive()/phase_llm_lead() (Phase 5) are NOT yet converted —
+    they still read STATE["plan"]["targets"] (a list of {"endpoint","cls"} cells) exactly like the
+    legacy phase_plan() produced. This phase's merge_fn applies the same applicable_classes() filter
+    scan_cell()'s own callers rely on, so a cls the agent proposes that doesn't actually fit that
+    endpoint (e.g. sqli on a static asset) gets silently dropped here, not left for Phase 5 to waste
+    budget on.
+
+    Flag-gated: only called from main() when "plan" is in HUNT_AGENTIC_PHASES."""
+    if NO_LLM or not STATE.get("endpoints"):
+        return
+    budget = 900.0
+    if deadline:
+        budget = max(120.0, min(budget, deadline - time.time()))
+    c = _creds()
+    tok = (c.get("session_token") or "").strip()
+    has_session = bool(tok or (c.get("cookie") or "").strip())
+    ep_sample = [e["url"] for e in STATE["endpoints"][:150]]
+    prog_intel = STATE.get("program_intel") or {}
+    scope_summary = ", ".join(WEB_ASSETS)[:400] or TARGET
+
+    brief = (
+        "# Business-Logic Modeling + Attack Planning — full agentic phase\n\n"
+        f"Target: {TARGET}\nProgram: {PROGRAM or TARGET}\nMode: {MODE}-box\n\n"
+        f"## In-scope\n{scope_summary}\n"
+        "There is no technical enforcement behind this. You are the only thing stopping an "
+        "out-of-scope request.\n\n"
+        f"## Known endpoints ({len(STATE['endpoints'])} total, sample below)\n"
+        f"{json.dumps(ep_sample, default=str)[:4000]}\n\n"
+        + (f"## Reward table\n{json.dumps(prog_intel['reward_table'])[:400]}\n\n" if prog_intel.get("reward_table") else "")
+        + "## Your job (three parts)\n"
+        "1. **Model the app** the way a researcher would before attacking it: what are the core "
+        "entities (User, Order, Payment, Tenant...)? What role levels exist (anonymous/user/admin/"
+        "internal-service)? What multi-step flows matter (checkout, invite, password-reset, signup)? "
+        "Which endpoints touch money/credits/quota (the highest-value race-condition targets)?\n"
+        + (
+            "2. **Probe for broken authorization** using your own judgment, not a fixed checklist: try "
+            "the regular authenticated session above against anything that looks admin/internal/"
+            "privileged (paths containing admin, internal, manage, staff, actuator, system, debug, "
+            "sudo, root), AND consider header-based trust bypasses (an internal service-to-service "
+            "header like `service-name`, `x-internal`, `x-forwarded-for` that a gateway might forward "
+            "from an external caller without stripping it) — this exact pattern has been a real "
+            "critical bug on this family of app before. Confirm from the actual response (real data "
+            "returned, not just a 200 with an empty body) before calling it a finding.\n"
+            if has_session else
+            "2. (No session available — skip the live authorization probe, model the role hierarchy "
+            "from endpoint naming/structure alone.)\n"
+        )
+        + "3. **Rank what's worth testing next.** For each endpoint you think deserves active vulnerability "
+        "testing, propose the endpoint plus which vuln classes actually make sense for it given what it "
+        "does (e.g. a POST endpoint with a user-supplied ID → idor/authz; a search box → sqli/xss; a "
+        "redirect param → redirect/ssrf) — don't propose a class that makes no sense for the endpoint's "
+        "role (no injection classes on a static JS file). Valid class names: cors, redirect, idor, "
+        "authz, param, xss, sqli, ssti, ssrf, race, graphql, host-header, oauth, prototype-pollution, "
+        "mass-assignment, web-cache-deception, csp, cmdi, ldap, xpath, nosqli, crlf, lfi.\n\n"
+        f"## Output — append as you go\n"
+        f"Write one JSON object per line to {HUNT_DIR}/agent-plan.jsonl (create it if missing). "
+        "Four line shapes:\n"
+        '  {"type":"model","key":"entities|flows|value_endpoints","value":[...]}\n'
+        '  {"type":"target","endpoint":"https://.../api/x","cls":"idor"} — one line per endpoint×class '
+        "you think is worth testing\n"
+        '  {"type":"flow","name":"...","steps":["..."]} — a multi-step attack worth trying (e.g. '
+        "password-reset-then-reuse, invite-then-escalate)\n"
+        '  {"type":"finding","title":"...","severity":"critical|high|medium|low|info","cls":"authz",'
+        '"endpoint":"...","evidence":"...","reproduction":"..."} — only for a genuinely confirmed '
+        "authorization bypass, not a guess\n\n"
+        "Begin now: model the app, probe authorization if you have a session, then rank what's worth "
+        "testing. Stop once you've covered the meaningful surface or you're repeating yourself."
+    )
+
+    def _merge(lines):
+        biz = STATE.setdefault("biz_logic", {})
+        _ren = {"open-redirect": "redirect", "auth-bypass": "authz"}
+        targets, flows = [], []
+        added_f = 0
+        dropped = 0
+        for r in lines:
+            t = r.get("type")
+            if t == "model":
+                k = str(r.get("key", "")).strip()
+                if k in ("entities", "flows", "value_endpoints"):
+                    biz[k] = r.get("value") or []
+            elif t == "target":
+                ep = str(r.get("endpoint", "")).strip()
+                cls = _ren.get(r.get("cls"), r.get("cls"))
+                if ep and cls and cls in applicable_classes(ep):
+                    targets.append({"endpoint": ep, "cls": cls})
+                else:
+                    dropped += 1
+            elif t == "flow":
+                name = str(r.get("name", "")).strip()
+                if name:
+                    flows.append({"name": name, "steps": r.get("steps") or []})
+            elif t == "finding":
+                title = str(r.get("title", "")).strip()
+                evidence = str(r.get("evidence", "")).strip()
+                endpoint = str(r.get("endpoint", "")).strip()
+                if not title or not endpoint or len(evidence) < 20:
+                    continue
+                sev_map = {"critical": "c", "high": "h", "medium": "m", "low": "l", "info": "i"}
+                sev = sev_map.get(str(r.get("severity", "medium")).lower(), "m")
+                add_finding(sev, title, evidence, endpoint, cls=str(r.get("cls", "authz")),
+                            verdict="agent", det=False)
+                added_f += 1
+        if targets or flows:
+            STATE["plan"] = {"targets": targets, "flows": flows}
+            STATE["flows"] = flows
+            STATE["stats"]["plan_cells"] = len(targets)
+            STATE["stats"]["flows"] = len(flows)
+        if dropped:
+            log("warn", "→ plan agent proposed " + str(dropped) + " cell(s) whose class doesn't fit the endpoint — dropped")
+        log("out", "→ plan agent · " + str(len(biz.get('entities', []))) + " entit(y/ies) · " +
+            str(len(targets)) + " ranked cell(s) · " + str(len(flows)) + " flow(s) · +" + str(added_f) + " finding(s)")
+
+    ok = _run_phase_agent("plan agent", "Plan (agentic)", 38, brief, budget,
+                           HUNT_DIR / "agent-plan.jsonl", _merge)
+    if not ok:
+        log("out", "→ agentic plan produced nothing — Phase 5 will fall back to the static class matrix")
+    flush()
+
+
 def _phase_js_mine():
     """Pre-LLM JS mining — extract hidden API routes, tokens, and params from all JS files.
 
@@ -7810,7 +8041,10 @@ def main():
             else:
                 # ── Web / API hunt ────────────────────────────────────────────
                 # STRATUM 0 — Intelligence (BEFORE any probe is sent)
-                phase_program_intel()     # GOD METHODOLOGY: disclosures + Shodan + Wayback + GitHub org + reward table
+                if "intel" in HUNT_AGENTIC_PHASES:
+                    _phase_intel_agent(deadline)   # full-agentic — disclosures/secrets/shodan/wayback/rewards, agent's own judgment
+                else:
+                    phase_program_intel()     # GOD METHODOLOGY: disclosures + Shodan + Wayback + GitHub org + reward table
                 # STRATUM 1 — Surface mapping
                 if "recon_surface" in HUNT_AGENTIC_PHASES:
                     _phase_recon_surface_agent(deadline)   # full-agentic pilot — see HUNTR full-agentic plan
@@ -7870,7 +8104,11 @@ def main():
             # (add_finding/mark_tested), scope-guard's rate limiter is flock-protected for concurrent
             # requests (see rate-limit-race memory), and phase_llm_lead's own dual-agent BROAD+DEEP
             # mode already runs itself as two concurrent threads today.
-            phase_plan()                                 # target-specific attack plan + flows (flexible)
+            if "plan" not in HUNT_AGENTIC_PHASES:
+                phase_plan()                             # target-specific attack plan + flows (flexible)
+            elif resumed:
+                log("out", "→ resume: skipping plan agent (reusing the plan already in run.json)")
+            # (on a fresh run, _phase_plan_agent above already wrote STATE["plan"] — no separate call needed here)
             if not NO_LLM and not resumed:
                 _adapt_t = threading.Thread(target=phase_adaptive, args=(deadline,), daemon=True)
                 _adapt_t.start()
