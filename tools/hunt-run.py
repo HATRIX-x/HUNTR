@@ -3803,6 +3803,148 @@ def _phase_recon_surface_agent(deadline=None):
     stage("Recon+Surface (agentic)", 52)
 
 
+def _phase_auth_spa_agent(deadline=None):
+    """Stage 2 of the full-agentic rewrite (see HUNTR full-agentic plan, 2026-10-25) — Phase 3:
+    Authenticated Session + SPA Capture. Replaces phase_spa_capture()/phase_authed()/phase_auth_deep()
+    entirely: one real Claude Code agent establishes/verifies the authenticated session, drives the app
+    through a real browser to capture its runtime API surface, and tests auth-adjacent vuln classes
+    (JWT, OAuth/OIDC, session handling, password-reset flows) using its own judgment — no jwt-test.py,
+    oauth-probe.py, cdp-login-session.py, or browser-capture.py called as a tool.
+
+    Skipped in black-box mode (MODE=="black") — same gate phase_authed/phase_spa_capture already use;
+    there is no session to establish or use. _auto_cdp() (launching a debuggable Chrome, operational
+    plumbing not detection judgment — kept unchanged per the plan) still runs beforehand so a CDP port
+    is available if the agent wants to drive a real browser.
+
+    Flag-gated: only called from main() when "auth_spa" is in HUNT_AGENTIC_PHASES."""
+    if MODE == "black":
+        log("out", "→ auth+SPA agent skipped — black-box hunt, no session to establish")
+        return
+    _auto_cdp()
+    c = _creds()
+    budget = 1500.0
+    if deadline:
+        budget = max(180.0, min(budget, deadline - time.time()))
+    cookie = (c.get("cookie") or "").strip()
+    tok = (c.get("session_token") or "").strip()
+    ua = (c.get("ua") or "").strip()
+    cdp = str(c.get("cdp_port") or "").strip()
+    username = (c.get("username") or "").strip()
+    login_url = (c.get("login_url") or "").strip()
+    ah = _auth_headers()
+    lithost = re.sub(r'^\*\.', '', TARGET).split('/')[0].strip()
+    sch = next((h.get("scheme") for h in STATE.get("hosts", []) if h.get("host") == lithost and h.get("scheme")), None) or "https"
+    url = sch + "://" + lithost + "/"
+    scope_summary = ", ".join(WEB_ASSETS)[:400] or TARGET
+
+    creds_block = []
+    if cookie:
+        creds_block.append(f"Cookie header to use: {cookie[:600]}")
+    if tok:
+        creds_block.append(f"Session/bearer token: {tok[:300]}")
+    if ah:
+        creds_block.append(f"Custom auth header(s): {json.dumps(ah)[:300]}")
+    if username:
+        login_how = login_url or "the app's own login flow"
+        creds_block.append(f"Login credentials: username={username!r}, password=(in {HUNT_DIR}/creds.json "
+                            f"as 'password') — log in via {login_how} if no cookie/token above already works.")
+    if cdp and _cdp_alive(int(cdp)):
+        creds_block.append(
+            f"A debuggable Chrome is live on CDP port {cdp}. To drive the REAL authenticated browser "
+            "(preferred over a fresh headless context — inherits whatever real session is already there, "
+            "and lets you inject the cookie above via CDP's Network.setCookie which also works for "
+            "HttpOnly cookies): write and run a short Playwright script yourself, e.g.\n"
+            "```python\n"
+            "from playwright.sync_api import sync_playwright\n"
+            "with sync_playwright() as p:\n"
+            f"    browser = p.chromium.connect_over_cdp('http://127.0.0.1:{cdp}')\n"
+            "    contexts = browser.contexts\n"
+            "    # a real (non-incognito) Chrome attached over CDP often reports zero contexts here —\n"
+            "    # opening a page first and reading ITS context is what actually gets you the real,\n"
+            "    # already-logged-in profile instead of a blank one\n"
+            "    ctx = contexts[0] if contexts else browser.new_page().context\n"
+            "    if cookie_string:\n"
+            "        ctx.add_cookies([{'name': n, 'value': v, 'url': target_url}\n"
+            "                         for n, v in (kv.split('=', 1) for kv in cookie_string.split('; ') if '=' in kv)])\n"
+            "    page = ctx.new_page()\n"
+            "    page.on('request', lambda req: ...)   # record XHR/fetch calls as you navigate\n"
+            "    page.goto(target_url)\n"
+            "```\n"
+            "Navigate through the app's real UI (log in if not already, click through its main sections/"
+            "flows) and record every XHR/fetch request you observe — that's the SPA's real API, usually "
+            "invisible to a plain crawler.")
+    else:
+        creds_block.append("No live CDP browser available — use exec-http.py / curl with the cookie/token "
+                            "above instead of a real browser for this hunt.")
+    if ua:
+        creds_block.append(f"User-Agent to send: {ua[:200]}")
+
+    brief = (
+        "# Authenticated Session + SPA Capture — full agentic phase\n\n"
+        f"Target: {TARGET}\nProgram: {PROGRAM or TARGET}\nMode: {MODE}-box\nMain URL: {url}\n\n"
+        f"## In-scope (never test outside this)\n{scope_summary}\n"
+        "There is no technical enforcement behind this. You are the only thing stopping an "
+        "out-of-scope request.\n\n"
+        "## Credentials / session\n" + "\n".join("- " + b for b in creds_block) + "\n\n"
+        "## Your job (two parts)\n"
+        "1. **Capture the real authenticated API surface.** Establish or confirm a working session, "
+        "then drive the app through real usage (not just the login page) to see what it actually calls — "
+        "record every distinct endpoint.\n"
+        "2. **Test auth-adjacent vulnerability classes with real requests**, using your own judgment on "
+        "what's actually confirmed, not a hardcoded checklist: JWT weaknesses (alg:none, weak/guessable "
+        "secret, missing signature verification, RS/HS confusion) but ONLY after confirming the endpoint "
+        "actually enforces the JWT at all (send a garbage token first — if it's accepted anyway, the "
+        "endpoint doesn't validate JWTs and none of this applies); OAuth/OIDC flow issues (open redirect "
+        "via redirect_uri, state/PKCE missing, authorization code reuse); session handling (fixation, no "
+        "invalidation on logout, predictable tokens); password-reset flow issues (host-header injection "
+        "into reset links, no rate limit, token not single-use). Never upgrade a guess into a finding — "
+        "verify from the actual response.\n\n"
+        f"## Output — append as you go, not all at the end\n"
+        f"Write one JSON object per line to {HUNT_DIR}/agent-auth-spa.jsonl (create it if missing; "
+        "partial results from a timeout are kept). Two line shapes:\n"
+        '  {"type":"endpoint","url":"https://.../api/x","host":"...","note":"optional"}\n'
+        '  {"type":"finding","title":"...","severity":"critical|high|medium|low|info","cls":"jwt|oauth|'
+        'session|authz|...","endpoint":"...","evidence":"what you actually observed","reproduction":'
+        '"numbered steps"}\n\n'
+        "Begin now: get authenticated, capture real traffic, then test what you found. Stop once you've "
+        "covered the meaningful surface or you're repeating yourself."
+    )
+
+    def _merge(lines):
+        existing_urls = {e.get("url") for e in STATE.get("endpoints", [])}
+        added_e = added_f = 0
+        for r in lines:
+            t = r.get("type")
+            if t == "endpoint":
+                u = str(r.get("url", "")).strip()
+                if u and u not in existing_urls:
+                    STATE["endpoints"].append({"url": u, "host": str(r.get("host") or "")})
+                    existing_urls.add(u); added_e += 1
+            elif t == "finding":
+                title = str(r.get("title", "")).strip()
+                evidence = str(r.get("evidence", "")).strip()
+                endpoint = str(r.get("endpoint", "")).strip()
+                if not title or not endpoint or len(evidence) < 20:
+                    continue
+                sev_map = {"critical": "c", "high": "h", "medium": "m", "low": "l", "info": "i"}
+                sev = sev_map.get(str(r.get("severity", "medium")).lower(), "m")
+                add_finding(sev, title, evidence, endpoint, cls=str(r.get("cls", "")),
+                            verdict="agent", det=False)
+                for sf in STATE["findings"]:
+                    if sf.get("title") == title and not sf.get("steps"):
+                        sf["steps"] = str(r.get("reproduction", ""))[:1000]
+                added_f += 1
+        STATE["stats"]["endpoints"] = len(STATE["endpoints"])
+        STATE["stats"]["findings"] = len(STATE["findings"])
+        log("out", "→ auth+SPA agent · +" + str(added_e) + " endpoint(s) · +" + str(added_f) + " finding(s)")
+
+    ok = _run_phase_agent("auth+SPA agent", "Auth+SPA (agentic)", 84, brief, budget,
+                           HUNT_DIR / "agent-auth-spa.jsonl", _merge)
+    if not ok:
+        log("warn", "→ agentic auth+SPA produced nothing — hunt may proceed with an unauthenticated-only surface")
+    stage("Auth+SPA (agentic)", 86)
+
+
 def _phase_js_mine():
     """Pre-LLM JS mining — extract hidden API routes, tokens, and params from all JS files.
 
@@ -7677,17 +7819,25 @@ def main():
                     phase_mobile()            # mobile scope — APK backend hosts/endpoints/secrets
                     phase_surface()
                     phase_discover(deadline)  # ACTIVE discovery — unlinked paths + spec walk + BFS
-                phase_spa_capture()       # SPA runtime API discovery (real browser)
+                if "auth_spa" in HUNT_AGENTIC_PHASES:
+                    _phase_auth_spa_agent(deadline)   # full-agentic — SPA capture + auth session + JWT/OAuth/session testing, all in one
+                else:
+                    phase_spa_capture()       # SPA runtime API discovery (real browser)
                 if not NO_LLM and "recon_surface" not in HUNT_AGENTIC_PHASES:
                     phase_recon_agent()    # Claude reviews the baseline surface, decides what's worth digging into further
                     # (folded into _phase_recon_surface_agent itself when that flag is on — no separate enrichment pass needed)
                 phase_memory_recall()     # long-term memory — analogous past situations (BEFORE plan so it informs it)
                 # STRATUM 2 — Attack
                 phase_active()            # Layer 1 — deterministic sweep; LLM gets real scan evidence (+ graphql-map + ws-probe + ssrf-probe)
-                phase_authed()            # Auth surface + JWT + IDOR diffing + multi-account auto-setup
-                phase_auth_deep()         # GOD METHODOLOGY: OAuth probe + reset host-header + MFA rate-limit + JWT expiry
-                phase_biz_logic_map()     # GOD METHODOLOGY: map entities/roles/flows/value-ops before attacking
-                phase_authz_matrix()      # GOD METHODOLOGY: BFLA sweep + mass-assign on write endpoints
+                if "auth_spa" not in HUNT_AGENTIC_PHASES:
+                    phase_authed()            # Auth surface + JWT + IDOR diffing + multi-account auto-setup
+                    phase_auth_deep()         # GOD METHODOLOGY: OAuth probe + reset host-header + MFA rate-limit + JWT expiry
+                # (folded into _phase_auth_spa_agent itself when that flag is on — session/JWT/OAuth testing already done above)
+                if "plan" in HUNT_AGENTIC_PHASES:
+                    _phase_plan_agent(deadline)   # full-agentic — biz-logic model + authz probe + ranked plan, all in one
+                else:
+                    phase_biz_logic_map()     # GOD METHODOLOGY: map entities/roles/flows/value-ops before attacking
+                    phase_authz_matrix()      # GOD METHODOLOGY: BFLA sweep + mass-assign on write endpoints
                 phase_race_critical()     # GOD METHODOLOGY: 25-thread race bursts + logic-fuzz on all value-flow endpoints
                 # Rebuild the surface graph NOW, not just once back in phase_surface(). By this point
                 # phase_recon_agent + phase_discover + phase_spa_capture + phase_biz_logic_map have all
