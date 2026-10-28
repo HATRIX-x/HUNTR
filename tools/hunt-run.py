@@ -4176,6 +4176,152 @@ def _phase_plan_agent(deadline=None):
     flush()
 
 
+def _phase_verify_agent(deadline=None):
+    """Stage 5 of the full-agentic rewrite (see HUNTR full-agentic plan, 2026-10-25) — Phase 6:
+    Verify + Triage + Dedup. Replaces phase_dedup()/phase_verify()/phase_ai_judge()/
+    phase_adversarial_verify()/phase_hard_triage() entirely: one real Claude Code agent re-examines
+    every finding gathered so far — re-probing live where it wants more evidence (exec-http.py /
+    curl via its own Bash tool) — and independently decides confirmed/likely/false_positive/
+    needs_review, final severity, and whether it collapses into another finding as the same root
+    cause. No _det_oracle 36-class dispatch table, no HARD_INFO/_IMPACT/_CHAIN_REQ hardcoded class
+    lists, no separate adversarial-verify.py second-judge subprocess.
+
+    DELIBERATE ORDERING NOTE (see the plan's migration order): this is converted BEFORE Phase 5
+    (the core hunting loop) is. Phase 5 still runs legacy/deterministic right now, so any
+    verification regression here is attributable to the verifier alone, not entangled with a
+    simultaneous change to what's finding things. This is the highest-stakes conversion in the
+    whole rewrite — every one of the ~36 oracle-class false-positive fixes in this project's memory
+    (CRLF marker matching, race-fire per-response ID pooling, idor-chain size-only confirmation,
+    ssti-probe traceback matching, and more) lived in exactly the code this phase replaces, so the
+    brief explicitly re-teaches the agent the hard-won lessons those fixes encoded, in prose, since
+    there's no code left enforcing them.
+
+    phase_methodology() (invariant/capability-graph/coverage-ledger bookkeeping) and
+    phase_fingerprint() (endpoint-pattern flagging) are NOT folded in here — they're housekeeping/
+    telemetry, not finding-verification judgment; left on the legacy path.
+
+    Flag-gated: only called from main() when "verify" is in HUNT_AGENTIC_PHASES."""
+    findings = STATE.get("findings", [])
+    if not findings:
+        return
+    budget = 1800.0
+    if deadline:
+        budget = max(180.0, min(budget, deadline - time.time()))
+    # one line per finding, truncated — the agent gets the real evidence/detail, not just a title
+    f_sample = []
+    for i, f in enumerate(findings[:120]):
+        f_sample.append({
+            "i": i, "title": f.get("title", ""), "cls": f.get("cls", ""),
+            "endpoint": f.get("endpoint", ""), "sev": f.get("label", ""),
+            "verdict": f.get("verdict", ""), "detail": str(f.get("detail", ""))[:500],
+            "proof": f.get("proof"), "_det": bool(f.get("_det")),
+        })
+    scope_summary = ", ".join(WEB_ASSETS)[:400] or TARGET
+
+    brief = (
+        "# Verify + Triage + Dedup — full agentic phase\n\n"
+        f"Target: {TARGET}\nProgram: {PROGRAM or TARGET}\nMode: {MODE}-box\n\n"
+        f"## In-scope (never test outside this)\n{scope_summary}\n"
+        "There is no technical enforcement behind this. You are the only thing stopping an "
+        "out-of-scope request.\n\n"
+        f"## {len(f_sample)} finding(s) to independently re-examine\n"
+        f"{json.dumps(f_sample, default=str)[:12000]}\n\n"
+        "## Your job\n"
+        "You are the FINAL, skeptical judge — every one of these was claimed by an earlier phase, "
+        "but none of them should be trusted at face value. Re-examine each one:\n\n"
+        "1. **Verify from real evidence, not the claim.** If `detail`/`proof` already shows a concrete, "
+        "specific observation (exact response body/status/header that could only happen if the bug is "
+        "real), you can judge from that. If it's vague or you're unsure, re-probe it live yourself "
+        f"(`python3 {HERE}/exec-http.py --url <url> [--method ...]` from this directory, or curl) and "
+        "look at the actual response before deciding.\n\n"
+        "2. **Hard-won lessons from this exact class of mistake, re-taught in prose since no code "
+        "enforces them anymore — apply this judgment yourself:**\n"
+        "   - A response matching a marker/pattern ANYWHERE (e.g. in an echoed error message, a "
+        "reflected value, a wrapper field) is NOT the same as the marker appearing as a NEW, "
+        "attacker-controlled effect. Check WHERE and WHY it appears.\n"
+        "   - Two responses being the same SIZE or SHAPE is not proof of identical content — read the "
+        "actual bodies. A generic denial/error wrapper is often a consistent size regardless of input.\n"
+        "   - A blocked/crashed exploitation attempt (garbled output, a framework's own error page) is "
+        "not confirmed RCE/SSTI just because it looks unusual — distinguish a real payload execution "
+        "from a broken request.\n"
+        "   - For an auth/IDOR/BOLA claim: confirm the SAME request without proper authorization is "
+        "actually denied (a real baseline), not just assumed — a finding that forgot to test the "
+        "negative case is not proven.\n"
+        "   - Security-header/CSP/clickjacking/version-disclosure/missing-header classes are informational "
+        "at most, never Critical/High/Medium, regardless of how the finding describes itself.\n"
+        "   - Only RCE, SQLi, SSTI, SSRF, IDOR/BOLA, authz/auth-bypass, deserialization, XXE, file-upload, "
+        "OAuth, JWT, NoSQLi, LFI, command injection, XSS, mass-assignment, race conditions, and similar "
+        "genuine-impact classes can be Critical/High/Medium — and only with real proof. CORS/open-"
+        "redirect/host-header/cache-poisoning/clickjacking are info UNLESS they ride a proven chain to "
+        "real impact.\n\n"
+        "3. **Collapse duplicates.** If two or more findings describe the SAME root cause (same "
+        "underlying bug tested via a different path, param, or tool), they are ONE bug — pick the "
+        "best-evidenced one and mark the others as duplicates of it, don't let 10 findings about one "
+        "misconfigured header count as 10 bugs.\n\n"
+        f"## Output — append as you go, matching findings by their \"i\" index above\n"
+        f"Write one JSON object per line to {HUNT_DIR}/agent-verify.jsonl (create it if missing):\n"
+        '  {"type":"verdict","i":3,"verdict":"confirmed|likely|false_positive|needs_review",'
+        '"sev":"critical|high|medium|low|info","reco":"submit|needs-work","note":"why, in one line"}\n'
+        '  {"type":"dup","i":7,"duplicate_of":3,"why":"same root cause as #3, different param"}\n\n'
+        "Begin now: go through every finding above, re-probe where you need more evidence, and emit "
+        "a verdict line for each one. Don't skip any — an untouched finding keeps whatever verdict it "
+        "already had, which defeats the point of this pass."
+    )
+
+    def _merge(lines):
+        by_i = {}
+        for i, f in enumerate(findings[:120]):
+            by_i[i] = f
+        sev_map = {"critical": "c", "high": "h", "medium": "m", "low": "l", "info": "i"}
+        verdicts = dups = 0
+        for r in lines:
+            t = r.get("type")
+            i = r.get("i")
+            if not isinstance(i, int) or i not in by_i:
+                continue
+            f = by_i[i]
+            if t == "verdict":
+                v = str(r.get("verdict", "")).strip()
+                if v in ("confirmed", "likely", "false_positive", "needs_review"):
+                    f["verdict"] = v
+                sev = r.get("sev")
+                if sev and str(sev).lower() in sev_map:
+                    f["sev"] = sev_map[str(sev).lower()]
+                    f["label"] = SEVLABEL[f["sev"]]
+                reco = str(r.get("reco", "")).strip()
+                if reco in ("submit", "needs-work"):
+                    f["reco"] = reco
+                f["agent_verify_note"] = str(r.get("note", ""))[:300]
+                # _proven(f) (checked by the legacy phase_hard_triage backstop still running after this —
+                # see its call site comment) only looks at proof.proven/_det, neither of which this agent
+                # sets anywhere else — without this, a "confirmed" verdict here gets silently flipped back
+                # to "likely" and capped at medium by that backstop's RULE 2, undermining this phase's own
+                # judgment the moment it runs. Setting proof.proven=True on a genuine confirm keeps the
+                # two cooperating instead of the legacy floor fighting the agent that's supposed to replace it.
+                if v == "confirmed":
+                    f["proof"] = {"proven": True, "method": "agent-verify", "evidence": f["agent_verify_note"]}
+                f["noise"] = f.get("verdict") in ("false_positive",) or f.get("sev") == "i" and f.get("reco") != "submit"
+                verdicts += 1
+            elif t == "dup":
+                dup_of = r.get("duplicate_of")
+                if isinstance(dup_of, int) and dup_of in by_i and dup_of != i:
+                    f["noise"] = True
+                    f["dup_of_index"] = dup_of
+                    f["reco"] = "hold-duplicate"
+                    dups += 1
+        real = [f for f in STATE["findings"] if not f.get("noise")]
+        STATE["stats"]["findings"] = len(real)
+        STATE["stats"]["noise"] = len(STATE["findings"]) - len(real)
+        STATE["stats"]["submit_ready"] = sum(1 for f in STATE["findings"] if f.get("reco") == "submit")
+        log("out", "→ verify agent · " + str(verdicts) + " verdict(s) · " + str(dups) + " marked duplicate")
+
+    ok = _run_phase_agent("verify agent", "Verify (agentic)", 91, brief, budget,
+                           HUNT_DIR / "agent-verify.jsonl", _merge)
+    if not ok:
+        log("warn", "→ agentic verify produced nothing — findings keep whatever verdict earlier phases gave them")
+    flush()
+
+
 def _phase_js_mine():
     """Pre-LLM JS mining — extract hidden API routes, tokens, and params from all JS files.
 
@@ -8126,14 +8272,24 @@ def main():
         phase_dedup()
         phase_fingerprint()
         if not NO_LLM:
-            check_pause(); phase_verify()               # LLM re-verifies every finding: confirmed / dismissed / manual
+            if "verify" in HUNT_AGENTIC_PHASES:
+                check_pause(); _phase_verify_agent(deadline)   # full-agentic — one judge re-examines + dedups + triages every finding
+            else:
+                check_pause(); phase_verify()               # LLM re-verifies every finding: confirmed / dismissed / manual
+                check_pause(); phase_ai_judge()              # Layer 3 — strong-model validation
+                check_pause(); phase_adversarial_verify(deadline)  # Layer 4 — independent second judge, confirmed-only
             check_pause(); phase_methodology(deadline)
-            check_pause(); phase_ai_judge()              # Layer 3 — strong-model validation
-            check_pause(); phase_adversarial_verify(deadline)  # Layer 4 — independent second judge, confirmed-only
         check_pause(); phase_chain()                 # Chain-to-Impact — deterministic core (proven + near-miss chains);
                                                      #   LLM only enriches near-miss strategy, so it runs in NO_LLM too
         phase_scenario()                             # "impossible scenario" engine — oracle-gated kill-chains
         phase_economics()                            # Economics brain
+        # TRANSITIONAL (full-agentic rewrite, 2026-10-25): phase_dedup()/phase_hard_triage() stay on
+        # the legacy path even when "verify" is agentic, because phase_supervisor/phase_agentic_polish
+        # below (Phase 8 — not yet converted) can still add NEW findings this pass's agent never saw.
+        # Once Phase 8 is converted this backstop goes away; until then it's a deliberate, documented
+        # safety net, not a contradiction of "no deterministic oracle code" — it never overrides a
+        # verdict _phase_verify_agent already set, it only floors severity for whatever legacy code
+        # still adds after it runs.
         phase_hard_triage()                          # FINAL authority: prove-it-or-lead; info-class capped
         if not NO_LLM:
             phase_learn()                                # close the loop → learned rules for the NEXT hunt
