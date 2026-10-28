@@ -118,6 +118,11 @@ STEALTH = os.environ.get("HUNT_STEALTH") == "1" or "--stealth" in sys.argv
 # oracles + triage to completion. Fast, offline, needs no account — and makes the
 # autonomous loop reproducibly verifiable (CI/benchmark) independent of LLM quota.
 NO_LLM = os.environ.get("HUNT_NO_LLM") == "1" or "--no-llm" in sys.argv
+# Full-agentic rewrite (operator directive, 2026-10-25): phases listed here run as one real
+# `claude -p` agent (see _run_phase_agent) instead of the legacy scripted phase_*() pipeline. Staged,
+# reversible per-phase migration — a phase name's absence here means it still runs the old scripted
+# path, so this can be dialed back by editing the env var alone, no code revert needed.
+HUNT_AGENTIC_PHASES = set(s.strip() for s in (os.environ.get("HUNT_AGENTIC_PHASES") or "").split(",") if s.strip())
 SCOPE_TYPES = [s for s in (arg("--scope-types", "web,api") or "").split(",") if s]
 HUNT_DIR = Path(os.environ.get("HUNT_DIR") or arg("--hunt-dir")
                 or (Path.home() / ".huntr" / "targets" / safe(TARGET) / ".hunt"))
@@ -3649,6 +3654,153 @@ def phase_recon_agent(budget_sec=600):
         " host(s) · " + summary[:150].replace("\n", " "))
     flush()
     stage("Recon-agent", 50)
+
+
+def _run_phase_agent(phase_name, stage_label, stage_pct, brief, budget_sec, result_file, merge_fn, model=None):
+    """Generic full-agentic phase runner (operator directive, 2026-10-25: "only agents for each phase,
+    no scripted scanners or any scripted things"). One real `claude -p` call — Claude-Code-native, real
+    Bash/Read/Write, no fictional persona — replaces a scripted phase's judgment entirely with the
+    model's own. Same proven invocation shape as phase_recon_agent/_phase_claude_code_hunt above
+    (reliability data in those functions' own comments: sonnet-4-6/opus-4-8 100% across tested trials,
+    sonnet-5-5 ~75% — the model pin below must not drift to a 5.x default).
+
+    There is deliberately no scope-guard/oracle/verification code backing this call — the brief is the
+    only thing telling the agent what's in/out of scope, and the agent's own judgment is the only thing
+    deciding whether a finding is real. This is the explicit, confirmed tradeoff of the full-agentic
+    rewrite, not an oversight.
+
+    result_file: a JSONL file (one JSON object per line) the brief tells the agent to append to AS IT
+    WORKS, so a budget timeout mid-phase still yields partial, usable results — the same resilience
+    pattern as _phase_claude_code_hunt's agent-findings.jsonl. merge_fn(lines) is the only phase-
+    specific piece besides the brief text; it should reuse existing STATE-shape helpers (e.g.
+    add_finding()) rather than inventing a new dict shape, so every other phase and the dashboard keep
+    working unmodified."""
+    check_pause()
+    stage(stage_label, stage_pct)
+    import shutil as _shu
+    cli = _shu.which("claude") or os.path.expanduser("~/.local/bin/claude")
+    if not cli or not os.path.exists(cli):
+        log("warn", "→ " + phase_name + " skipped — claude CLI not found")
+        return False
+    model = model or MODEL_LEAD.get("model") or "claude-sonnet-4-6"
+    log("ok", "◆ " + phase_name + " · model=" + model + " · budget=" + str(int(budget_sec)) + "s")
+    cmd = [cli, "-p", brief,
+           "--model", model,
+           "--add-dir", str(HUNT_DIR),
+           "--permission-mode", "bypassPermissions",
+           "--allowedTools", "Bash", "Read", "Write",
+           "--no-session-persistence"]
+    env = dict(os.environ)
+    cdir = os.environ.get("HUNT_CLAUDE_CLI_DIR") or (
+        os.path.dirname(os.environ["HUNT_CLAUDE_CREDS"]) if os.environ.get("HUNT_CLAUDE_CREDS") else "")
+    if cdir:
+        env["CLAUDE_CONFIG_DIR"] = os.path.expanduser(cdir)
+    try:
+        r = subprocess.run(cmd, cwd=str(HUNT_DIR), capture_output=True, text=True,
+                           timeout=budget_sec, env=env)
+        summary = (r.stdout or r.stderr or "").strip()
+    except subprocess.TimeoutExpired as e:
+        summary = ((e.stdout or b"").decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or ""))
+        log("warn", "⏱ " + phase_name + " hit its budget — reading whatever it wrote so far")
+    except Exception as e:
+        log("warn", "→ " + phase_name + " failed to launch: " + str(e)[:200])
+        return False
+
+    if not result_file.exists():
+        log("out", "→ " + phase_name + " produced nothing · " + summary[:160].replace("\n", " "))
+        return False
+    lines = []
+    for line in result_file.read_text(errors="ignore").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            lines.append(json.loads(line))
+        except Exception:
+            continue
+    if not lines:
+        refused = bool(re.search(r"i won'?t|safety classifier|prompt.?injection|i can'?t (proceed|continue|help)",
+                                  summary[:400], re.I))
+        log("warn" if refused else "out",
+            ("→ refused — " if refused else "→ ") + phase_name + " wrote no usable result lines · " +
+            summary[:160].replace("\n", " "))
+        return False
+    with _STATE_LOCK:
+        merge_fn(lines)
+    flush()
+    log("ok", "✓ " + phase_name + " · " + str(len(lines)) + " result line(s)")
+    return True
+
+
+def _phase_recon_surface_agent(deadline=None):
+    """PILOT of the full-agentic rewrite (see HUNTR full-agentic plan, 2026-10-25) — Phase 2:
+    Recon + Surface Mapping. Replaces phase_recon()/phase_mobile()/phase_surface()/phase_recon_agent()
+    entirely with one real Claude Code agent that decides its own enumeration strategy. subfinder/httpx/
+    katana/gau/dnsx/whatweb are installed and available via the agent's own Bash tool, same as a human
+    hunter would use them by hand — these are third-party binaries, not HUNTR's own scripted judgment,
+    so giving the agent access to them doesn't contradict "no scripted things" (see the framing
+    principle in the plan).
+
+    Flag-gated: only called from main() when "recon_surface" is in HUNT_AGENTIC_PHASES — the legacy
+    scripted phases remain the default, reverted by removing the env var alone, no code revert needed.
+    Lowest-risk pilot: worst case is an incomplete endpoint list, never a corrupted finding or a
+    destructive write."""
+    budget = 1200.0
+    if deadline:
+        budget = max(120.0, min(budget, deadline - time.time()))
+    scope_summary = ", ".join(WEB_ASSETS)[:400] or TARGET
+    denyf = HUNT_DIR / "scope.deny"
+    deny_text = denyf.read_text(errors="ignore")[:800] if denyf.exists() else "(none written)"
+    brief = (
+        "# Recon + Surface Mapping — full agentic phase\n\n"
+        f"Target: {TARGET}\nProgram: {PROGRAM or TARGET}\nMode: {MODE}-box\n\n"
+        f"## In-scope (never test outside this)\n{scope_summary}\n"
+        f"## Explicitly OUT OF SCOPE — never send a request here\n{deny_text}\n"
+        "There is no technical enforcement behind this. You are the only thing stopping an "
+        "out-of-scope request. Treat the deny list as a hard operational boundary, not a suggestion.\n\n"
+        "## Your job\n"
+        "Map this target's real attack surface the way a human recon specialist would: find live "
+        "subdomains/hosts, then crawl/enumerate real endpoints on each (including any mobile-app "
+        "backend API if an APK/mobile asset is in scope). You have real Bash access — subfinder, dnsx, "
+        "httpx, katana, gau, whatweb are installed if useful; use them, curl, or anything else you "
+        "judge is the right tool, and read/interpret the raw output yourself. There is no scripted "
+        "parser behind you — your own judgment decides what counts as a real, live host or endpoint "
+        "worth recording, not a hardcoded status-code rule.\n\n"
+        f"## Output — append as you go, not all at the end\n"
+        f"Write one JSON object per line to {HUNT_DIR}/agent-surface.jsonl as you discover things "
+        "(create it if missing; if you run out of time partway through, whatever is already written "
+        "is kept). Two line shapes:\n"
+        '  {"type":"host","host":"sub.target.com"}\n'
+        '  {"type":"endpoint","url":"https://sub.target.com/api/x","host":"sub.target.com","note":"optional"}\n\n'
+        "Begin now: enumerate, crawl, and record what's real. Stop once you've covered the surface or "
+        "you're repeating yourself."
+    )
+
+    def _merge(lines):
+        existing_hosts = {h.get("host") for h in STATE.get("hosts", [])}
+        existing_urls = {e.get("url") for e in STATE.get("endpoints", [])}
+        added_h = added_e = 0
+        for r in lines:
+            t = r.get("type")
+            if t == "host":
+                hn = str(r.get("host", "")).strip()
+                if hn and hn not in existing_hosts:
+                    STATE.setdefault("hosts", []).append({"host": hn})
+                    existing_hosts.add(hn); added_h += 1
+            elif t == "endpoint":
+                u = str(r.get("url", "")).strip()
+                if u and u not in existing_urls:
+                    STATE["endpoints"].append({"url": u, "host": str(r.get("host") or "")})
+                    existing_urls.add(u); added_e += 1
+        STATE["stats"]["subs"] = STATE["stats"]["live"] = len(STATE.get("hosts", []))
+        STATE["stats"]["endpoints"] = len(STATE["endpoints"])
+        log("out", "→ recon+surface agent · +" + str(added_h) + " host(s) · +" + str(added_e) + " endpoint(s)")
+
+    ok = _run_phase_agent("recon+surface agent", "Recon+Surface (agentic)", 50, brief, budget,
+                           HUNT_DIR / "agent-surface.jsonl", _merge)
+    if not ok:
+        log("warn", "→ agentic recon+surface produced nothing — hunt will have little/no surface this run")
+    stage("Recon+Surface (agentic)", 52)
 
 
 def _phase_js_mine():
@@ -7518,13 +7670,17 @@ def main():
                 # STRATUM 0 — Intelligence (BEFORE any probe is sent)
                 phase_program_intel()     # GOD METHODOLOGY: disclosures + Shodan + Wayback + GitHub org + reward table
                 # STRATUM 1 — Surface mapping
-                phase_recon()             # DNS + HTTP probe + S3 buckets + GitHub dork
-                phase_mobile()            # mobile scope — APK backend hosts/endpoints/secrets
-                phase_surface()
-                phase_discover(deadline)  # ACTIVE discovery — unlinked paths + spec walk + BFS
+                if "recon_surface" in HUNT_AGENTIC_PHASES:
+                    _phase_recon_surface_agent(deadline)   # full-agentic pilot — see HUNTR full-agentic plan
+                else:
+                    phase_recon()             # DNS + HTTP probe + S3 buckets + GitHub dork
+                    phase_mobile()            # mobile scope — APK backend hosts/endpoints/secrets
+                    phase_surface()
+                    phase_discover(deadline)  # ACTIVE discovery — unlinked paths + spec walk + BFS
                 phase_spa_capture()       # SPA runtime API discovery (real browser)
-                if not NO_LLM:
+                if not NO_LLM and "recon_surface" not in HUNT_AGENTIC_PHASES:
                     phase_recon_agent()    # Claude reviews the baseline surface, decides what's worth digging into further
+                    # (folded into _phase_recon_surface_agent itself when that flag is on — no separate enrichment pass needed)
                 phase_memory_recall()     # long-term memory — analogous past situations (BEFORE plan so it informs it)
                 # STRATUM 2 — Attack
                 phase_active()            # Layer 1 — deterministic sweep; LLM gets real scan evidence (+ graphql-map + ws-probe + ssrf-probe)
