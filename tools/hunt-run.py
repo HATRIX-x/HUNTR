@@ -4322,6 +4322,135 @@ def _phase_verify_agent(deadline=None):
     flush()
 
 
+def _phase_chain_economics_agent(deadline=None):
+    """Stage 6 of the full-agentic rewrite (see HUNTR full-agentic plan, 2026-10-25) — Phase 7:
+    Chain-to-Impact + Economics. Replaces phase_chain()/phase_scenario()/phase_economics() entirely:
+    one real Claude Code agent looks at the confirmed findings and reasons about which ones combine
+    into a bigger-impact story (e.g. an info-leak + an authz bypass + a weak-token issue chaining to
+    full account takeover), and estimates each finding's real-world value/priority — instead of a
+    graph-reachability algorithm (_finding_edges/_reach over a hardcoded IMPACT_SEV table) and a
+    separate EV-arithmetic formula.
+
+    A chain is only worth reporting when the agent can state EVERY hop concretely from already-proven
+    findings — composing a plausible-sounding narrative from unconfirmed steps is exactly the kind of
+    overclaiming the rest of this rewrite has been fighting; the brief says so explicitly.
+
+    Flag-gated: only called from main() when "chain_econ" is in HUNT_AGENTIC_PHASES."""
+    finds = STATE.get("findings", [])
+    confirmed = [f for f in finds if f.get("verdict") == "confirmed" and not f.get("noise")]
+    if not confirmed:
+        STATE["chains"] = []
+        STATE["stats"]["chains"] = 0
+        return
+    budget = 900.0
+    if deadline:
+        budget = max(120.0, min(budget, deadline - time.time()))
+    prog_intel = STATE.get("program_intel") or {}
+    f_sample = []
+    for i, f in enumerate(finds):
+        if f.get("noise"):
+            continue
+        f_sample.append({"i": i, "title": f.get("title", ""), "cls": f.get("cls", ""),
+                          "endpoint": f.get("endpoint", ""), "sev": f.get("label", ""),
+                          "verdict": f.get("verdict", ""), "detail": str(f.get("detail", ""))[:300]})
+
+    brief = (
+        "# Chain-to-Impact + Economics — full agentic phase\n\n"
+        f"Target: {TARGET}\nProgram: {PROGRAM or TARGET}\n\n"
+        f"## {len(f_sample)} non-noise finding(s)\n{json.dumps(f_sample, default=str)[:8000]}\n\n"
+        + (f"## Reward table\n{json.dumps(prog_intel['reward_table'])[:400]}\n\n" if prog_intel.get("reward_table") else "")
+        + "## Your job (two parts)\n"
+        "1. **Chain findings into bigger impact, only where every hop is real.** Look for cases where "
+        "two or more CONFIRMED findings combine into something worse than either alone (e.g. an "
+        "information disclosure that reveals a token used by an authz bypass → account takeover; an "
+        "open redirect that weaponizes an OAuth flaw; a CORS misconfig that turns an authenticated-only "
+        "bug into one reachable cross-origin). A chain needs EVERY step backed by an actual confirmed "
+        "finding above — never invent or assume an unconfirmed step just because the story sounds good. "
+        "If nothing genuinely chains, say so; a hunt with zero chains is an honest result, not a "
+        "failure.\n"
+        "2. **Estimate real value/priority for each confirmed finding** (and each chain): how likely is "
+        "a triager to accept it, roughly what would it realistically pay on this program (use the "
+        "reward table if given, otherwise reason from severity and how major bug-bounty programs "
+        "typically price this class of bug), and whether it's likely a near-duplicate of another "
+        "finding already in this list.\n\n"
+        f"## Output — append as you go\n"
+        f"Write one JSON object per line to {HUNT_DIR}/agent-chain.jsonl (create it if missing). Two "
+        "line shapes:\n"
+        '  {"type":"chain","name":"...","sev":"critical|high|medium|low","steps":[{"i":3,"note":"what '
+        'this step contributes"},{"i":7,"note":"..."}],"impact":"one line describing the end result"}\n'
+        '  {"type":"value","i":3,"ev_band":"high|med|low","bounty_est":2000,"reco":"submit|needs-work|'
+        'hold-duplicate","note":"why"}\n\n'
+        "Begin now: look for genuine chains first, then value each finding. Stop once you've covered "
+        "everything or you're repeating yourself."
+    )
+
+    def _merge(lines):
+        chains = []
+        valued = 0
+        for r in lines:
+            t = r.get("type")
+            if t == "chain":
+                name = str(r.get("name", "")).strip()
+                steps_in = r.get("steps") or []
+                if not name or not steps_in:
+                    continue
+                steps = []
+                ok_chain = True
+                for s in steps_in:
+                    i = s.get("i")
+                    if not isinstance(i, int) or i < 0 or i >= len(finds):
+                        ok_chain = False
+                        break
+                    steps.append({"st": "done", "t": finds[i].get("cls", "") or finds[i].get("title", "")[:30],
+                                  "note": str(s.get("note", ""))[:160], "fi": i})
+                if not ok_chain:
+                    continue
+                sev_map = {"critical": "c", "high": "h", "medium": "m", "low": "l"}
+                sev = sev_map.get(str(r.get("sev", "medium")).lower(), "m")
+                chains.append({"sev": sev, "name": name, "tier": "PROVEN CHAIN", "status": "proven",
+                                "impact": str(r.get("impact", ""))[:200], "cvss": "", "steps": steps})
+                ep = finds[steps[0]["fi"]].get("endpoint", "") if steps else ""
+                add_finding(sev, "Chain → " + name, str(r.get("impact", ""))[:500], ep, cls="Chain",
+                            verdict="agent", det=False)
+            elif t == "value":
+                i = r.get("i")
+                if not isinstance(i, int) or i < 0 or i >= len(finds):
+                    continue
+                f = finds[i]
+                band = str(r.get("ev_band", "")).strip().lower()
+                if band in ("high", "med", "low"):
+                    f["ev_band"] = band
+                    f["ev"] = {"high": 2500, "med": 700, "low": 150}[band]
+                try:
+                    f["bounty_est"] = int(r.get("bounty_est") or 0)
+                except Exception:
+                    pass
+                reco = str(r.get("reco", "")).strip()
+                if reco in ("submit", "needs-work", "hold-duplicate"):
+                    f["reco"] = reco
+                f["agent_value_note"] = str(r.get("note", ""))[:300]
+                valued += 1
+        chains.sort(key=lambda c: SEVRANK.get(c["sev"], 9))
+        STATE["chains"] = chains
+        STATE["stats"]["chains"] = len(chains)
+        submit_now = [f for f in STATE["findings"] if f.get("reco") == "submit"]
+        total_ev = sum(f.get("ev", 0) for f in submit_now)
+        STATE["economics"] = {"pipeline_ev": total_ev, "submit_now": len(submit_now),
+                               "top": sorted(({"title": f["title"], "sev": f["sev"], "ev": f.get("ev", 0),
+                                                "endpoint": f.get("endpoint", "")} for f in submit_now),
+                                              key=lambda x: -x["ev"])[:5]}
+        STATE["stats"]["pipeline_ev"] = total_ev
+        log("out", "→ chain+economics agent · " + str(len(chains)) + " chain(s) · " + str(valued) +
+            " finding(s) valued · pipeline EV ~$" + format(total_ev, ","))
+
+    ok = _run_phase_agent("chain+economics agent", "Chain+Economics (agentic)", 97, brief, budget,
+                           HUNT_DIR / "agent-chain.jsonl", _merge)
+    if not ok:
+        STATE.setdefault("chains", [])
+        log("out", "→ agentic chain+economics produced nothing — findings keep their existing values")
+    flush()
+
+
 def _phase_js_mine():
     """Pre-LLM JS mining — extract hidden API routes, tokens, and params from all JS files.
 
@@ -8279,10 +8408,13 @@ def main():
                 check_pause(); phase_ai_judge()              # Layer 3 — strong-model validation
                 check_pause(); phase_adversarial_verify(deadline)  # Layer 4 — independent second judge, confirmed-only
             check_pause(); phase_methodology(deadline)
-        check_pause(); phase_chain()                 # Chain-to-Impact — deterministic core (proven + near-miss chains);
-                                                     #   LLM only enriches near-miss strategy, so it runs in NO_LLM too
-        phase_scenario()                             # "impossible scenario" engine — oracle-gated kill-chains
-        phase_economics()                            # Economics brain
+        if "chain_econ" in HUNT_AGENTIC_PHASES and not NO_LLM:
+            check_pause(); _phase_chain_economics_agent(deadline)   # full-agentic — chains + EV, agent's own judgment
+        else:
+            check_pause(); phase_chain()                 # Chain-to-Impact — deterministic core (proven + near-miss chains);
+                                                         #   LLM only enriches near-miss strategy, so it runs in NO_LLM too
+            phase_scenario()                             # "impossible scenario" engine — oracle-gated kill-chains
+            phase_economics()                            # Economics brain
         # TRANSITIONAL (full-agentic rewrite, 2026-10-25): phase_dedup()/phase_hard_triage() stay on
         # the legacy path even when "verify" is agentic, because phase_supervisor/phase_agentic_polish
         # below (Phase 8 — not yet converted) can still add NEW findings this pass's agent never saw.
