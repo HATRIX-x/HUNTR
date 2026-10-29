@@ -4,8 +4,9 @@ exec-cdp — fire requests from your REAL logged-in Chrome (DevTools Protocol), 
 
 Bot managers (Akamai, Cloudflare, PerimeterX) and JS-heavy apps defeat curl. This drives a real Chrome
 over CDP: it navigates to the target's origin (so the fetch is same-origin + carries the live session)
-and runs an in-page fetch — the request is indistinguishable from the browser's own traffic. Still
-scope-gated (scope-guard --check refuses out-of-scope before anything fires) and evidence-bound.
+and runs an in-page fetch — the request is indistinguishable from the browser's own traffic. A scope
+mismatch is logged audit-only (see scope_audit.py) — there is no technical enforcement behind it, the
+operator driving this tool is the one deciding what's in scope. Evidence-bound.
 
 One-time: launch Chrome with a debugging port, ideally your normal logged-in profile:
   google-chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.config/google-chrome"
@@ -13,8 +14,8 @@ One-time: launch Chrome with a debugging port, ideally your normal logged-in pro
 Then keep a tab open on the target and:
 
 Usage:
-  exec-cdp.py --url https://api.acme.com/api/v1/orders/1337 [--port 9222] [--no-nav] [--method GET] [--approve]
-Exit: 0 ok · 2 scope/refused · 5 no browser.
+  exec-cdp.py --url https://api.acme.com/api/v1/orders/1337 [--port 9222] [--no-nav] [--method GET]
+Exit: 0 ok · 1 fetch error · 5 no browser.
 """
 import sys, os, re, json, socket, base64, struct, time, urllib.request, subprocess
 from pathlib import Path
@@ -134,9 +135,21 @@ def next_ev():
     return EV / f"e{n}"
 
 
-def scope_ok(url):
-    g = subprocess.run([sys.executable, str(TOOLS / "scope-guard.py"), "--check", url], capture_output=True, text=True)
-    return g.returncode == 0, (g.stdout or g.stderr).strip()
+def scope_note(url):
+    """Audit-only, NEVER blocks: log a line if url's host doesn't match scope.allow/scope.deny. There
+    is no technical enforcement behind scope in this rewrite — the operator driving this tool is the
+    one deciding what's in scope. See scope_audit.py / the full-agentic rewrite plan."""
+    try:
+        sys.path.insert(0, str(TOOLS))
+        import scope_audit as SA
+        host = SA.host_of(url)
+        ok, why = SA.in_scope(host, SA.host_variants(url), HUNT / "scope.allow", HUNT / "scope.deny")
+        if not ok:
+            with (HUNT / "scope_audit.jsonl").open("a") as f:
+                f.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "host": host,
+                                     "url": url, "why": why, "tool": "exec-cdp.py"}) + "\n")
+    except Exception:
+        pass
 
 
 def fetch_via(port, url, method="GET", nav=True):
@@ -175,11 +188,11 @@ def fetch_via(port, url, method="GET", nav=True):
 
 
 def eval_in_page(port, nav_url, js, settle=2.2):
-    """Navigate the real Chrome to nav_url and run JS in that page (Runtime.evaluate). Scope-gated.
-    Returns {'value':..} or {'error':..}. This is the primitive for browser-NATIVE exploitation
-    (DOM XSS, prototype pollution, client-side redirect, postMessage) — not just HTTP."""
-    if not scope_ok(nav_url):
-        return {"error": "out of scope", "scope": False}
+    """Navigate the real Chrome to nav_url and run JS in that page (Runtime.evaluate). A scope
+    mismatch is logged audit-only, never blocked (see scope_note()). Returns {'value':..} or
+    {'error':..}. This is the primitive for browser-NATIVE exploitation (DOM XSS, prototype
+    pollution, client-side redirect, postMessage) — not just HTTP."""
+    scope_note(nav_url)
     ps = pages(port)
     if ps is None:
         return {"error": f"no Chrome DevTools on :{port}", "nobrowser": True}
@@ -306,7 +319,7 @@ def waf_variants(p):
 def main():
     url = arg("--url")
     if not url:
-        sys.exit("usage: exec-cdp.py --url <URL> [--port 9222] [--diff --port2 9223] [--waf PAYLOAD] [--no-nav] [--method GET] [--approve]")
+        sys.exit("usage: exec-cdp.py --url <URL> [--port 9222] [--diff --port2 9223] [--waf PAYLOAD] [--no-nav] [--method GET]")
     port = int(arg("--port", "9222") or 9222)
     method = (arg("--method", "GET") or "GET").upper()
     nav = not flag("--no-nav")
@@ -325,11 +338,7 @@ def main():
         r = prove_client_redirect(port, url, arg("--param"))
         print(json.dumps(r)); sys.exit(0 if r.get("proven") else (5 if r.get("nobrowser") else 1))
 
-    ok, why = scope_ok(url)
-    if not ok:
-        print("[cdp] ⛔ " + why); sys.exit(2)
-    if method not in ("GET", "HEAD") and not flag("--approve"):
-        print(f"[cdp] ⛔ {method} is state-changing — re-run with --approve."); sys.exit(2)
+    scope_note(url)
 
     # ── two-identity DIFF across two Chrome profiles (admin :port, low-priv :port2) ──
     if flag("--diff"):

@@ -4,8 +4,9 @@ invariant-check — property/oracle tester for logic bugs.
 
 A logic bug IS a broken invariant. Instead of hoping the model "notices," you declare the
 rule the app must uphold and a deterministic checker asserts it against real traffic. Every
-send goes through scope-guard.py (so scope + safe-method + audit still apply), and each
-result is captured as evidence — a VIOLATION is a finding backed by request/response.
+send fires a direct curl request — there is no scope/write gate behind it, scope is the
+operator/agent's judgment call, same as everywhere else in this rewrite — and each result is
+captured as evidence — a VIOLATION is a finding backed by request/response.
 
 Oracle types:
   deny      request MUST be refused for this identity   → PASS if 401/403 ; VIOLATION if 200
@@ -23,13 +24,12 @@ Usage:
 
 invariants.tsv columns (tab-separated; '#' comments):
   id   type   method   url   header   marker   note
-Exit: 0 all held · 1 one+ VIOLATION · 2 usage/scope error.
+Exit: 0 all held · 1 one+ VIOLATION · 2 usage error.
 """
 import sys, os, subprocess, json, time
 from pathlib import Path
 
 HUNT = Path(os.environ.get("HUNT_DIR", "./.hunt"))
-GUARD = str(Path(__file__).with_name("scope-guard.py"))
 
 
 def evaluate(otype, status, body, marker=""):
@@ -62,12 +62,12 @@ def evaluate(otype, status, body, marker=""):
 
 
 def send(method, url, header):
-    cmd = [sys.executable, GUARD, method, url]
+    cmd = ["curl", "-sS", "-i", "--max-time", "25", "-X", method, url]
     if header:
-        cmd += ["--", "-H", header]
+        cmd += ["-H", header]
     r = subprocess.run(cmd, capture_output=True, text=True)
-    if r.returncode in (2, 3, 4):  # scope/method/circuit block
-        return None, r.stderr.strip(), ""
+    if r.returncode != 0:
+        return None, (r.stderr or "request failed").strip(), ""
     out = r.stdout
     status = 0
     for tok in (out.split("\n", 1)[0] if out else "").split():
@@ -121,7 +121,7 @@ def run_rows(rows, dry):
         for _ in range(runs):
             st, err, out = send(method, url, header)
             if st is None:
-                print(f"{iid:<10} {otype:<9} BLOCKED   {err}")
+                print(f"{iid:<10} {otype:<9} FAILED    {err}")
                 out_last = err
                 break
             statuses.append(st); out_last = out

@@ -7,11 +7,11 @@ Answers the two questions an operator actually has when they hand HUNTR a cookie
   1. "Is this even the right one — is it doing ANYTHING to the response?"
   2. "Did my session just expire / get revoked?"
 
-Fires the SAME GET request twice through scope-guard — once with no credentials, once with the
+Fires the SAME GET request twice, directly via curl — once with no credentials, once with the
 supplied ones attached — and diffs status/length/redirect/login-page markers between the two. If
 the Authorization value or cookie value looks like a JWT, decodes its `exp` claim without needing
-the signing key (we only need to know what it CLAIMS, not verify the signature — scope-guard still
-sends the real request, which is the actual proof).
+the signing key (we only need to know what it CLAIMS, not verify the signature — the direct request
+still sends the real probe, which is the actual proof).
 
 Usage:
   creds-test.py --url https://api.acme.com/ \\
@@ -24,15 +24,11 @@ Verdicts:
                             name, or the target ignores it entirely
   authed-looks-logged-out  the AUTHED response itself contains login-page markers / redirects to login
   jwt-expired              the token's own `exp` claim has already passed — don't even bother sending it
-  out-of-scope             the probe URL's host isn't in scope.allow for this hunt
+  request-failed           the probe itself failed (DNS/network/timeout), not a credentials signal
 
 Exit: 0 looks-authenticated · 1 no-visible-difference / authed-looks-logged-out · 2 jwt-expired / error.
 """
 import sys, os, re, json, time, base64, subprocess
-from pathlib import Path
-
-TOOLS = Path(__file__).parent
-SG = str(TOOLS / "scope-guard.py")
 
 _LOGIN_MARKERS = re.compile(
     r"(log[\s-]?in|sign[\s-]?in|unauthoriz|authentication required|session (has )?expired|please log)",
@@ -68,14 +64,11 @@ def jwt_claims(token):
 
 
 def fire(url, headers, ua=""):
-    cmd = ["python3", SG, "GET", url]
-    extra = []
+    cmd = ["curl", "-sS", "-i", "--max-time", "25", "-X", "GET", url]
     for h in headers:
-        extra += ["-H", h]
+        cmd += ["-H", h]
     if ua:
-        extra += ["-A", ua]
-    if extra:
-        cmd += ["--"] + extra
+        cmd += ["-A", ua]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         return r.returncode, r.stdout
@@ -153,9 +146,9 @@ def main():
     rc_a, out_a = fire(url, [], ua)
     rc_b, out_b = fire(url, creds_headers, ua)
 
-    if rc_a == 2 or rc_b == 2:
-        result = {"ok": False, "verdict": "out-of-scope", "url": url}
-        print(json.dumps(result) if flag("--json") else "out of scope: " + url)
+    if rc_a != 0 or rc_b != 0:
+        result = {"ok": False, "verdict": "request-failed", "url": url}
+        print(json.dumps(result) if flag("--json") else "request failed: " + url)
         sys.exit(2)
 
     anon = parse(out_a)
