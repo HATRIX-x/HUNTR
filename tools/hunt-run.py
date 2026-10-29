@@ -3752,7 +3752,12 @@ def _run_phase_agent(phase_name, stage_label, stage_pct, brief, budget_sec, resu
     # exact incident this fix exists for — see the migration note above _run_phase_agent). Detect
     # it here and pause the whole hunt via the SAME mechanism a provider 429 already uses, instead
     # of limping through the rest of the pipeline on a dead account.
-    if _CLI_LIMIT_RE.search(summary[:400]):
+    # Same length guard as llm_client.call_llm's own detection of this exact prose: a genuine limit/
+    # auth notice IS the whole CLI output (short), whereas a real agent response that happens to
+    # mention "rate limit" early on (e.g. "no rate limit on the login endpoint" as a finding) can be
+    # long — only a short, limit-shaped output is treated as the notice, never a substring match
+    # inside real agent prose.
+    if len(summary) < 400 and _CLI_LIMIT_RE.search(summary):
         reset_epoch = _parse_cli_reset(summary[:400])
         with _STATE_LOCK:
             _RL["hit"] = True
