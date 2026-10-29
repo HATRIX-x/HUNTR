@@ -1560,7 +1560,17 @@ function renderHeader(run){
   }else if(st==='paused'){
     const prLbl={'rate-limit':'paused · account rate limit','cost-cap':'paused · spend cap reached',
       'creds-required':'paused · session required','cdp-required':'paused · CDP session unreachable'}[run.paused_reason];
-    stext.innerHTML=`<b>${esc(nm)}</b> · ${prLbl||'paused'}${tail}`;
+    // Rate-limit pauses carry a parsed reset timestamp (hunt-run.py's _run_phase_agent) and a server-
+    // side watcher auto-resumes once it passes — show the countdown so the operator sees WHY nothing's
+    // happening and that it's self-healing, without needing to click Resume themselves.
+    let waitNote='';
+    if(run.paused_reason==='rate-limit' && run.rate_limit_reset){
+      const secsLeft=Math.max(0,Math.round(run.rate_limit_reset-Date.now()/1000));
+      const m=Math.floor(secsLeft/60), s=secsLeft%60;
+      waitNote = secsLeft>0 ? ` <span style="opacity:.7">· auto-resumes in ${m}m ${s}s</span>`
+                             : ` <span style="opacity:.7">· resuming shortly</span>`;
+    }
+    stext.innerHTML=`<b>${esc(nm)}</b> · ${prLbl||'paused'}${waitNote}${tail}`;
     pp.setAttribute('hidden','');ps.removeAttribute('hidden');pr.removeAttribute('hidden');pr.textContent='▷ Resume';
   }else if(st==='stalled'){
     sdot.classList.add('err');

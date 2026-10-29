@@ -227,6 +227,45 @@ def check_pause():
         raise RateLimitPause()
 
 
+# Same prose the CLI prints for a hit 5-hour session limit (see llm_client.call_llm's docstring for
+# the live example: "You've hit your session limit · resets 5:10pm"). _run_phase_agent's claude-cli
+# subprocess is a separate, raw subprocess.run call (not routed through llm_client/llm_call), so it
+# never passed through that detection — it just logged "produced nothing" and returned False, letting
+# main() cascade straight through every remaining agentic phase on a dead account with status "done"
+# at the end. This regex is intentionally the same wording list as llm_client's.
+_CLI_LIMIT_RE = re.compile(
+    r"hit your session limit|hit your limit|usage limit|rate limit|please run /login|"
+    r"invalid api key|credit balance is too low|out of credit|\bquota\b", re.I)
+_CLI_RESET_RE = re.compile(r"resets?\s+(\d{1,2}:\d{2}\s*[ap]m)\s*(?:\(([^)]+)\))?", re.I)
+
+
+def _parse_cli_reset(text):
+    """Best-effort epoch seconds for a "resets 5:10pm (America/New_York)"-style notice. Returns None
+    if unparseable — callers must fall back to an operator-facing message + manual Resume either way."""
+    m = _CLI_RESET_RE.search(text or "")
+    if not m:
+        return None
+    try:
+        import datetime
+        tzname = (m.group(2) or "").strip()
+        tz = None
+        if tzname:
+            try:
+                from zoneinfo import ZoneInfo
+                tz = ZoneInfo(tzname)
+            except Exception:
+                tz = None
+        now = datetime.datetime.now(tz) if tz else datetime.datetime.now()
+        clock = re.sub(r"\s+", "", m.group(1)).upper()   # "5:10pm" -> "5:10PM"
+        t = datetime.datetime.strptime(clock, "%I:%M%p")
+        target = now.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
+        if target <= now:
+            target += datetime.timedelta(days=1)   # the time already passed today — it means tomorrow
+        return target.timestamp()
+    except Exception:
+        return None
+
+
 # $/1M tokens (input, output) — current Anthropic API rates, only meaningful when a raw API key
 # is in play. Under the subscription (HUNT_LLM_VIA_CLI=1) there is no per-call billing at all, so
 # llm_client._LAST_USAGE comes back {} and _record_llm_cost() correctly adds nothing but a call count.
@@ -3705,6 +3744,25 @@ def _run_phase_agent(phase_name, stage_label, stage_pct, brief, budget_sec, resu
     except Exception as e:
         log("warn", "→ " + phase_name + " failed to launch: " + str(e)[:200])
         return False
+
+    # This subprocess is raw `claude -p`, not routed through llm_client/llm_call — the account's
+    # 5-hour session limit (or a dead/auth-less CLI) prints its notice to stdout/stderr here and
+    # would otherwise just look like "produced nothing", letting main() cascade through every
+    # remaining agentic phase the same way and finish "done" with a silently thin result (the
+    # exact incident this fix exists for — see the migration note above _run_phase_agent). Detect
+    # it here and pause the whole hunt via the SAME mechanism a provider 429 already uses, instead
+    # of limping through the rest of the pipeline on a dead account.
+    if _CLI_LIMIT_RE.search(summary[:400]):
+        reset_epoch = _parse_cli_reset(summary[:400])
+        with _STATE_LOCK:
+            _RL["hit"] = True
+            if reset_epoch:
+                _RL["retry_after"] = max(0, int(reset_epoch - time.time()))
+                STATE["rate_limit_reset"] = reset_epoch
+            STATE["rate_limit_notice"] = summary[:200]
+        log("warn", "⏸ " + phase_name + " hit the account limit — pausing the hunt · " +
+            summary[:160].replace("\n", " "))
+        raise RateLimitPause()
 
     if not result_file.exists():
         log("out", "→ " + phase_name + " produced nothing · " + summary[:160].replace("\n", " "))

@@ -59,6 +59,86 @@ ASSETS = [REPO, Path.home() / ".claude" / "tools", TOOLS]
 AGENTIC_PHASES = "recon_surface,auth_spa,intel,plan,verify,chain_econ,active_hunt"
 
 
+def _relaunch_resume(tgt, hd, cost_cap_override=None):
+    """Re-launch hunt-run.py --resume on an exited (not SIGSTOP'd) paused/done/stopped/error hunt,
+    reusing its saved launch.json options. Shared by the /api/hunt/control resume action and the
+    rate-limit auto-resume watcher below, so both paths relaunch identically. Returns (ok, info)
+    where info is "" on success or an error string on failure."""
+    try:
+        opts = json.loads((hd / "launch.json").read_text())
+    except Exception:
+        opts = {"mode": "grey", "scope_types": ["web", "api"], "budget_sec": 86400}
+    if cost_cap_override is not None:
+        try:
+            opts["cost_cap_usd"] = float(cost_cap_override or 0)
+            (hd / "launch.json").write_text(json.dumps(opts))
+        except (ValueError, TypeError):
+            pass
+    args = [sys.executable, str(TOOLS / "hunt-run.py"), "--target", tgt, "--resume",
+            "--program", opts.get("program", ""), "--mode", opts.get("mode", "grey"),
+            "--scope-types", ",".join(opts.get("scope_types") or ["web", "api"]),
+            "--budget-sec", str(int(opts.get("budget_sec") or 86400))]
+    if float(opts.get("cost_cap_usd") or 0) > 0:
+        args += ["--cost-cap-usd", str(float(opts["cost_cap_usd"]))]
+    if opts.get("stealth"): args.append("--stealth")
+    env = dict(os.environ); env["HUNT_DIR"] = str(hd)
+    if opts.get("stealth"):     env["HUNT_STEALTH"] = "1"
+    if opts.get("single_host"): env["HUNT_SINGLE"] = "1"
+    if opts.get("llm_light"):   env["HUNT_LLM"] = "haiku"
+    env["HUNT_AGENTIC_PHASES"] = AGENTIC_PHASES
+    try:
+        lf = open(hd / "run.log", "a")
+        subprocess.Popen(args, stdout=lf, stderr=lf, env=env, start_new_session=True)
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
+def _rate_limit_auto_resume_loop():
+    """Background watcher (operator directive, step 2 of the UI-driven migration: "a user should
+    never have to notice a hunt was cut short and manually re-trigger it"). hunt-run.py's own
+    process exits once it pauses for a rate-limit (see RateLimitPause in main()) — it is not
+    SIGSTOP'd like a creds/cdp pause — so resuming it needs a fresh relaunch, not a signal. Every
+    30s, scan every workspace's run.json for status=="paused", paused_reason=="rate-limit"/
+    "cost-cap", and a parsed rate_limit_reset timestamp (set by hunt-run.py's _run_phase_agent) that
+    has passed, then auto-relaunch with --resume exactly as the dashboard's own Resume button would.
+    A missing/unparseable reset time (the CLI's notice didn't include one) is left for the operator's
+    manual Resume click — there is nothing to wait for automatically."""
+    while True:
+        try:
+            for hd in TARGETS.glob("*/.hunt"):
+                rf = hd / "run.json"
+                try:
+                    d = json.loads(rf.read_text())
+                except Exception:
+                    continue
+                if d.get("status") != "paused" or d.get("paused_reason") != "rate-limit":
+                    continue
+                reset_ts = d.get("rate_limit_reset")
+                if not reset_ts or time.time() < float(reset_ts):
+                    continue
+                pidf = hd / "run.pid"
+                try:
+                    pid = int(pidf.read_text().strip())
+                    os.kill(pid, 0)
+                    continue   # still alive somehow — not our relaunch to make
+                except Exception:
+                    pass
+                tgt = d.get("target") or hd.parent.name
+                ok, _ = _relaunch_resume(tgt, hd)
+                if ok:
+                    try:
+                        d["status"] = "running"; d.pop("paused_reason", None)
+                        d.setdefault("logs", []).append(
+                            {"t": "ok", "v": "▷ hunt auto-resumed — rate limit window passed"})
+                        rf.write_text(json.dumps(d))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        time.sleep(30)
+
+
 def asset(name):
     for d in ASSETS:
         p = d / name
@@ -988,34 +1068,11 @@ class H(BaseHTTPRequestHandler):
                     pass
                 return self._send({"ok": True, "action": "resume", "resumed_in_place": True})
             if act == "resume" and (pid is None or not _alive(pid) or cur_status in ("paused", "done", "stopped", "error")):
-                try:
-                    opts = json.loads((hd / "launch.json").read_text())
-                except Exception:
-                    opts = {"mode": "grey", "scope_types": ["web", "api"], "budget_sec": 86400}
-                if b.get("cost_cap_usd") is not None:  # resuming from a cost-cap pause can raise the cap
-                    try:
-                        opts["cost_cap_usd"] = float(b.get("cost_cap_usd") or 0)
-                        (hd / "launch.json").write_text(json.dumps(opts))
-                    except (ValueError, TypeError):
-                        pass
-                args = [sys.executable, str(TOOLS / "hunt-run.py"), "--target", tgt, "--resume",
-                        "--program", opts.get("program", ""), "--mode", opts.get("mode", "grey"),
-                        "--scope-types", ",".join(opts.get("scope_types") or ["web", "api"]),
-                        "--budget-sec", str(int(opts.get("budget_sec") or 86400))]
-                if float(opts.get("cost_cap_usd") or 0) > 0:
-                    args += ["--cost-cap-usd", str(float(opts["cost_cap_usd"]))]
-                if opts.get("stealth"): args.append("--stealth")
-                env = dict(os.environ); env["HUNT_DIR"] = str(hd)
-                if opts.get("stealth"):     env["HUNT_STEALTH"] = "1"
-                if opts.get("single_host"): env["HUNT_SINGLE"] = "1"
-                if opts.get("llm_light"):   env["HUNT_LLM"] = "haiku"
-                env["HUNT_AGENTIC_PHASES"] = AGENTIC_PHASES
-                try:
-                    lf = open(hd / "run.log", "a")
-                    subprocess.Popen(args, stdout=lf, stderr=lf, env=env, start_new_session=True)
+                cost_cap_override = b.get("cost_cap_usd")   # resuming from a cost-cap pause can raise the cap
+                ok, info = _relaunch_resume(tgt, hd, cost_cap_override)
+                if ok:
                     return self._send({"ok": True, "action": "resume", "relaunched": True})
-                except Exception as e:
-                    return self._send({"ok": False, "error": str(e)[:200]}, 500)
+                return self._send({"ok": False, "error": info[:200]}, 500)
             if pid is None:
                 return self._send({"ok": False, "error": "no running hunt"}, 404)
             sig = {"stop": signal.SIGTERM, "pause": signal.SIGSTOP, "resume": signal.SIGCONT}.get(act)
@@ -2277,6 +2334,7 @@ network.on('click',function(p){{
 
 def main():
     TARGETS.mkdir(parents=True, exist_ok=True)
+    threading.Thread(target=_rate_limit_auto_resume_loop, daemon=True).start()
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), H)
     print(f"[huntr-server] engine bridge on http://127.0.0.1:{PORT}  (targets: {TARGETS})")
     print("[huntr-server] loopback only · scope-guard still gates every request · Ctrl-C to stop")
