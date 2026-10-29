@@ -55,6 +55,9 @@ HD.mkdir(parents=True, exist_ok=True)
 RUN = HD / "run.json"
 WATCH = HD / "watch.json"
 BASE = HD / "watch_baseline.json"
+# same default as the dashboard's own launch/resume — keep this in sync with huntr-server.py's
+# AGENTIC_PHASES so a watch-triggered refresh/auto-hunt runs the same full-agentic pipeline.
+AGENTIC_PHASES = "recon_surface,auth_spa,intel,plan,verify,chain_econ,active_hunt"
 
 
 def read_run():
@@ -108,7 +111,7 @@ def refresh():
     — the live process is already keeping run.json current; launching a second one would race it."""
     if _hunt_already_running():
         return
-    env = dict(os.environ, HUNT_DIR=str(HD))
+    env = dict(os.environ, HUNT_DIR=str(HD), HUNT_AGENTIC_PHASES=AGENTIC_PHASES)
     a = [sys.executable, str(HERE / "hunt-run.py"), "--target", TARGET, "--budget-sec", str(BUDGET), "--no-polish"]
     try:
         subprocess.run(a, capture_output=True, text=True, timeout=BUDGET + 300, env=env)
@@ -155,7 +158,7 @@ def cycle():
                 autohunt_note = "\n(auto-hunt skipped — a hunt is already running on this target)"
             else:
                 # focused hunt on the new surface only
-                env = dict(os.environ, HUNT_DIR=str(HD))
+                env = dict(os.environ, HUNT_DIR=str(HD), HUNT_AGENTIC_PHASES=AGENTIC_PHASES)
                 try:
                     subprocess.Popen([sys.executable, str(HERE / "hunt-run.py"), "--target", TARGET,
                                       "--budget-sec", str(BUDGET)], env=env,

@@ -53,6 +53,10 @@ LOCAL_TOOLS = REPO / "tools"
 TOOLS = LOCAL_TOOLS if LOCAL_TOOLS.exists() else Path.home() / ".claude" / "tools"
 # UI/bridge live in the repo root, NOT in tools/ — look in both so either layout works
 ASSETS = [REPO, Path.home() / ".claude" / "tools", TOOLS]
+# The dashboard is now the only interface (no terminal path left) — every UI-launched hunt always
+# runs the full-agentic pipeline (Phases 1-8). hunt-run.py's own HUNT_AGENTIC_PHASES env var stays
+# the on/off switch for reversibility; this is just what the UI always sets it to.
+AGENTIC_PHASES = "recon_surface,auth_spa,intel,plan,verify,chain_econ,active_hunt"
 
 
 def asset(name):
@@ -387,6 +391,10 @@ class H(BaseHTTPRequestHandler):
         if opts["stealth"]:      env["HUNT_STEALTH"] = "1"   # throttle loud scanners (WAF-safe)
         if opts["single_host"]:  env["HUNT_SINGLE"] = "1"    # strict exact-host scope (no subdomain creep)
         if opts["llm_light"]:    env["HUNT_LLM"] = "haiku"   # Haiku-only — minimise rate limits (no paid API key)
+        # The UI is now the only interface — always launch the full-agentic pipeline (Phases 1-8),
+        # not the legacy scripted one. HUNT_AGENTIC_PHASES stays the on/off switch in hunt-run.py
+        # itself (unset it there to revert); this just changes what the dashboard always passes.
+        env["HUNT_AGENTIC_PHASES"] = AGENTIC_PHASES
         try:
             lf = open(hd / "run.log", "a")
             subprocess.Popen(args, stdout=lf, stderr=lf, env=env, start_new_session=True)
@@ -1001,6 +1009,7 @@ class H(BaseHTTPRequestHandler):
                 if opts.get("stealth"):     env["HUNT_STEALTH"] = "1"
                 if opts.get("single_host"): env["HUNT_SINGLE"] = "1"
                 if opts.get("llm_light"):   env["HUNT_LLM"] = "haiku"
+                env["HUNT_AGENTIC_PHASES"] = AGENTIC_PHASES
                 try:
                     lf = open(hd / "run.log", "a")
                     subprocess.Popen(args, stdout=lf, stderr=lf, env=env, start_new_session=True)
