@@ -4056,12 +4056,13 @@ def _phase_plan_agent(deadline=None):
     worth testing next — instead of a hardcoded entity-extraction prompt + a fixed admin-path regex +
     a separate ranking script.
 
-    IMPORTANT compatibility note: phase_adaptive()/phase_llm_lead() (Phase 5) are NOT yet converted —
-    they still read STATE["plan"]["targets"] (a list of {"endpoint","cls"} cells) exactly like the
-    legacy phase_plan() produced. This phase's merge_fn applies the same applicable_classes() filter
-    scan_cell()'s own callers rely on, so a cls the agent proposes that doesn't actually fit that
-    endpoint (e.g. sqli on a static asset) gets silently dropped here, not left for Phase 5 to waste
-    budget on.
+    COMPATIBILITY note: STATE["plan"]["targets"] (a list of {"endpoint","cls"} cells) is still
+    produced in the exact shape the legacy phase_plan() always wrote, since the legacy scanner path
+    (phase_adaptive/scan_cell) can still consume it when "active_hunt" is NOT in HUNT_AGENTIC_PHASES.
+    When Phase 5 IS agentic (_phase_active_hunt_agent), it reads these as ranked suggestions, not a
+    hard dispatch table — so this phase's merge_fn still applies the same applicable_classes() filter
+    scan_cell()'s own callers rely on, dropping a cls that doesn't actually fit the endpoint (e.g.
+    sqli on a static asset) regardless of which path consumes it downstream.
 
     Flag-gated: only called from main() when "plan" is in HUNT_AGENTIC_PHASES."""
     if NO_LLM or not STATE.get("endpoints"):
@@ -4173,6 +4174,153 @@ def _phase_plan_agent(deadline=None):
                            HUNT_DIR / "agent-plan.jsonl", _merge)
     if not ok:
         log("out", "→ agentic plan produced nothing — Phase 5 will fall back to the static class matrix")
+    flush()
+
+
+def _phase_active_hunt_agent(deadline=None):
+    """Stage 5 of the full-agentic rewrite (see HUNTR full-agentic plan, 2026-10-25) — Phase 5:
+    Core Vulnerability-Hunting Loop (largest budget share). Replaces phase_active()/
+    phase_race_critical()/phase_adaptive()+scan_cell()/phase_llm_lead()/phase_ai_direct()/
+    phase_api_test()/phase_exploit_agent()/phase_oob() entirely: one real Claude Code agent reasons
+    continuously over the known surface, decides what to test and in what order, fires real HTTP
+    requests itself (curl / exec-http.py via its own Bash tool), and chains a real finding to
+    concrete impact — instead of a 0-token endpoint×class sweep dispatching into ~10 separate
+    scanner scripts, a bespoke tool-use loop, a second Haiku-driven pass, and a subprocess
+    exploitation agent all running as separate layers.
+
+    Third-party CLI binaries encode no HUNTR judgment and stay available via Bash, same framing as
+    _phase_recon_surface_agent: nuclei, sqlmap, ffuf, interactsh-client are installed. The agent
+    reads/interprets their raw output itself — there is no scripted parser or verdict behind it.
+
+    This is converted LAST among finding-producers (per the plan's migration order), specifically so
+    _phase_verify_agent (already converted, see its docstring) is already independently validated and
+    sits downstream as a backstop for whatever false positives this phase's own judgment produces.
+
+    Flag-gated: only called from main() when "active_hunt" is in HUNT_AGENTIC_PHASES."""
+    if NO_LLM or not STATE.get("endpoints"):
+        return
+    budget = 5400.0
+    if deadline:
+        budget = max(600.0, min(budget, deadline - time.time()))
+    c = _creds()
+    tok = (c.get("session_token") or "").strip()
+    tok2 = (c.get("token2") or "").strip()
+    has_session = bool(tok or (c.get("cookie") or "").strip())
+    ep_sample = [e["url"] for e in STATE["endpoints"][:250]]
+    plan = STATE.get("plan") or {}
+    plan_targets = (plan.get("targets") or [])[:80]
+    flows = (plan.get("flows") or STATE.get("flows") or [])[:20]
+    api_calls = [{"method": c2.get("method"), "url": c2.get("url")} for c2 in (STATE.get("api_calls") or [])[:40]]
+    scope_summary = ", ".join(WEB_ASSETS)[:400] or TARGET
+    denyf = HUNT_DIR / "scope.deny"
+    deny_text = denyf.read_text(errors="ignore")[:800] if denyf.exists() else "(none written)"
+    scope_block = (
+        f"## In-scope (never test outside this)\n{scope_summary}\n"
+        f"## Explicitly OUT OF SCOPE — never send a request here\n{deny_text}\n"
+        "There is no technical enforcement behind this. You are the only thing stopping an "
+        "out-of-scope request.\n"
+    )
+
+    brief = (
+        "# Core Vulnerability-Hunting Loop — full agentic phase\n\n"
+        f"Target: {TARGET}\nProgram: {PROGRAM or TARGET}\nMode: {MODE}-box\n\n"
+        f"{scope_block}\n"
+        f"## Known endpoints ({len(STATE['endpoints'])} total, sample below)\n"
+        f"{json.dumps(ep_sample, default=str)[:6000]}\n\n"
+        + (f"## Ranked plan cells from an earlier phase (endpoint + vuln class worth testing)\n"
+           f"{json.dumps(plan_targets, default=str)[:4000]}\n\n" if plan_targets else "")
+        + (f"## Multi-step flows worth attacking end-to-end\n{json.dumps(flows, default=str)[:2000]}\n\n"
+           if flows else "")
+        + (f"## Real runtime API calls the app itself made (SPA capture) — test these FIRST, they're "
+           f"confirmed-real, unlike a crawled URL that might 404\n{json.dumps(api_calls, default=str)[:3000]}\n\n"
+           if api_calls else "")
+        + ("## You have an authenticated session"
+           + (" AND a second account (token2 in ./.hunt/creds.json) for cross-account IDOR/race testing"
+              if tok2 else "") + ".\n\n" if has_session else
+           "## No authenticated session — test what's reachable unauthenticated only.\n\n")
+        + "## Your job\n"
+        "This is the real hunting loop — the budget share is intentionally the largest of any phase. "
+        "Reason the way a human bug bounty hunter would: read real responses, form a hypothesis, test "
+        "it, and if it's real, chain it to actual impact. There is no scripted scanner behind you "
+        "deciding what's a bug — your judgment is the only verification this phase has (a separate "
+        "skeptical verify pass runs after you, so don't worry about being the final word, but DO back "
+        "every claim with a concrete observed response, not a guess).\n\n"
+        "1. **Full coverage, not a sample.** Work through the known endpoints (and the ranked plan "
+        "cells / flows / runtime API calls above, which deserve priority) deciding for each one which "
+        "vuln classes actually make sense given what it does — don't test sqli on a static asset or "
+        "idor on an endpoint with no object id. Valid classes: cors, redirect, idor, authz, param, "
+        "xss, sqli, ssti, ssrf, race, graphql, host-header, oauth, prototype-pollution, "
+        "mass-assignment, web-cache-deception, csp, cmdi, ldap, xpath, nosqli, crlf, lfi. Fire real "
+        f"requests via `python3 {HERE}/exec-http.py --url <url> [--method ...] [--data ...]` (auto-"
+        "captures evidence) or curl directly — either is fine, you decide.\n\n"
+        "2. **Race conditions** on stateful/value-flow endpoints (payment, credit, coupon, limit, "
+        "redeem, transfer): fire concurrent requests yourself — a short Python script with a "
+        "ThreadPoolExecutor, or `ffuf -c` style bursts — and check for a double-spend/over-redeem "
+        "effect across the responses. If you have a second account, also test the cross-account case "
+        "(account A's token racing against account B's object).\n\n"
+        "3. **Blind/OOB injection** (SSRF, blind cmdi, SSTI, XXE, log4shell-style): `interactsh-client` "
+        "is installed — start it yourself to get a real callback domain, inject that domain into "
+        "candidate sinks, and only call it confirmed if you actually observe a callback in the "
+        "interactsh output. A blocked/odd response alone is never proof for this class.\n\n"
+        "4. **Deep authenticated exploitation.** Once something looks real (IDOR/BOLA/BFLA, privilege "
+        "escalation, business-logic abuse), don't stop at one probe — go deeper the way a human "
+        "pentester chains access: read data you shouldn't, modify something that shouldn't be yours, "
+        "escalate role — and capture the exact request/response that proves it.\n\n"
+        "5. **nuclei is installed** — run it yourself against the live hosts if you think it's worth "
+        "the time (`nuclei -u <host> -severity critical,high,medium`), but READ every hit yourself "
+        "before trusting it; nuclei's own template matches are frequently wrong and you are the judge, "
+        "not the template.\n\n"
+        "6. **Hard-won false-positive lessons, re-taught in prose since no code enforces them "
+        "anymore:**\n"
+        "   - A marker/pattern matching ANYWHERE in a response (an echoed error, a wrapper field) is "
+        "not the same as it appearing as a NEW, attacker-controlled effect.\n"
+        "   - Same response SIZE is not proof of identical content — read the actual bodies.\n"
+        "   - A blocked/crashed exploitation attempt is not confirmed RCE/SSTI just because it looks "
+        "unusual.\n"
+        "   - For IDOR/authz: confirm the SAME request without proper authorization is actually "
+        "denied (a real negative-case baseline) before calling it proven.\n"
+        "   - Security-header/CSP/clickjacking/missing-header classes are informational at most, "
+        "never Critical/High/Medium.\n\n"
+        f"## Output — append as you go, not all at the end\n"
+        f"Write one JSON object per line to {HUNT_DIR}/agent-hunt.jsonl (create it if missing):\n"
+        '  {"type":"finding","sev":"critical|high|medium|low|info","title":"...","detail":"what you '
+        'observed, concretely","endpoint":"https://.../api/x","cls":"idor","verdict":"confirmed|'
+        'likely","evidence":"the exact proof \\u2014 request/response or callback"}\n\n'
+        f"{scope_block}\n"
+        "Begin now: work through the surface, test for real, and write a finding line the moment you "
+        "confirm or strongly suspect one. Stop once you've covered the meaningful surface, you're "
+        "repeating yourself, or you run out of budget."
+    )
+
+    def _merge(lines):
+        n = 0
+        for r in lines:
+            if r.get("type") != "finding":
+                continue
+            title = str(r.get("title", "")).strip()
+            endpoint = str(r.get("endpoint", "")).strip()
+            detail = str(r.get("detail") or r.get("evidence") or "").strip()
+            if not title or not endpoint or len(detail) < 10:
+                continue
+            sev = str(r.get("sev", "medium")).strip().lower()
+            verdict = str(r.get("verdict", "likely")).strip()
+            if verdict not in ("confirmed", "likely"):
+                verdict = "likely"
+            proof = None
+            evidence = str(r.get("evidence", ""))[:300]
+            if verdict == "confirmed" and evidence:
+                proof = {"proven": True, "method": "phase5-agent", "evidence": evidence}
+            add_finding(sev, title, detail, endpoint, cls=str(r.get("cls", "")),
+                        verdict=verdict, det=(verdict == "confirmed"), proof=proof,
+                        source="phase5-agent")
+            n += 1
+        log("out", "→ active-hunt agent · +" + str(n) + " finding(s)")
+
+    ok = _run_phase_agent("active-hunt agent", "Hunt (agentic)", 75, brief, budget,
+                           HUNT_DIR / "agent-hunt.jsonl", _merge)
+    if not ok:
+        log("warn", "→ agentic active-hunt produced nothing — this run will have little/no new findings")
+    stage("Hunt (agentic)", 90)
     flush()
 
 
@@ -8337,7 +8485,9 @@ def main():
                     # (folded into _phase_recon_surface_agent itself when that flag is on — no separate enrichment pass needed)
                 phase_memory_recall()     # long-term memory — analogous past situations (BEFORE plan so it informs it)
                 # STRATUM 2 — Attack
-                phase_active()            # Layer 1 — deterministic sweep; LLM gets real scan evidence (+ graphql-map + ws-probe + ssrf-probe)
+                if "active_hunt" not in HUNT_AGENTIC_PHASES:
+                    phase_active()        # Layer 1 — deterministic sweep; LLM gets real scan evidence (+ graphql-map + ws-probe + ssrf-probe)
+                # (folded into _phase_active_hunt_agent itself when that flag is on — no separate deterministic sweep needed)
                 if "auth_spa" not in HUNT_AGENTIC_PHASES:
                     phase_authed()            # Auth surface + JWT + IDOR diffing + multi-account auto-setup
                     phase_auth_deep()         # GOD METHODOLOGY: OAuth probe + reset host-header + MFA rate-limit + JWT expiry
@@ -8347,7 +8497,9 @@ def main():
                 else:
                     phase_biz_logic_map()     # GOD METHODOLOGY: map entities/roles/flows/value-ops before attacking
                     phase_authz_matrix()      # GOD METHODOLOGY: BFLA sweep + mass-assign on write endpoints
-                phase_race_critical()     # GOD METHODOLOGY: 25-thread race bursts + logic-fuzz on all value-flow endpoints
+                if "active_hunt" not in HUNT_AGENTIC_PHASES:
+                    phase_race_critical() # GOD METHODOLOGY: 25-thread race bursts + logic-fuzz on all value-flow endpoints
+                # (folded into _phase_active_hunt_agent itself when that flag is on — agent fires its own concurrent bursts)
                 # Rebuild the surface graph NOW, not just once back in phase_surface(). By this point
                 # phase_recon_agent + phase_discover + phase_spa_capture + phase_biz_logic_map have all
                 # added content the initial crawl never had — the graph Claude's hunting phase queries
@@ -8361,43 +8513,49 @@ def main():
             log("out", "→ resume: skipping recon/surface (reusing mapped surface); continuing the hunt")
         if not (SOURCE_ASSETS and not WEB_ASSETS):
             # Web-hunt-only phases (skip for source-only).
-            # REBUILT 2026-10-22 (operator: "these scripts won't find shit — rebuild HUNTR to reason
-            # like Claude"): phase_llm_lead previously ran strictly AFTER phase_adaptive's full
-            # deterministic sweep finished. On a real surface (3733 cells, live Databricks hunt) that
-            # blind scan_cell sweep alone ran 4-5+ HOURS before Claude's reasoning agent got a single
-            # turn — the operator compared the same target hunted by Claude Code directly and found
-            # Claude Code's live reasoning (read the response, form a hypothesis, test it, chain it)
-            # found real signal while HUNTR's scripted sweep mostly produced false positives (see
-            # fp-otp-uuid-oauth-guessed-url memory). Sequencing the thing that actually reasons dead
-            # last behind hours of mechanical pattern-matching meant it barely ran at all.
-            # Fix: run them CONCURRENTLY against the same wall-clock deadline. phase_adaptive is
-            # provably safe to background — it is 0-token (never calls the LLM, so it can never itself
-            # raise RateLimitPause) and only checks time.time() > deadline to stop, no check_pause()
-            # calls inside it. It still proceeds as a coverage backstop, immune to an LLM rate-limit
-            # pause, while phase_llm_lead starts reasoning within seconds instead of hours later.
-            # Thread safety already proven in this codebase: STATE mutations go through _STATE_LOCK
-            # (add_finding/mark_tested), scope-guard's rate limiter is flock-protected for concurrent
-            # requests (see rate-limit-race memory), and phase_llm_lead's own dual-agent BROAD+DEEP
-            # mode already runs itself as two concurrent threads today.
             if "plan" not in HUNT_AGENTIC_PHASES:
                 phase_plan()                             # target-specific attack plan + flows (flexible)
             elif resumed:
                 log("out", "→ resume: skipping plan agent (reusing the plan already in run.json)")
             # (on a fresh run, _phase_plan_agent above already wrote STATE["plan"] — no separate call needed here)
-            if not NO_LLM and not resumed:
-                _adapt_t = threading.Thread(target=phase_adaptive, args=(deadline,), daemon=True)
-                _adapt_t.start()
-                STATE["stage_parallel"] = "0-token coverage sweep running in background"
-                check_pause(); phase_llm_lead(deadline)      # Claude leads — reasons, hypothesizes, chains
-                _adapt_t.join(timeout=max(0, deadline - time.time()))
-                STATE.pop("stage_parallel", None)
+            if "active_hunt" in HUNT_AGENTIC_PHASES:
+                check_pause(); _phase_active_hunt_agent(deadline)   # full-agentic — see HUNTR full-agentic plan Phase 5:
+                # replaces phase_adaptive/phase_llm_lead/phase_ai_direct/phase_api_test/phase_exploit_agent/
+                # phase_oob entirely — one agent reasons continuously over the whole surface and decides
+                # what's worth testing, instead of running them as separate layers.
             else:
-                phase_adaptive(deadline)                     # deterministic-only mode / resume: sweep alone
-            if not NO_LLM:                               # LLM depth phases (skipped in deterministic-only mode)
-                check_pause(); phase_api_test(deadline)      # SPA-first — test captured runtime API
-                check_pause(); phase_ai_direct(deadline)     # Layer 2 — AI-directed (Haiku)
-                check_pause(); phase_exploit_agent(deadline) # Depth — LLM-driven exploitation
-                check_pause(); phase_oob(deadline)           # Blind/OOB fuzzing
+                # REBUILT 2026-10-22 (operator: "these scripts won't find shit — rebuild HUNTR to reason
+                # like Claude"): phase_llm_lead previously ran strictly AFTER phase_adaptive's full
+                # deterministic sweep finished. On a real surface (3733 cells, live Databricks hunt) that
+                # blind scan_cell sweep alone ran 4-5+ HOURS before Claude's reasoning agent got a single
+                # turn — the operator compared the same target hunted by Claude Code directly and found
+                # Claude Code's live reasoning (read the response, form a hypothesis, test it, chain it)
+                # found real signal while HUNTR's scripted sweep mostly produced false positives (see
+                # fp-otp-uuid-oauth-guessed-url memory). Sequencing the thing that actually reasons dead
+                # last behind hours of mechanical pattern-matching meant it barely ran at all.
+                # Fix: run them CONCURRENTLY against the same wall-clock deadline. phase_adaptive is
+                # provably safe to background — it is 0-token (never calls the LLM, so it can never itself
+                # raise RateLimitPause) and only checks time.time() > deadline to stop, no check_pause()
+                # calls inside it. It still proceeds as a coverage backstop, immune to an LLM rate-limit
+                # pause, while phase_llm_lead starts reasoning within seconds instead of hours later.
+                # Thread safety already proven in this codebase: STATE mutations go through _STATE_LOCK
+                # (add_finding/mark_tested), scope-guard's rate limiter is flock-protected for concurrent
+                # requests (see rate-limit-race memory), and phase_llm_lead's own dual-agent BROAD+DEEP
+                # mode already runs itself as two concurrent threads today.
+                if not NO_LLM and not resumed:
+                    _adapt_t = threading.Thread(target=phase_adaptive, args=(deadline,), daemon=True)
+                    _adapt_t.start()
+                    STATE["stage_parallel"] = "0-token coverage sweep running in background"
+                    check_pause(); phase_llm_lead(deadline)      # Claude leads — reasons, hypothesizes, chains
+                    _adapt_t.join(timeout=max(0, deadline - time.time()))
+                    STATE.pop("stage_parallel", None)
+                else:
+                    phase_adaptive(deadline)                     # deterministic-only mode / resume: sweep alone
+                if not NO_LLM:                               # LLM depth phases (skipped in deterministic-only mode)
+                    check_pause(); phase_api_test(deadline)      # SPA-first — test captured runtime API
+                    check_pause(); phase_ai_direct(deadline)     # Layer 2 — AI-directed (Haiku)
+                    check_pause(); phase_exploit_agent(deadline) # Depth — LLM-driven exploitation
+                    check_pause(); phase_oob(deadline)           # Blind/OOB fuzzing
         phase_dedup()
         phase_fingerprint()
         if not NO_LLM:
