@@ -8397,6 +8397,20 @@ def main():
         print("no --target"); return
     os.environ["HUNT_DIR"] = str(HUNT_DIR)  # so every engine tool shells into this workspace
 
+    # BUG FIX (2026-10-29, caught live on a Shiji Utilities validation hunt): --resume must load the
+    # prior run.json BEFORE anything below calls log()/flush() for the first time. log() unconditionally
+    # flushes STATE to RUN (tmp-write + atomic replace) — _auto_cdp() alone calls log() on every one of
+    # its paths (already-attached/auto-detected/launched/no-binary-found), all running before this used
+    # to be computed. That first flush() wrote the freshly-initialized, still-empty STATE straight over
+    # the real prior run.json (findings/endpoints/hosts/etc.) — so by the time load_resume() ran and
+    # read RUN back, it read back the empty state it had just overwritten, always returned False, and
+    # --resume silently redid the entire hunt from scratch (confirmed: a real run with 70 mapped
+    # endpoints restarted recon/intel/auth+SPA from zero despite --resume being correctly in argv).
+    # Computing resumed/RESUME here, before _auto_cdp() or anything else gets a chance to flush, closes
+    # the race — STATE is merged with the prior run's data before the first flush() can ever fire.
+    RESUME = "--resume" in sys.argv
+    resumed = load_resume() if RESUME else False
+
     # ── AUTO-CDP: launch a debug Chrome if grey/white and none is already attached ────────────────
     # SPA localStorage sessions are unreachable without CDP — a fresh incognito browser has no
     # stored session and cookie/token fields can't help. Previously the operator had to manually
@@ -8432,13 +8446,11 @@ def main():
                 pass
     except Exception:
         pass
-    RESUME = "--resume" in sys.argv
     try:
         (HUNT_DIR / "run.pid").write_text(str(os.getpid()))  # so the dashboard can pause/resume/stop
     except Exception:
         pass
     try:
-        resumed = load_resume() if RESUME else False
         budget_sec = int(arg("--budget-sec", "86400") or 86400)  # default 24h — run until token expires
         deadline = time.time() + budget_sec
         cost_cap_usd = float(arg("--cost-cap-usd", "0") or 0)   # 0 = no cap (time budget is the only limit)
