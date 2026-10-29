@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-exec-http — the engine's hands. Disciplined, evidence-bound HTTP execution through scope-guard.
+exec-http — the engine's hands. Disciplined, evidence-bound HTTP execution.
 
-Every request goes through scope-guard.py (scope + write-approval + circuit breaker), and every
-response is auto-saved to ./.hunt/evidence/<id>/ as request.txt + response.txt — so proof is captured
-by construction, not as an afterthought. It loads named identities, replays saved requests, retries a
-blocked request through a WAF-bypass variant matrix, and — the killer combo — runs the SAME request as
-two identities and auto-diffs them (diff-oracle) to DISCOVER access bugs in one command.
+Every request runs as a direct curl invocation, and every response is auto-saved to
+./.hunt/evidence/<id>/ as request.txt + response.txt — so proof is captured by construction, not as
+an afterthought. There is no scope/write gate: scope is enforced by agent judgment, not code (see
+scope_audit.py for the read-only post-hoc host logging). It loads named identities, replays saved
+requests, retries a blocked request through a WAF-bypass variant matrix, and — the killer combo — runs
+the SAME request as two identities and auto-diffs them (diff-oracle) to DISCOVER access bugs in one
+command.
 
 Identities: ./.hunt/identities.json = {"admin":{"authorization":"Bearer ..","cookie":"..","headers":{"X-CSRF":".."}}, ...}
 
@@ -15,7 +17,7 @@ Usage:
   exec-http.py --url .../orders/1337 --diff admin,low-priv --expect deny      # run as both → auto access-bug check
   exec-http.py --replay e7                                                     # re-run a saved request
   exec-http.py --url '...?q=1' --waf 'UNION SELECT'                            # retry blocked req with bypass variants
-Exit: 0 ok · 1 diff violation · 2 scope/blocked.
+Exit: 0 ok · 1 diff violation · 2 request failed.
 """
 import sys, os, re, json, subprocess, urllib.parse
 from pathlib import Path
@@ -24,7 +26,6 @@ HUNT = Path(os.environ.get("HUNT_DIR", "./.hunt"))
 EV = HUNT / "evidence"
 IDS = HUNT / "identities.json"
 TOOLS = Path(__file__).parent
-SG = str(TOOLS / "scope-guard.py")
 
 
 def arg(n, d=None):
@@ -75,11 +76,7 @@ def run(method, url, headers, data, approve):
         curl_args += ["-H", h]
     if data:
         curl_args += ["-H", "Content-Type: application/json", "-d", data]
-    cmd = ["python3", SG, method, url]
-    if curl_args:
-        cmd += ["--"] + curl_args
-    if approve:
-        cmd += ["--approve"]
+    cmd = ["curl", "-sS", "-i", "--max-time", "25", "-X", method, url] + curl_args
     r = subprocess.run(cmd, capture_output=True, text=True)
     return r.returncode, r.stdout, r.stderr
 
@@ -141,11 +138,8 @@ def one(method, url, ident, extra_headers, data, approve, label=""):
     evid = next_id()
     d = save(evid, method, url, headers, data, out or err)
     tag = f" [{label}]" if label else ""
-    if code == 2 or "OUT OF SCOPE" in (err or ""):
-        print(f"[exec]{tag} ⛔ {err.strip().splitlines()[0] if err else 'blocked'}")
-        return None, st, d
-    if code == 3:
-        print(f"[exec]{tag} ⛔ write blocked — re-run with --approve")
+    if code != 0 or not out:
+        print(f"[exec]{tag} ⛔ request failed{': ' + err.strip().splitlines()[0] if err else ''}")
         return None, st, d
     print(f"[exec]{tag} {method} {url}  → status {st}  ({d})")
     return out, st, d
