@@ -1728,12 +1728,12 @@ const SI = {
 // stage name (lowercased, as python's stage() sends it) → icon kind. Falls back to the generic ring.
 const STAGE_ICON_MAP = [
   [/^scope|init/, 'target'],
-  [/recon|surface|discover|fingerprint|mobile|spa-capture/, 'radar'],
-  [/exploit|api-test|oob-fuzz|race|authed|hunt/, 'bolt'],
-  [/llm-led|ai-direct|ai-judge|economics|scenarios|agent-polish|plan/, 'brain'],
+  [/intel|recon|surface|discover|fingerprint|mobile|spa-capture/, 'radar'],
+  [/exploit|api-test|oob-fuzz|race|authed|\bauth\b|hunt/, 'bolt'],
   [/chain/, 'chain'],
+  [/llm-led|ai-direct|ai-judge|economics|scenarios|agent-polish|plan/, 'brain'],
   [/source audit/, 'code'],
-  [/validate/, 'shield'],
+  [/validate|verify/, 'shield'],
   [/reports/, 'doc'],
 ];
 function stageIconKind(stageKey){
