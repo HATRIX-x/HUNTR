@@ -4662,6 +4662,244 @@ def _phase_chain_economics_agent(deadline=None):
     flush()
 
 
+def _scope_block():
+    """Shared in/out-of-scope preamble for the agentic phases — the ONLY thing holding an autonomous
+    agent inside scope, since these phases have no scope-guard code behind them (same framing as
+    _phase_active_hunt_agent/_phase_recon_surface_agent)."""
+    scope_summary = ", ".join(WEB_ASSETS)[:400] or TARGET
+    denyf = HUNT_DIR / "scope.deny"
+    deny_text = denyf.read_text(errors="ignore")[:800] if denyf.exists() else "(none written)"
+    return (
+        f"## In-scope (never test outside this)\n{scope_summary}\n"
+        f"## Explicitly OUT OF SCOPE — never send a request here\n{deny_text}\n"
+        "There is no technical enforcement behind this. You are the only thing stopping an "
+        "out-of-scope request.\n"
+    )
+
+
+def _phase_deep_questions_agent(deadline=None):
+    """Phase 9 — Deep-Questions / stuck-breaker agent (operator directive, 2026-10-30: "a phase 9
+    agent that asks the questions a hunter could ask or command to dig deeper even if everything is
+    locked"). Runs AFTER the main active-hunt loop, but BEFORE verify, so anything it surfaces flows
+    through the same verify → chain → economics tail as any other finding.
+
+    The rest of the pipeline tends to stop once the obvious, in-class surface is covered. A seasoned
+    human hunter does not stop there — when a target looks locked down (auth walls, 401/403, WAF,
+    "nothing left to test"), they start asking the second-order questions that open new surface:
+    is there a v1/v2/beta/internal of this API? a mobile or legacy backend on another host? a
+    forgotten subdomain? an undocumented parameter? a header the app trusts (X-Forwarded-*, X-Real-IP,
+    X-Original-URL)? a different content-type or HTTP method that routes differently? a flow we never
+    completed end-to-end? This agent generates those questions the way a top hunter would AND acts on
+    them with real tools — it refuses to accept "exhausted/locked" as an answer.
+
+    Flag-gated: only called from main() when "deep_questions" is in HUNT_AGENTIC_PHASES."""
+    if NO_LLM or not STATE.get("endpoints"):
+        return
+    budget = 2400.0
+    if deadline:
+        budget = max(300.0, min(budget, deadline - time.time()))
+    ep_sample = [e["url"] for e in STATE["endpoints"][:200]]
+    finds = [f for f in STATE.get("findings", []) if not f.get("noise")]
+    find_titles = [{"title": f.get("title", ""), "endpoint": f.get("endpoint", ""),
+                    "cls": f.get("cls", ""), "sev": f.get("label", "")} for f in finds[:40]]
+    cov = STATE.get("coverage", {})
+    tested = STATE.get("tested", {})
+    tested_count = sum(len(v) for v in tested.values()) if isinstance(tested, dict) else 0
+    scope_block = _scope_block()
+
+    brief = (
+        "# Deep Questions — Phase 9 (stuck-breaker) full agentic phase\n\n"
+        f"Target: {TARGET}\nProgram: {PROGRAM or TARGET}\nMode: {MODE}-box\n\n"
+        f"{scope_block}\n"
+        f"## What the hunt has already done\n"
+        f"- {len(STATE['endpoints'])} endpoints mapped · ~{tested_count} endpoint×class cells tested · "
+        f"coverage breadth {cov.get('breadth', 0)}%\n"
+        f"- {len(finds)} finding(s) so far: {json.dumps(find_titles, default=str)[:3000]}\n"
+        f"## Known endpoints (sample)\n{json.dumps(ep_sample, default=str)[:4000]}\n\n"
+        "## Your job — be the hunter who refuses to accept 'locked' or 'exhausted'\n"
+        "The normal pipeline has run every obvious in-class test on the obvious surface. You are the "
+        "second-order pass: the experienced hunter who, staring at a target that looks fully locked "
+        "down, starts asking the questions that open NEW surface — and then actually tries them. Don't "
+        "re-run what's already been tested above; go sideways and deeper.\n\n"
+        "Ask-and-try, concretely (these are prompts, not a checklist to recite — reason about which "
+        "apply here, then execute the promising ones with real requests):\n"
+        "  • **Version pivots** — is there a /v1 /v2 /v3 /beta /internal /legacy of an endpoint that's "
+        "locked on the current version? Older versions often skip an authz check the new one added.\n"
+        "  • **Alternate hosts/surfaces** — a mobile-app backend, an admin/staging host, an API "
+        "subdomain, a different vhost (Host header swap) that serves the same app with weaker controls? "
+        "(Only if in scope above.)\n"
+        "  • **Trusted headers** — does the app trust X-Forwarded-For / X-Forwarded-Host / X-Real-IP / "
+        "X-Original-URL / X-Rewrite-URL / X-Forwarded-Proto to make auth, routing, or ACL decisions?\n"
+        "  • **Parameter mining** — hidden/undocumented params (debug=, admin=, test=, role=, "
+        "internal=, format=, callback=), mass-assignment fields the UI never sends, params present in "
+        "JS/old versions but not the current flow.\n"
+        "  • **Method / content-type routing** — does PUT/PATCH/DELETE/OPTIONS or a different "
+        "Content-Type (json vs form vs xml) reach a different, less-guarded code path?\n"
+        "  • **Unfinished flows** — a multi-step flow (signup→verify→use, cart→checkout→pay, "
+        "invite→accept) where the middle or final step was never exercised end-to-end.\n"
+        "  • **State/role angles** — what changes if you repeat a request as a different role, after "
+        "logout, with a stale/second token, or out of the intended order?\n\n"
+        "You have real Bash + tools: curl, `python3 " + str(HERE) + "/exec-http.py --url <url> ...` "
+        "(auto-captures evidence), subfinder/httpx/ffuf/gau/nuclei if a question calls for them. Back "
+        "every claimed bug with a concrete observed response (a real before/after), never a guess — a "
+        "skeptical verify pass runs after you.\n\n"
+        "The same hard-won false-positive rules from the main hunt apply: a blocked/odd response is not "
+        "a finding; confirm a real denied baseline before calling an authz/IDOR bug proven; "
+        "security-header/CSP/clickjacking classes are informational at most.\n\n"
+        f"## Output — append as you go, not all at the end\n"
+        f"Write one JSON object per line to {HUNT_DIR}/agent-deep.jsonl (create it if missing):\n"
+        '  {"type":"question","q":"the hunter-question you asked","tried":"what you actually did",'
+        '"result":"what came back"}   ← log your reasoning trail; these are not findings\n'
+        '  {"type":"finding","sev":"critical|high|medium|low|info","title":"...","detail":"what you '
+        'observed concretely","endpoint":"https://.../x","cls":"idor","verdict":"confirmed|likely",'
+        '"evidence":"the exact before/after proof"}\n\n'
+        f"{scope_block}\n"
+        "Begin now: generate the questions a top hunter would ask on THIS target given everything "
+        "above, try the promising ones for real, and write a finding line the moment one lands. Stop "
+        "when you've genuinely run out of new angles (not just when the easy ones are done) or you run "
+        "out of budget."
+    )
+
+    def _merge(lines):
+        n = q = 0
+        for r in lines:
+            t = r.get("type")
+            if t == "question":
+                q += 1
+                qq = str(r.get("q", ""))[:120]
+                res = str(r.get("result", ""))[:120]
+                if qq:
+                    log("out", "→ Q: " + qq + (" · " + res if res else ""))
+                continue
+            if t != "finding":
+                continue
+            title = str(r.get("title", "")).strip()
+            endpoint = str(r.get("endpoint", "")).strip()
+            detail = str(r.get("detail") or r.get("evidence") or "").strip()
+            if not title or not endpoint or len(detail) < 10:
+                continue
+            verdict = str(r.get("verdict", "likely")).strip()
+            if verdict not in ("confirmed", "likely"):
+                verdict = "likely"
+            evidence = str(r.get("evidence", ""))[:300]
+            proof = {"proven": True, "method": "phase9-deep", "evidence": evidence} \
+                if verdict == "confirmed" and evidence else None
+            add_finding(str(r.get("sev", "medium")).strip().lower(), title, detail, endpoint,
+                        cls=str(r.get("cls", "")), verdict=verdict, det=(verdict == "confirmed"),
+                        proof=proof, source="phase9-deep")
+            n += 1
+        log("out", "→ deep-questions agent · " + str(q) + " question(s) tried · +" + str(n) + " finding(s)")
+
+    ok = _run_phase_agent("deep-questions agent", "Deep Questions (agentic)", 89, brief, budget,
+                           HUNT_DIR / "agent-deep.jsonl", _merge)
+    if not ok:
+        log("out", "→ deep-questions agent produced nothing new — surface looks genuinely covered this pass")
+    flush()
+
+
+def _phase_zeroday_agent(deadline=None):
+    """Phase 10 — Zero-Day agent (operator directive, 2026-10-30: "a phase 10 for zero-day agent that
+    does novel bypass techniques for 4xx and 5xx and hunts for novel vulns"). Runs after Phase 9,
+    before verify.
+
+    Every other phase treats a 401/403/404/405/429 or a 5xx as a dead end. This agent treats a block
+    as the START of the work: it hunts the surface for endpoints that refuse or error, then applies
+    creative bypass techniques to turn the block into access, and reasons about NOVEL vulnerability
+    classes — parser/implementation quirks specific to THIS target's stack — rather than the templated
+    classes the main loop already covered.
+
+    Flag-gated: only called from main() when "zero_day" is in HUNT_AGENTIC_PHASES."""
+    if NO_LLM or not STATE.get("endpoints"):
+        return
+    budget = 2400.0
+    if deadline:
+        budget = max(300.0, min(budget, deadline - time.time()))
+    ep_sample = [e["url"] for e in STATE["endpoints"][:220]]
+    scope_block = _scope_block()
+
+    brief = (
+        "# Zero-Day — Phase 10 (novel bypass + novel-vuln) full agentic phase\n\n"
+        f"Target: {TARGET}\nProgram: {PROGRAM or TARGET}\nMode: {MODE}-box\n\n"
+        f"{scope_block}\n"
+        f"## Known endpoints (sample)\n{json.dumps(ep_sample, default=str)[:5000]}\n\n"
+        "## Your job — turn blocks into access, and hunt the novel bug\n"
+        "The rest of the hunt gave up wherever the server said no. You start there. Two tracks:\n\n"
+        "### 1. Bypass the 4xx / 5xx\n"
+        "First FIND the walls: probe the surface (curl / `python3 " + str(HERE) + "/exec-http.py`) and "
+        "note every endpoint returning 401/403/404/405/429 or 5xx. Then, on each promising one, try to "
+        "flip it to a success the way real 403-bypass research does — and only claim it when you see a "
+        "concrete before→after (e.g. 403 → 200 with real content you shouldn't get):\n"
+        "  • **Path mutation** — `/admin` vs `/admin/` `/admin/.` `/admin/..;/` `/./admin` `/%2e/admin` "
+        "`/admin%20` `/admin%09` `/admin#` `/admin?` `/ADMIN` `/Admin`; double-encoding `%252e`; "
+        "unicode/overlong-UTF8 normalization; trailing dot/space/tab/newline.\n"
+        "  • **Path-override headers** — X-Original-URL / X-Rewrite-URL / X-Override-URL set to the "
+        "blocked path while requesting an allowed one (front-end ACL vs back-end routing differential).\n"
+        "  • **Identity/origin headers** — X-Forwarded-For / X-Real-IP / X-Client-IP = 127.0.0.1 / "
+        "localhost / internal ranges; X-Forwarded-Host; X-Forwarded-Proto; Host-header swap to an "
+        "internal vhost.\n"
+        "  • **Method & protocol differentials** — swap GET↔POST↔PUT↔PATCH↔HEAD↔OPTIONS; "
+        "X-HTTP-Method-Override; HTTP/1.0 vs /1.1 vs /2; request smuggling-style CL/TE or header "
+        "parsing differentials between the edge and the origin.\n"
+        "  • **Content-type / body differentials** — same endpoint as json vs form vs multipart vs xml; "
+        "a parser that accepts one and skips a check present on another.\n"
+        "  • **5xx as signal** — a 500 means you reached code the app didn't expect to run: malformed "
+        "type, oversized field, null byte, deeply nested json, unexpected array-vs-object. Read the "
+        "error — a stack trace / internal path / library version is itself a finding and often the "
+        "thread that unravels a deeper bug.\n\n"
+        "### 2. Hunt the novel vuln\n"
+        "Beyond the templated classes: reason about THIS target's actual stack and look for the "
+        "implementation-specific bug a scanner would never template — a parser differential between two "
+        "components, a trust assumption between services, a state machine that can be driven into an "
+        "impossible state, an encoding/normalization mismatch, a logic flaw unique to how THIS app "
+        "composes its pieces. Form a specific hypothesis, test it for real, prove it with the exact "
+        "request/response.\n\n"
+        "Proof bar is the same as the rest of the hunt: a concrete observed effect, never 'this looked "
+        "unusual'. A bypass is only real with the before(blocked)→after(allowed) pair captured. A "
+        "verify pass runs after you.\n\n"
+        f"## Output — append as you go, not all at the end\n"
+        f"Write one JSON object per line to {HUNT_DIR}/agent-zeroday.jsonl (create it if missing):\n"
+        '  {"type":"finding","sev":"critical|high|medium|low|info","title":"...","detail":"what you '
+        'observed concretely","endpoint":"https://.../x","cls":"bypass|novel|...","verdict":"confirmed|'
+        'likely","technique":"the exact mutation/header that worked","evidence":"before 403 → after 200 '
+        '+ the proof"}\n\n'
+        f"{scope_block}\n"
+        "Begin now: map the blocked surface, work the bypasses, hunt the novel bug, and write a finding "
+        "line the moment a block flips or a novel vuln proves out. Stop when you've worked the blocked "
+        "surface and run out of credible novel hypotheses, or you run out of budget."
+    )
+
+    def _merge(lines):
+        n = 0
+        for r in lines:
+            if r.get("type") != "finding":
+                continue
+            title = str(r.get("title", "")).strip()
+            endpoint = str(r.get("endpoint", "")).strip()
+            detail = str(r.get("detail") or r.get("evidence") or "").strip()
+            if not title or not endpoint or len(detail) < 10:
+                continue
+            tech = str(r.get("technique", "")).strip()
+            if tech:
+                detail = (detail + " · technique: " + tech)[:700]
+            verdict = str(r.get("verdict", "likely")).strip()
+            if verdict not in ("confirmed", "likely"):
+                verdict = "likely"
+            evidence = str(r.get("evidence", ""))[:300]
+            proof = {"proven": True, "method": "phase10-zeroday", "evidence": evidence} \
+                if verdict == "confirmed" and evidence else None
+            add_finding(str(r.get("sev", "medium")).strip().lower(), title, detail, endpoint,
+                        cls=str(r.get("cls", "")) or "bypass", verdict=verdict,
+                        det=(verdict == "confirmed"), proof=proof, source="phase10-zeroday")
+            n += 1
+        log("out", "→ zero-day agent · +" + str(n) + " bypass/novel finding(s)")
+
+    ok = _run_phase_agent("zero-day agent", "Zero-Day (agentic)", 90, brief, budget,
+                           HUNT_DIR / "agent-zeroday.jsonl", _merge)
+    if not ok:
+        log("out", "→ zero-day agent produced nothing — no blocks flipped and no novel bug proved this pass")
+    flush()
+
+
 def _phase_js_mine():
     """Pre-LLM JS mining — extract hidden API routes, tokens, and params from all JS files.
 
@@ -8631,6 +8869,17 @@ def main():
                     check_pause(); phase_ai_direct(deadline)     # Layer 2 — AI-directed (Haiku)
                     check_pause(); phase_exploit_agent(deadline) # Depth — LLM-driven exploitation
                     check_pause(); phase_oob(deadline)           # Blind/OOB fuzzing
+            # Phase 9 — deep-questions agent (stuck-breaker): an elite-hunter pass that refuses to
+            # accept "locked/exhausted" and digs deeper (version pivots, alt hosts, trusted headers,
+            # param mining, unfinished flows). Runs after the main hunt but BEFORE verify, so whatever
+            # it surfaces is validated + valued by the downstream tail like any other finding.
+            if "deep_questions" in HUNT_AGENTIC_PHASES and not NO_LLM:
+                check_pause(); _phase_deep_questions_agent(deadline)
+            # Phase 10 — zero-day agent: treats every 4xx/5xx the normal classes gave up on as the
+            # start of the work — novel bypass techniques to flip blocks into access, plus hunting
+            # implementation-specific novel vulns a templated scanner would never find.
+            if "zero_day" in HUNT_AGENTIC_PHASES and not NO_LLM:
+                check_pause(); _phase_zeroday_agent(deadline)
         phase_dedup()
         phase_fingerprint()
         if not NO_LLM:

@@ -56,7 +56,7 @@ ASSETS = [REPO, Path.home() / ".claude" / "tools", TOOLS]
 # The dashboard is now the only interface (no terminal path left) — every UI-launched hunt always
 # runs the full-agentic pipeline (Phases 1-8). hunt-run.py's own HUNT_AGENTIC_PHASES env var stays
 # the on/off switch for reversibility; this is just what the UI always sets it to.
-AGENTIC_PHASES = "recon_surface,auth_spa,intel,plan,verify,chain_econ,active_hunt"
+AGENTIC_PHASES = "recon_surface,auth_spa,intel,plan,verify,chain_econ,active_hunt,deep_questions,zero_day"
 
 
 def _relaunch_resume(tgt, hd, cost_cap_override=None):

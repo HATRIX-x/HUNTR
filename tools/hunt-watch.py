@@ -57,7 +57,7 @@ WATCH = HD / "watch.json"
 BASE = HD / "watch_baseline.json"
 # same default as the dashboard's own launch/resume — keep this in sync with huntr-server.py's
 # AGENTIC_PHASES so a watch-triggered refresh/auto-hunt runs the same full-agentic pipeline.
-AGENTIC_PHASES = "recon_surface,auth_spa,intel,plan,verify,chain_econ,active_hunt"
+AGENTIC_PHASES = "recon_surface,auth_spa,intel,plan,verify,chain_econ,active_hunt,deep_questions,zero_day"
 
 
 def read_run():
