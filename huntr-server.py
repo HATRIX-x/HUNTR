@@ -720,6 +720,28 @@ class H(BaseHTTPRequestHandler):
                 return self._send(json.loads((r.get("out") or "").strip().splitlines()[-1]))
             except Exception:
                 return self._send({"ok": False, "error": (r.get("err") or "graph build failed")[:200]}, 500)
+        if u.path == "/api/hunt/graphdata":  # GET ?target= — the built graphify knowledge graph, read
+            # straight off disk (0-token, no graphify module needed, unlike /api/hunt/kgraph which shells
+            # hunt-graph.py). Feeds the dashboard's 3D constellation the REAL semantic graph — entities,
+            # relationships, communities and exploit-chain edges — instead of a cosmetic host→endpoint tree.
+            hd = hunt_dir(q.get("target", ""))
+            gj = hd / "graphify-out" / "graph.json"
+            if not gj.exists():
+                return self._send({"ok": True, "built": False})
+            try:
+                g = json.loads(gj.read_text())
+            except Exception as e:
+                return self._send({"ok": False, "error": str(e)[:120]}, 500)
+            nodes = [{"id": n.get("id"), "label": n.get("label") or n.get("id"),
+                      "community": n.get("community", 0), "community_name": n.get("community_name", ""),
+                      "origin": n.get("_origin", "")} for n in (g.get("nodes") or [])[:400] if n.get("id")]
+            links = [{"source": e.get("source"), "target": e.get("target"),
+                      "relation": e.get("relation", ""), "confidence": e.get("confidence", "")}
+                     for e in (g.get("links") or [])[:800] if e.get("source") and e.get("target")]
+            hyper = [{"id": h.get("id"), "label": h.get("label", ""), "nodes": (h.get("nodes") or [])[:40]}
+                     for h in (g.get("hyperedges") or [])[:30]]
+            return self._send({"ok": True, "built": True, "nodes": nodes, "links": links, "hyperedges": hyper,
+                               "counts": {"nodes": len(g.get("nodes") or []), "links": len(g.get("links") or [])}})
         if u.path == "/api/hunt/scope":  # GET ?target= — current scope.allow / scope.deny
             hd = hunt_dir(q.get("target", ""))
             def _rdscope(fn):

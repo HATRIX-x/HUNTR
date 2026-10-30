@@ -3701,6 +3701,8 @@ function renderOps(run){
 (function(){
   let scene,cam,renderer,GTEX,running=false,rafId=null,sig='';
   let NODES=[],EDGES=[],HUBS={},agent=null,ripples=[],lastFindCount=0,pickTimer=0;
+  let GRAPH=null,graphTimer=null,nodeByGid={};
+  const COMM_PAL=['#A78BFA','#60A5FA','#34D399','#38BDF8','#C4B5FD','#2DD4BF','#818CF8','#86EFAC','#93C5FD','#5EEAD4','#A5B4FC','#67E8F9'];
   const orbit={az:0.7,pol:1.05,rad:70,tRad:70,focus:null,tFocus:null};
   let dragging=false,lx=0,ly=0,moved=false;
   const ACCENT='#A78BFA', C_UNT='#6a6f7c', C_CLEAN='#3d4350', C_HUB='#8894a8';
@@ -3774,7 +3776,7 @@ function renderOps(run){
       const line=new THREE.Line(geo,new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:.06}));scene.add(line);
       EDGES.push({a:hub,b:n,line});
     });
-    document.getElementById('live-nodes').textContent=NODES.filter(n=>!n.hub).length;
+    const _ln=document.getElementById('live-nodes'); if(_ln)_ln.textContent=NODES.filter(n=>!n.hub).length;
   }
 
   function applyStatus(run){
@@ -3793,11 +3795,56 @@ function renderOps(run){
     if(!agent.target){const unt=NODES.filter(n=>!n.hub&&n.status==='untested');agent.target=(unt[0]||NODES.find(n=>!n.hub)||NODES[0]);}
   }
 
+  // ── build the 3D scene from the REAL graphify knowledge graph (entities + relations + communities) ──
+  function buildFromGraph(g){
+    NODES.forEach(n=>{scene.remove(n.glow);scene.remove(n.core);});EDGES.forEach(e=>scene.remove(e.line));
+    NODES=[];EDGES=[];HUBS={};nodeByGid={};
+    const comms=[...new Set(g.nodes.map(n=>n.community))], K=comms.length||1, cen={};
+    comms.forEach((c,i)=>{ const y=1-(i/Math.max(1,K-1))*2, rr=Math.sqrt(Math.max(0,1-y*y)), th=i*2.399;
+      cen[c]=new THREE.Vector3(Math.cos(th)*rr,y,Math.sin(th)*rr).multiplyScalar(16+K*1.6);
+      const col=COMM_PAL[((c||0)%COMM_PAL.length+COMM_PAL.length)%COMM_PAL.length];
+      const cn=(g.nodes.find(n=>n.community===c)||{}).community_name||('Cluster '+c);
+      NODES.push({hub:true,label:cn,community:c,ccol:col,pos:cen[c].clone(),base:cen[c].clone(),status:'clear',glow:sprite(col,5,.34),core:sprite('#efeafc',1.9,1)});
+    });
+    g.nodes.forEach(n=>{ const base=(cen[n.community]||new THREE.Vector3()).clone().add(randUnit().multiplyScalar(5+Math.random()*5));
+      const col=COMM_PAL[((n.community||0)%COMM_PAL.length+COMM_PAL.length)%COMM_PAL.length];
+      const nd={hub:false,gid:n.id,label:(n.label||n.id).slice(0,46),community:n.community,ccol:col,pos:base.clone(),base:base.clone(),ph:Math.random()*6.28,status:'untested',glow:sprite(col,2.6,.18),core:sprite(col,1,1)};
+      NODES.push(nd);nodeByGid[n.id]=nd;
+    });
+    g.links.forEach(l=>{ const a=nodeByGid[l.source],b=nodeByGid[l.target]; if(!a||!b)return;
+      const chain=/enabl|requir|chain|exploit|lead|escalat|priv|bypass/i.test(l.relation||'');
+      const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(6),3));
+      const line=new THREE.Line(geo,new THREE.LineBasicMaterial({color:chain?0xFF8A3D:0xffffff,transparent:true,opacity:chain?.5:.1}));scene.add(line);
+      EDGES.push({a,b,line,chain});
+    });
+    const hud=document.getElementById('live-hud'); if(hud) hud.innerHTML='KNOWLEDGE GRAPH · <span class="live-s">'+g.counts.nodes+'</span> entities · <span class="live-s">'+g.counts.links+'</span> relations';
+  }
+  // overlay live hunt state onto the semantic graph (best-effort: match findings to entity labels)
+  function applyGraphStatus(run){
+    for(const n of NODES){ if(!n.hub) n.status='untested'; }
+    const finds=(run.findings||[]).filter(f=>f.verdict!=='false_positive');
+    finds.forEach(f=>{ const segs=(f.endpoint||'').toLowerCase().replace(/^https?:\/\/[^/]+/,'').split(/[\/?&=._-]/).filter(s=>s.length>3);
+      const words=(f.title||'').toLowerCase().split(/\s+/).filter(w=>w.length>4);
+      for(const n of NODES){ if(n.hub)continue; const lab=(n.label+' '+(n.gid||'')).toLowerCase();
+        if(segs.some(s=>lab.includes(s))||words.some(w=>lab.includes(w))){ n.status='finding'; n.sev=f.sev; } }
+    });
+    const fc=finds.length;
+    if(fc>lastFindCount){ const fn=NODES.find(n=>!n.hub&&n.status==='finding'); if(fn){agent.target=fn;ripples.push({pos:fn.pos.clone(),life:1});} }
+    lastFindCount=fc;
+    if(!agent.target){ const u=NODES.filter(n=>!n.hub); agent.target=u[Math.floor(Math.random()*u.length)]||NODES[0]; }
+  }
+  async function fetchGraph(){ if(!S.target)return; try{ const r=await api('/api/hunt/graphdata?target='+encodeURIComponent(S.target)); if(r&&r.ok&&r.built&&(r.nodes||[]).length){ GRAPH=r; } }catch(e){} }
+
   window.liveSync=function(run){
     if(!window.THREE||!scene)return;
-    const eps=epList(run);const s=eps.length+'|'+(run.hosts?run.hosts.length:0);
-    if(s!==sig){sig=s;rebuild(run);}
-    applyStatus(run);
+    if(GRAPH&&GRAPH.built){ const s='g'+GRAPH.counts.nodes+'|'+GRAPH.counts.links; if(s!==sig){sig=s;buildFromGraph(GRAPH);} applyGraphStatus(run); }
+    else {
+      const eps=epList(run);const s=eps.length+'|'+(run.hosts?run.hosts.length:0);
+      if(s!==sig){sig=s;rebuild(run);}
+      applyStatus(run);
+      const hud=document.getElementById('live-hud'); const n=NODES.filter(x=>!x.hub).length;
+      if(hud) hud.innerHTML='SURFACE MAP · <span class="live-s">'+n+'</span> endpoints · <span class="live-s">'+(run.status==='running'?'building graph…':'agent live')+'</span>';
+    }
   };
 
   function tick(ts){
@@ -3813,7 +3860,7 @@ function renderOps(run){
     // node drift + render
     for(const n of NODES){if(!n.hub){n.pos.x=n.base.x+Math.sin(time*0.5+n.ph)*0.5;n.pos.y=n.base.y+Math.cos(time*0.4+n.ph)*0.5;}
       const active=agent.target===n&&runningHunt;
-      let col=n.hub?C_HUB:(n.status==='finding'?(SEV[n.sev]||SEV.m):n.status==='clear'?C_CLEAN:C_UNT);
+      let col=n.hub?(n.ccol||C_HUB):(n.status==='finding'?(SEV[n.sev]||SEV.m):(n.status==='clear'?C_CLEAN:(n.ccol||C_UNT)));
       if(active)col=ACCENT;
       const gs=(n.hub?4.5:2.6)*(n.status==='finding'?1.2:1)*(active?1.25:1);
       n.glow.position.copy(n.pos);n.glow.scale.set(gs,gs,1);n.glow.material.color.set(col);
@@ -3849,11 +3896,14 @@ function renderOps(run){
     const hud=document.getElementById('live-hud');
     if(!window.THREE){if(hud)hud.textContent='3D unavailable (three.js failed to load)';return;}
     if(!scene)initScene();
+    if(S._liveTarget!==S.target){ GRAPH=null; sig=''; S._liveTarget=S.target; }  // new target → drop stale graph
     sizeNow();
+    fetchGraph();                                          // pull the real knowledge graph (async; surface map shows until it arrives)
     if(S.run)window.liveSync(S.run);
+    if(!graphTimer) graphTimer=setInterval(()=>{ if(S.view==='live') fetchGraph(); },20000);  // graph is built late in the hunt — keep checking
     if(!running){running=true;rafId=requestAnimationFrame(tick);}
   };
-  window.liveStop=function(){running=false;if(rafId){cancelAnimationFrame(rafId);rafId=null;}};
+  window.liveStop=function(){running=false;if(rafId){cancelAnimationFrame(rafId);rafId=null;}if(graphTimer){clearInterval(graphTimer);graphTimer=null;}};
   window.addEventListener('resize',()=>{if(running)sizeNow();});
 })();
 
