@@ -921,6 +921,14 @@ body{background:
 .ops-live .pdot{width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 0 rgba(167,139,250,.6);animation:opsPulse 1.8s ease-out infinite;}
 .ops-live.idle .pdot,.ops-live.idle .pdot{background:var(--txt3);}
 @keyframes opsPulse{0%{box-shadow:0 0 0 0 rgba(167,139,250,.5);}70%{box-shadow:0 0 0 9px rgba(167,139,250,0);}100%{box-shadow:0 0 0 0 rgba(167,139,250,0);}}
+/* constant motion while running so long early phases never read as "stuck/failing" */
+.ops-hero.running::before{content:"";position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--accent),var(--gold),transparent);background-size:35% 100%;background-repeat:no-repeat;animation:opsShim 1.8s linear infinite;z-index:2;}
+@keyframes opsShim{0%{background-position:-35% 0;}100%{background-position:135% 0;}}
+.ops-elapsed{color:var(--txt3);font-weight:600;}
+.work-dots::after{content:"";animation:workDots 1.5s steps(1,end) infinite;}
+@keyframes workDots{0%{content:"";}25%{content:"·";}50%{content:"··";}75%{content:"···";}100%{content:"";}}
+.pl-row.run .pl-name::after{content:"";display:inline-block;width:1px;}
+.pl-row.run{background:linear-gradient(90deg,var(--accent-weak),transparent 60%);}
 .ops-phase{font-family:var(--sans);font-weight:800;font-size:12px;letter-spacing:1.6px;text-transform:uppercase;color:var(--accent2);}
 .ops-action{font-size:22px;font-weight:700;color:var(--txt);line-height:1.25;letter-spacing:-.2px;max-width:60ch;}
 .ops-target{margin-top:6px;font-family:var(--mono);font-size:12px;color:var(--txt3);}
@@ -1790,7 +1798,9 @@ function renderHeader(run){
   const stext=document.getElementById('stext');
   const pp=document.getElementById('tb-pause'),ps=document.getElementById('tb-stop'),pr=document.getElementById('tb-resume');
   sdot.className='';
-  const nm=(S.rawScope||'').split('\n')[0].trim().slice(0,38);
+  // Prefer the parsed program name, then the actual target host — NOT the raw first line of the
+  // pasted scope (pasting a full program page put junk like "logodivider" here).
+  const nm=((run.program||'').trim()||(S.target||'').split(',')[0].trim()||(S.rawScope||'').split('\n')[0].trim()).slice(0,42);
   const parts=[];
   if(cOK) parts.push(`<b>${cOK}</b> confirmed`);
   if(cNR) parts.push(`${cNR} review`);
@@ -3653,16 +3663,16 @@ function applyIcons(){
 
 /* ═══ OPERATIONS — mission-control render (watch-only) ═══ */
 const OPS_PHASES=[
-  {n:'Intel',re:/intel/i,tag:'recon'},
-  {n:'Recon + Surface',re:/recon|surface/i,tag:'recon'},
-  {n:'Auth + SPA',re:/auth|spa/i,tag:'access'},
-  {n:'Plan',re:/\bplan/i,tag:'strategy'},
-  {n:'Active Hunt',re:/\bhunt\b/i,tag:'exploit'},
-  {n:'Deep Questions',re:/deep question/i,tag:'dig deeper'},
-  {n:'Zero-Day',re:/zero-?day|bypass/i,tag:'novel'},
-  {n:'Verify',re:/verify|validate|triage/i,tag:'triage'},
-  {n:'Chain + Economics',re:/chain|econom/i,tag:'value'},
-  {n:'Report',re:/report|supervis|polish|^done/i,tag:'deliver'},
+  {n:'Intel',re:/intel/i,tag:'recon',doing:'Gathering intel on the target and its known attack surface…'},
+  {n:'Recon + Surface',re:/recon|surface/i,tag:'recon',doing:'Mapping the live attack surface — subdomains, hosts and endpoints…'},
+  {n:'Auth + SPA',re:/auth|spa/i,tag:'access',doing:'Establishing an authenticated session and capturing the app’s real API…'},
+  {n:'Plan',re:/\bplan/i,tag:'strategy',doing:'Modelling the app and planning the highest-value attacks…'},
+  {n:'Active Hunt',re:/\bhunt\b/i,tag:'exploit',doing:'Actively testing endpoints and chaining what it finds…'},
+  {n:'Deep Questions',re:/deep question/i,tag:'dig deeper',doing:'Digging deeper — asking the questions a human hunter would…'},
+  {n:'Zero-Day',re:/zero-?day|bypass/i,tag:'novel',doing:'Attempting novel bypasses on the blocked surface…'},
+  {n:'Verify',re:/verify|validate|triage/i,tag:'triage',doing:'Re-verifying every finding and dropping false positives…'},
+  {n:'Chain + Economics',re:/chain|econom/i,tag:'value',doing:'Chaining findings into bigger impact and pricing them…'},
+  {n:'Report',re:/report|supervis|polish|^done/i,tag:'deliver',doing:'Finalising and writing up the confirmed findings…'},
 ];
 function opsActiveIdx(stage){ let idx=-1; const s=(stage||'').toLowerCase();
   OPS_PHASES.forEach((p,i)=>{ if(p.re.test(s)) idx=i; }); return idx; }
@@ -3673,17 +3683,27 @@ function renderOps(run){
   const live=document.getElementById('ops-live'); if(!live) return;
   const running=st==='running';
   live.classList.toggle('idle', !running);
+  const hero=document.querySelector('.ops-hero'); if(hero) hero.classList.toggle('running', running);
+  // client-side elapsed clock (per target) so a long early phase shows visible, honest progress
+  if(running){ if(!S._opsEl||S._opsEl.t!==S.target) S._opsEl={t:S.target,start:Date.now()}; }
+  let elapsed='';
+  if(running&&S._opsEl){ const s=Math.max(0,Math.floor((Date.now()-S._opsEl.start)/1000)); elapsed=(s>=60?Math.floor(s/60)+'m ':'')+(s%60)+'s'; }
   const PRLBL={'rate-limit':'Paused · account rate limit','cost-cap':'Paused · spend cap','creds-required':'Paused · session required','cdp-required':'Paused · CDP unreachable'};
   let phaseLbl = running ? (capitalize(stage)||'Running')
     : st==='paused' ? (PRLBL[run.paused_reason]||'Paused')
     : st==='done' ? 'Hunt complete' : st==='error' ? 'Error' : st==='stopped' ? 'Stopped' : (st?capitalize(st):'Standby');
-  document.getElementById('ops-phase-lbl').textContent=phaseLbl;
-  // current action: newest meaningful log line, else a phase sentence
-  const logs=run.logs||[]; let action='';
-  for(let i=logs.length-1;i>=0;i--){ const v=(logs[i].v||'').replace(/^[^A-Za-z0-9]+/,'').trim(); if(v.length>6){ action=v; break; } }
+  document.getElementById('ops-phase-lbl').innerHTML = esc(phaseLbl) + (running
+    ? ' <span class="ops-elapsed">· '+elapsed+' elapsed</span><span class="work-dots"></span>' : '');
+  // current action: a purposeful phase sentence while running (not the raw config log, which reads
+  // as idle), the newest meaningful log otherwise.
+  const aIdx=opsActiveIdx(stage);
+  const logs=run.logs||[]; let lastLog='';
+  for(let i=logs.length-1;i>=0;i--){ const v=(logs[i].v||'').replace(/^[^A-Za-z0-9]+/,'').trim(); if(v.length>6){ lastLog=v; break; } }
+  let action;
   if(st==='done'){ const nf=(run.findings||[]).filter(f=>CONFIRMED.includes(f.verdict)).length; action='Hunt complete — '+nf+' confirmed finding'+(nf===1?'':'s')+' ready.'; }
   else if(st==='paused'){ action=(run.creds_alert&&run.creds_alert.msg)||'Hunt paused — it resumes automatically when it can.'; }
-  else if(!action){ action=running?'Working the attack surface…':'Standing by.'; }
+  else if(running){ action=(aIdx>=0&&OPS_PHASES[aIdx].doing)||lastLog||'Working the attack surface…'; }
+  else { action=lastLog||'Standing by.'; }
   document.getElementById('ops-action').textContent=action;
   document.getElementById('ops-target').textContent=(S.target||'');
   // ── stat tiles ──
@@ -3693,7 +3713,7 @@ function renderOps(run){
   const totalN=Math.max(epN,testedN), covPct=totalN?Math.round(testedN/totalN*100):0;
   const confirmed=(run.findings||[]).filter(f=>CONFIRMED.includes(f.verdict)).length;
   const ev=(run.economics&&run.economics.pipeline_ev)||stats.pipeline_ev||0;
-  const aIdx=opsActiveIdx(stage), phaseNo=st==='done'?10:(aIdx>=0?aIdx+1:0);
+  const phaseNo=st==='done'?10:(aIdx>=0?aIdx+1:0);
   document.getElementById('ops-stats').innerHTML=[
     ['v','Phase', phaseNo+'<small>/10</small>'],
     ['v','Endpoints', epN],
