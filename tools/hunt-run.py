@@ -3516,6 +3516,61 @@ def _plan_priors():
             + "\n".join(parts) + "\n\n")
 
 
+def _inject_chains_into_graph():
+    """0-token, deterministic: add the proven exploit CHAINS (STATE['chains']) into the target's
+    knowledge graph as an 'Exploit Chains' community with ENABLES edges, so the dashboard
+    constellation shows real multi-hop attack paths as soon as chaining runs — instead of only after
+    the expensive post-hunt Claude-driven deep graph build. No-op if there are no chains."""
+    chains = STATE.get("chains") or []
+    if not chains:
+        return
+    gdir = HUNT_DIR / "graphify-out"
+    gj = gdir / "graph.json"
+    try:
+        if gj.exists():
+            g = json.loads(gj.read_text())
+        else:
+            gdir.mkdir(parents=True, exist_ok=True)
+            g = {"directed": False, "multigraph": False, "graph": {}, "nodes": [], "links": [], "hyperedges": []}
+        nodes = g.setdefault("nodes", [])
+        links = g.setdefault("links", [])
+        have = {n.get("id") for n in nodes}
+        have_link = {(l.get("source"), l.get("target"), l.get("relation")) for l in links}
+
+        def _nid(s):
+            return "chain_" + re.sub(r"[^a-z0-9]+", "_", (s or "").lower()).strip("_")[:52]
+
+        def _add_node(nid, label):
+            if nid not in have:
+                nodes.append({"id": nid, "label": (label or nid)[:60], "community": 999,
+                              "community_name": "Exploit Chains", "_origin": "chain"})
+                have.add(nid)
+
+        def _add_link(a, b):
+            if a and b and (a, b, "ENABLES") not in have_link:
+                links.append({"source": a, "target": b, "relation": "ENABLES", "confidence": "PROVEN"})
+                have_link.add((a, b, "ENABLES"))
+
+        for ci, ch in enumerate(chains):
+            steps = ch.get("steps") or []
+            prev = None
+            for si, stp in enumerate(steps):
+                lbl = (stp.get("t") or stp.get("note") or ("step " + str(si + 1)))
+                nid = _nid((ch.get("name", "chain")) + "_" + str(ci) + "_" + str(si) + "_" + lbl)
+                _add_node(nid, lbl)
+                _add_link(prev, nid)
+                prev = nid
+            if prev and ch.get("impact"):
+                imp = _nid("impact_" + str(ci) + "_" + (ch.get("impact") or ""))
+                _add_node(imp, ch.get("impact"))
+                _add_link(prev, imp)
+        gj.write_text(json.dumps(g))
+        log("out", "→ exploit chain(s) written into the knowledge graph — visible on the map now (" +
+            str(len(chains)) + " chain(s))")
+    except Exception:
+        pass
+
+
 def _lead_digest(max_eps=34, max_res=14):
     """Compact view of hunt state for the LLM — enough to decide the next move, small enough to
     repeat every round without exhausting the context.
@@ -8979,6 +9034,9 @@ def main():
                                                          #   LLM only enriches near-miss strategy, so it runs in NO_LLM too
             phase_scenario()                             # "impossible scenario" engine — oracle-gated kill-chains
             phase_economics()                            # Economics brain
+        # Surface the proven exploit chains on the dashboard map NOW (0-token deterministic inject),
+        # instead of waiting for the expensive post-hunt Claude-driven deep graph build at the very end.
+        _inject_chains_into_graph()
         # TRANSITIONAL (full-agentic rewrite, 2026-10-25): phase_dedup()/phase_hard_triage() stay on
         # the legacy path even when "verify" is agentic, because phase_supervisor/phase_agentic_polish
         # below (Phase 8 — not yet converted) can still add NEW findings this pass's agent never saw.
