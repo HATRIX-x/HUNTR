@@ -1015,6 +1015,41 @@ body{background:
 #recent-more{background:rgba(255,255,255,.03) !important;border:1px solid var(--gbrd) !important;border-radius:var(--r-md) !important;color:var(--txt2) !important;}
 #recent-list:not(.all)::after{background:linear-gradient(transparent,#0c0818) !important;}
 @media(max-width:860px){.sv-side{width:100% !important;}.sv-hero h1{font-size:40px !important;}}
+
+/* ════ FINDINGS · COVERAGE · SURFACE (pass 2) ════ */
+#find-toolbar{max-width:100% !important;padding:18px 24px 6px !important;gap:9px !important;}
+#find-search{height:38px !important;background:var(--glass) !important;backdrop-filter:var(--blur) !important;-webkit-backdrop-filter:var(--blur) !important;border:1px solid var(--gbrd) !important;border-radius:var(--r-md) !important;color:var(--txt) !important;}
+#find-search:focus{border-color:var(--accent) !important;box-shadow:0 0 0 3px var(--accent-weak) !important;}
+.fsev{height:32px !important;border-radius:var(--r-sm) !important;border:1px solid var(--gbrd) !important;color:var(--txt3) !important;font-weight:700 !important;}
+.ftgl{border-radius:var(--r-sm) !important;border:1px solid var(--gbrd) !important;height:32px !important;}
+#find-list{max-width:100% !important;padding:10px 24px 28px !important;}
+.fc{border-radius:var(--r-lg) !important;box-shadow:var(--ghi) !important;}
+.fc:hover{transform:translateY(-2px) !important;border-color:var(--gbrd-2) !important;box-shadow:var(--shadow),var(--ghi) !important;}
+.fc-title{font-family:var(--sans) !important;font-weight:650 !important;}
+.fc-badge{border-radius:6px !important;}
+/* kill the radar — calm glass-medallion empty/paused state (live motion lives on Operations now) */
+#find-empty{gap:22px !important;padding:48px !important;}
+#es-icon{width:96px !important;height:96px !important;background:var(--glass);backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);border:1px solid var(--gbrd);border-radius:50%;box-shadow:var(--ghi),0 22px 55px -26px #000;}
+.es-pct-ring{width:96px !important;height:96px !important;}
+.es-pct-track{stroke:var(--gbrd) !important;}
+.es-pct-fill{stroke:var(--accent) !important;}
+.si{width:42px !important;height:42px !important;color:var(--accent2) !important;filter:none !important;}
+.si *{animation:none !important;}
+.es-ring{animation:none !important;border-top-color:var(--accent) !important;opacity:.7;}
+.es-phase{font-family:var(--sans) !important;font-weight:800 !important;font-size:18px !important;letter-spacing:0 !important;color:var(--txt) !important;}
+.es-sub{font-size:13px !important;color:var(--txt3) !important;}
+/* coverage ledger */
+#cov-top,#surface-top{padding:16px 22px !important;}
+#cov-filter,#surface-filter{height:38px !important;background:var(--glass) !important;backdrop-filter:var(--blur) !important;border:1px solid var(--gbrd) !important;border-radius:var(--r-md) !important;color:var(--txt) !important;}
+#cov-filter:focus,#surface-filter:focus{border-color:var(--accent) !important;box-shadow:0 0 0 3px var(--accent-weak) !important;}
+.cov-table-wrap{border-radius:var(--r-lg) !important;border-color:var(--gbrd) !important;box-shadow:var(--ghi) !important;}
+.cov-stat{border-radius:var(--r-md) !important;}
+.cov-stat .v{font-family:var(--sans) !important;font-weight:800 !important;color:var(--txt) !important;}
+.cov-lg{color:var(--txt3) !important;}
+/* surface tree */
+#surface-tree,#surface-detail{border-color:var(--gbrd) !important;}
+.sd-method{color:var(--accent2) !important;border-radius:5px !important;}
+.sd-stat,.ss-stat{border-radius:var(--r-md) !important;}
 </style>
 </head>
 <body>
