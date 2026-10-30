@@ -3415,22 +3415,67 @@ def _graphify_surface_digest():
     try:
         import json as _json
         g = _json.loads(graph_json.read_text())
-        nodes = g.get("nodes", [])
-        # score by degree — proxy for betweenness when we don't want to recompute it
-        ep_nodes = [n for n in nodes if n.get("type") == "endpoint" or
-                    (n.get("source_location", "").startswith("http"))]
-        ep_nodes.sort(key=lambda n: n.get("degree", 0), reverse=True)
-        top_eps = [{"url": n.get("id", ""), "degree": n.get("degree", 0),
-                    "community": n.get("community_name", n.get("community", ""))}
-                   for n in ep_nodes[:12]]
-        communities = len(set(n.get("community") for n in nodes if n.get("community") is not None))
-        return {"graph_endpoints": top_eps, "total_graph_nodes": len(nodes),
-                "total_graph_edges": len(g.get("edges", [])), "communities": communities,
-                "query_hint": "graphify-out/graph.json exists — `graphify path \"A\" \"B\"` for the "
-                               "shortest relationship between two endpoints/entities, `graphify explain "
-                               "\"X\"` for a node's neighbors, or grep/jq the file directly for more"}
+        nodes = g.get("nodes", []) or []
+        links = g.get("links", g.get("edges", [])) or []   # real graphify output uses "links"
+        by_id = {n.get("id"): n for n in nodes if n.get("id")}
+        # degree from the link list (no per-node "degree" field in the real format)
+        deg = {}
+        for l in links:
+            for k in (l.get("source"), l.get("target")):
+                if k:
+                    deg[k] = deg.get(k, 0) + 1
+        top = sorted(deg.items(), key=lambda x: -x[1])[:12]
+        key_entities = [{"entity": (by_id.get(i, {}).get("label") or i), "degree": d,
+                         "theme": by_id.get(i, {}).get("community_name", "")} for i, d in top]
+        comm = {}
+        for n in nodes:
+            cn = n.get("community_name")
+            if cn:
+                comm[cn] = comm.get(cn, 0) + 1
+        # communities ARE the attack themes graphify extracted (e.g. "IDOR Cross-Tenant Access")
+        themes = [{"theme": t, "entities": c} for t, c in sorted(comm.items(), key=lambda x: -x[1])[:12]]
+        chains = [{"from": (by_id.get(l.get("source"), {}).get("label") or l.get("source")),
+                   "to": (by_id.get(l.get("target"), {}).get("label") or l.get("target")),
+                   "rel": l.get("relation", "")}
+                  for l in links
+                  if re.search(r"enabl|requir|exploit|escalat|bypass|lead|priv", (l.get("relation") or ""), re.I)][:10]
+        clusters = [h.get("label", "") for h in (g.get("hyperedges") or []) if h.get("label")][:8]
+        return {"attack_themes": themes, "key_entities": key_entities, "chain_edges": chains,
+                "clusters": clusters, "graph_endpoints": [], "total_graph_nodes": len(nodes),
+                "total_graph_edges": len(links),
+                "query_hint": "graphify-out/graph.json exists — `jq '.nodes'/'.links'` it, or `graphify "
+                               "path \"A\" \"B\"` for a relationship / `graphify explain \"X\"` for a node's "
+                               "neighbors. Pull only what you need instead of re-reading the whole surface."}
     except Exception:
         return None
+
+
+def _surface_brief(inline=60):
+    """Token-cheap surface block for the agentic briefs. Instead of dumping the entire endpoint list
+    into every brief (the active-hunt brief alone used to inline ~250 URLs / 6KB every call), this
+    gives the agent: the knowledge-graph digest (attack themes, most-connected entities, exploit-chain
+    edges) when the graph is built, a short inline endpoint shortlist, and pointers to the FULL
+    endpoint list (./endpoints.txt) and graph (graphify-out/graph.json) it can read on demand with its
+    own Bash/Read tools. Build-once-query-often: the graph is reused across every phase that calls this
+    rather than each phase re-dumping the surface."""
+    eps = [e["url"] for e in STATE.get("endpoints", []) if e.get("url")]
+    try:
+        (HUNT_DIR / "endpoints.txt").write_text("\n".join(eps))
+    except Exception:
+        pass
+    parts = []
+    g = _graphify_surface_digest()
+    if g and (g.get("attack_themes") or g.get("key_entities")):
+        parts.append(
+            "## Attack-surface knowledge graph (BUILT — reason over this, query it instead of re-reading everything)\n"
+            + json.dumps({"attack_themes": g.get("attack_themes"), "key_entities": g.get("key_entities"),
+                          "chain_edges": g.get("chain_edges"), "clusters": g.get("clusters")},
+                         default=str)[:2600]
+            + "\n" + g.get("query_hint", "") + "\n")
+    parts.append(
+        f"## Endpoints — shortlist of {min(inline, len(eps))} (FULL {len(eps)} in ./endpoints.txt; read it for breadth)\n"
+        + json.dumps(eps[:inline], default=str)[:2600] + "\n")
+    return "\n".join(parts) + "\n"
 
 
 def _lead_digest(max_eps=34, max_res=14):
@@ -3459,7 +3504,7 @@ def _lead_digest(max_eps=34, max_res=14):
         gaps_top = [g for g in gaps if g["ep"] in top_urls]
         gaps_rest = [g for g in gaps if g["ep"] not in top_urls]
         gaps = (gaps_top + gaps_rest)[:16]
-        eps_out = [e["url"] for e in graph_ctx["graph_endpoints"]]
+        eps_out = [e["url"] for e in graph_ctx.get("graph_endpoints", [])] or eps
     else:
         eps_out = eps
 
@@ -4288,8 +4333,7 @@ def _phase_active_hunt_agent(deadline=None):
         "# Core Vulnerability-Hunting Loop — full agentic phase\n\n"
         f"Target: {TARGET}\nProgram: {PROGRAM or TARGET}\nMode: {MODE}-box\n\n"
         f"{scope_block}\n"
-        f"## Known endpoints ({len(STATE['endpoints'])} total, sample below)\n"
-        f"{json.dumps(ep_sample, default=str)[:6000]}\n\n"
+        + _surface_brief(80)
         + (f"## Ranked plan cells from an earlier phase (endpoint + vuln class worth testing)\n"
            f"{json.dumps(plan_targets, default=str)[:4000]}\n\n" if plan_targets else "")
         + (f"## Multi-step flows worth attacking end-to-end\n{json.dumps(flows, default=str)[:2000]}\n\n"
@@ -4715,8 +4759,8 @@ def _phase_deep_questions_agent(deadline=None):
         f"- {len(STATE['endpoints'])} endpoints mapped · ~{tested_count} endpoint×class cells tested · "
         f"coverage breadth {cov.get('breadth', 0)}%\n"
         f"- {len(finds)} finding(s) so far: {json.dumps(find_titles, default=str)[:3000]}\n"
-        f"## Known endpoints (sample)\n{json.dumps(ep_sample, default=str)[:4000]}\n\n"
-        "## Your job — be the hunter who refuses to accept 'locked' or 'exhausted'\n"
+        + _surface_brief(60)
+        + "## Your job — be the hunter who refuses to accept 'locked' or 'exhausted'\n"
         "The normal pipeline has run every obvious in-class test on the obvious surface. You are the "
         "second-order pass: the experienced hunter who, staring at a target that looks fully locked "
         "down, starts asking the questions that open NEW surface — and then actually tries them. Don't "
@@ -4821,8 +4865,8 @@ def _phase_zeroday_agent(deadline=None):
         "# Zero-Day — Phase 10 (novel bypass + novel-vuln) full agentic phase\n\n"
         f"Target: {TARGET}\nProgram: {PROGRAM or TARGET}\nMode: {MODE}-box\n\n"
         f"{scope_block}\n"
-        f"## Known endpoints (sample)\n{json.dumps(ep_sample, default=str)[:5000]}\n\n"
-        "## Your job — turn blocks into access, and hunt the novel bug\n"
+        + _surface_brief(70)
+        + "## Your job — turn blocks into access, and hunt the novel bug\n"
         "The rest of the hunt gave up wherever the server said no. You start there. Two tracks:\n\n"
         "### 1. Bypass the 4xx / 5xx\n"
         "First FIND the walls: probe the surface (curl / `python3 " + str(HERE) + "/exec-http.py`) and "
