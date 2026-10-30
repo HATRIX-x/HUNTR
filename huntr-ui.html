@@ -366,6 +366,18 @@ button,input,select,textarea{font-family:inherit;}
 
 /* findings pane (primary) */
 #find-pane{flex:1;min-height:0;overflow-y:auto;}
+/* live 3D constellation pane */
+#live-pane{flex:1;min-height:0;position:relative;overflow:hidden;background:radial-gradient(130% 100% at 50% 6%,#13161c,#060708 72%);}
+#live-sky{display:block;width:100%;height:100%;cursor:grab;touch-action:none;}
+#live-sky:active{cursor:grabbing;}
+#live-hud{position:absolute;top:12px;left:14px;font-family:var(--mono);font-size:10px;letter-spacing:1px;color:var(--text3);pointer-events:none;}
+#live-hud .live-s{color:var(--accent);}
+#live-hint{position:absolute;bottom:10px;left:14px;font-family:var(--mono);font-size:10px;color:var(--text3);pointer-events:none;opacity:.6;}
+#live-labels{position:absolute;inset:0;pointer-events:none;}
+.live-lbl{position:absolute;transform:translate(-50%,-150%);font-family:var(--mono);font-size:11px;white-space:nowrap;color:var(--text);text-shadow:0 1px 4px #000;}
+.live-lbl.hub{color:var(--text);font-weight:500;}
+.live-lbl.found{color:#FF9AA6;}
+#live-tip{position:absolute;pointer-events:none;background:#000;border:1px solid var(--border2);border-radius:6px;padding:5px 9px;font-family:var(--mono);font-size:11px;color:var(--text);white-space:nowrap;opacity:0;transition:opacity .1s;z-index:6;}
 /* right rail — coverage/cost/brain, persistent across every view (not just
    Findings) so Graph/Surface/Coverage stop reading as half-empty pages too;
    hidden below 1280px, where the content column is already the better use
@@ -857,8 +869,6 @@ button,input,select,textarea{font-family:inherit;}
     <span id="cost-meter" hidden title=""></span>
   </div>
   <div id="tb-right">
-    <button class="tb-btn accent"  id="tb-verifyall" hidden onclick="verifyAll()">⟳ Verify all</button>
-    <button class="tb-btn"         id="tb-chain"     hidden onclick="runAgent('/api/hunt/chain',{},'chaining findings')">⛓ Chain</button>
     <button class="tb-btn"         id="tb-scope"     hidden onclick="openScope()">⚙ Scope</button>
     <button class="tb-btn"         id="tb-creds"     hidden onclick="openCreds()">🔑 Creds</button>
     <button class="tb-btn danger"  id="tb-pause"  hidden onclick="ctl('pause')">⏸ Pause</button>
@@ -977,7 +987,10 @@ button,input,select,textarea{font-family:inherit;}
   <div id="hunt-view">
    <div class="hunt-shell">
     <nav id="view-rail">
-      <button class="vr-btn on" id="vr-find" onclick="showView('findings')" title="Findings">
+      <button class="vr-btn on" id="vr-live" onclick="showView('live')" title="Live map">
+        <span class="vr-ic">✦</span><span class="vr-lbl">Live</span>
+      </button>
+      <button class="vr-btn" id="vr-find" onclick="showView('findings')" title="Findings">
         <span class="vr-ic">⚑</span><span class="vr-lbl">Find</span><span class="vr-badge" id="vr-find-badge" hidden></span>
       </button>
       <button class="vr-btn" id="vr-graph" onclick="showView('graph')" title="Graph">
@@ -991,7 +1004,15 @@ button,input,select,textarea{font-family:inherit;}
       </button>
     </nav>
     <div class="view-stack">
-    <div id="find-pane">
+    <!-- LIVE 3D constellation — the watch-only window into the autonomous hunt -->
+    <div id="live-pane">
+      <canvas id="live-sky"></canvas>
+      <div id="live-hud">ATTACK SURFACE · <span id="live-nodes">0</span> nodes · agent <span class="live-s">live</span></div>
+      <div id="live-hint">drag to orbit · scroll to zoom · HUNTR hunts on its own</div>
+      <div id="live-labels"></div>
+      <div id="live-tip"></div>
+    </div>
+    <div id="find-pane" style="display:none">
       <div id="find-toolbar">
         <input id="find-search" placeholder="search findings…" oninput="S.fQuery=this.value.toLowerCase();S.findSig='';renderFindings(S.findings)" autocomplete="off">
         <div class="fsev-chips">
@@ -1081,19 +1102,13 @@ button,input,select,textarea{font-family:inherit;}
     <div id="term-panel">
       <div id="term-bar" onclick="toggleTerm()">
         <span class="tb-ico">▶</span>
-        <span class="tb-ttl">Terminal</span>
+        <span class="tb-ttl">Activity</span>
         <span class="tb-livedot" id="tb-livedot"></span>
         <span class="tb-meta" id="tb-meta"></span>
         <button id="tb-max" title="maximize terminal" onclick="event.stopPropagation();toggleTermMax()">⤢</button>
       </div>
       <div id="term-body">
         <div id="term-log"></div>
-        <div id="term-input-wrap">
-          <span class="ti-prompt">&#10095;</span>
-          <input id="term-input" autocomplete="off" autocapitalize="off" spellcheck="false"
-                 placeholder="ask HUNTR about the findings, or /help for commands"
-                 onkeydown="termKey(event)">
-        </div>
       </div>
     </div>
   </div>
@@ -1105,6 +1120,7 @@ button,input,select,textarea{font-family:inherit;}
 
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
 const API=location.origin;  // follow whatever port the server actually served this page on (was hardcoded :8899, which broke --port)
 const SVLBL={c:'Critical',h:'High',m:'Medium',l:'Low',i:'Info'};
@@ -1454,8 +1470,7 @@ function reset(raw,slug){
   S.chatHist=[]; S.inputHist=[]; S.inputIdx=-1; S.chatBusy=false;
   S.lastChainCount=null; S.momSamples=[]; _lastRingKind=undefined; _lastIconStage=null;
   document.getElementById('term-log').innerHTML='';
-  document.getElementById('term-input').disabled=false;
-  logLine('out','HUNTR terminal — type to ask about findings, /help for commands');
+  logLine('out','HUNTR activity log — autonomous hunt in progress · watch-only');
   document.getElementById('find-list').innerHTML='';
   // start: findings empty state + terminal open (watch it work)
   showEmpty('Initializing…','mapping the attack surface',null,'scope');
@@ -1469,6 +1484,7 @@ function showHunt(){
   document.getElementById('tb-scope').removeAttribute('hidden');
   document.getElementById('tb-creds').removeAttribute('hidden');
   notifyInit();
+  showView('live');   // watch-only: a started hunt opens on the live constellation
 }
 function showScope(){
   stopPoll();
@@ -1476,15 +1492,16 @@ function showScope(){
   _lastIconStage=null;
   document.getElementById('hunt-view').classList.remove('on');
   document.getElementById('scope-view').style.display='flex';
-  graphStop(); S.view='findings';
-  document.getElementById('find-pane').style.display='';
+  graphStop(); liveStop(); S.view='live';
+  document.getElementById('live-pane').style.display='block';
+  document.getElementById('find-pane').style.display='none';
   document.getElementById('graph-pane').style.display='none';
   document.getElementById('surface-pane').style.display='none';
   document.getElementById('vr-find').classList.add('on');
   document.getElementById('vr-graph').classList.remove('on');
   document.getElementById('vr-surface').classList.remove('on');
   document.getElementById('vr-coverage').classList.remove('on');
-  ['tb-verifyall','tb-chain','tb-scope','tb-creds','tb-pause','tb-stop','tb-resume','tb-new'].forEach(id=>document.getElementById(id).setAttribute('hidden',''));
+  ['tb-scope','tb-creds','tb-pause','tb-stop','tb-resume','tb-new'].forEach(id=>document.getElementById(id).setAttribute('hidden',''));
   document.getElementById('session-banner').setAttribute('hidden','');
   document.getElementById('circuit-banner').setAttribute('hidden','');
   document.getElementById('llm-banner').setAttribute('hidden','');
@@ -1525,7 +1542,8 @@ async function doPoll(){
   S.brainTick=(S.brainTick||0)+1;
   if(S.brainTick%10===1) refreshBrainRail();
   notifyCheck(run);
-  if(S.view==='graph') graphSync(run);
+  if(S.view==='live') liveSync(run);
+  else if(S.view==='graph') graphSync(run);
   else if(S.view==='coverage') renderCoverage();
   // auto-flip: once done, collapse terminal so findings own the screen
   if(['done','stopped','error','stalled'].includes(run.status)){
@@ -1603,12 +1621,7 @@ function renderHeader(run){
   else if(st==='done'){ pf.style.width='100%'; pf.classList.add('done'); }
   else if(st==='paused'||st==='stalled'){ pf.style.width=(run.pct||0)+'%'; }
   else { pf.style.width='0%'; }
-  // show "Verify all" when the hunt isn't running and there are unconfirmed, non-dismissed findings
-  const unver = f.filter(x=>!CONFIRMED.includes(x.verdict) && x.verdict!=='false_positive').length;
-  const va=document.getElementById('tb-verifyall');
-  if(unver>0 && st!=='running') va.removeAttribute('hidden'); else va.setAttribute('hidden','');
-  const ch=document.getElementById('tb-chain');
-  if(f.length>=2 && st!=='running') ch.removeAttribute('hidden'); else ch.setAttribute('hidden','');
+  // watch-only: no operator "Verify all" / "Chain" buttons — HUNTR runs those passes itself
   document.getElementById('es-phase').textContent = st==='running' ? capitalize(stage) : (st||'');
   // Keep the per-stage SVG in sync too. showEmpty() (which first picks the icon) only runs from
   // renderFindings(), which is deduped on FINDINGS content — so while findings stay empty across
@@ -1862,6 +1875,11 @@ function toggleCard(idx){
 
 /* ─── generic specialized-agent runner (routes output through the terminal) ─── */
 async function runAgent(endpoint, payload, label){
+  // watch-only: HUNTR drives every agent itself; the dashboard never commands it
+  flash('HUNTR runs autonomously — the dashboard is watch-only','');
+  return {ok:false,error:'watch-only'};
+}
+async function _runAgent_disabled(endpoint, payload, label){
   if(!S.termOpen) setTerm(true);
   logLine('cmd','❯ '+label);
   const pend=pendLine(label+' — agent working');
@@ -2107,7 +2125,7 @@ function setTerm(open){
   setTimeout(_resizeGraphCanvas,230);
   if(open){
     const log=document.getElementById('term-log');
-    setTimeout(()=>{log.scrollTop=log.scrollHeight;document.getElementById('term-input').focus();},230);
+    setTimeout(()=>{log.scrollTop=log.scrollHeight;},230);
   }
 }
 function toggleTerm(){ S.termUserSet=true; setTerm(!S.termOpen); }
@@ -2118,7 +2136,7 @@ function toggleTermMax(){
   document.getElementById('tb-max').textContent = max ? '⤡' : '⤢';
   document.getElementById('tb-max').title = max ? 'restore terminal' : 'maximize terminal';
   setTimeout(_resizeGraphCanvas,240);
-  setTimeout(()=>{ const log=document.getElementById('term-log'); log.scrollTop=log.scrollHeight; document.getElementById('term-input').focus(); },240);
+  setTimeout(()=>{ const log=document.getElementById('term-log'); log.scrollTop=log.scrollHeight; },240);
 }
 
 /* ─── interactive terminal ─── */
@@ -2153,6 +2171,11 @@ function termKey(e){
   }
 }
 async function termSend(raw){
+  // watch-only: no command channel to the agent
+  flash('HUNTR runs autonomously — the dashboard is watch-only','');
+  return;
+}
+async function _termSend_disabled(raw){
   const text=raw.trim(); if(!text) return;
   if(!S.termOpen) setTerm(true);
   logLine('cmd','❯ '+text);
@@ -2367,16 +2390,19 @@ const SEVC={ c:'#FF3B5C', h:'#FF8A3D', m:'#FFD23D', l:'#3BA0FF', i:'#9CA3AF' };
 
 function showView(v){
   S.view=v;
+  document.getElementById('vr-live').classList.toggle('on', v==='live');
   document.getElementById('vr-find').classList.toggle('on', v==='findings');
   document.getElementById('vr-graph').classList.toggle('on', v==='graph');
   document.getElementById('vr-surface').classList.toggle('on', v==='surface');
   document.getElementById('vr-coverage').classList.toggle('on', v==='coverage');
+  document.getElementById('live-pane').style.display = v==='live' ? 'block' : 'none';
   document.getElementById('find-pane').style.display = v==='findings' ? '' : 'none';
   document.getElementById('graph-pane').style.display = v==='graph' ? 'block' : 'none';
   document.getElementById('surface-pane').style.display = v==='surface' ? 'flex' : 'none';
   document.getElementById('coverage-pane').style.display = v==='coverage' ? 'flex' : 'none';
-  if(v==='graph'){ graphInit(); graphStart(); viewRefresh(); }
-  else { graphStop(); if(v==='surface'||v==='coverage') viewRefresh(); }
+  if(v==='live'){ graphStop(); liveStart(); if(S.run) liveSync(S.run); }
+  else if(v==='graph'){ liveStop(); graphInit(); graphStart(); viewRefresh(); }
+  else { liveStop(); graphStop(); if(v==='surface'||v==='coverage') viewRefresh(); }
 }
 async function viewRefresh(){
   if(!S.target) return;
@@ -3015,9 +3041,7 @@ function graphFocusK(kid){
 function graphFocusCluster(c){ // highlight nothing structural (clusters are kgraph-only); just center the graph
   const g=S.graph; if(!g) return; g.tf={x:g.w/2,y:g.h/2,k:0.8}; flash('cluster: '+((S.kgraph&&S.kgraph.labels||{})[c]||c),'ok'); }
 function centerOn(node){ const g=S.graph; if(!g)return; g.tf.k=1.5; g.tf.x=g.w/2-node.x*g.tf.k; g.tf.y=g.h/2-node.y*g.tf.k; }
-function agentTestEndpoint(url){ closeDetail(); if(!S.termOpen)setTerm(true);
-  document.getElementById('term-input').value='test this endpoint for vulns: '+url;
-  termSend(document.getElementById('term-input').value); document.getElementById('term-input').value=''; }
+function agentTestEndpoint(url){ closeDetail(); flash('HUNTR tests this itself — the dashboard is watch-only',''); }
 
 /* ═══ modal ═══ */
 function openModal(html){ document.getElementById('modal-body').innerHTML=html; document.getElementById('modal').classList.add('on'); }
@@ -3097,22 +3121,8 @@ async function openZeroday(){
   });
   document.getElementById('modal-body').innerHTML=h;
 }
-function zerodayTest(hyp){
-  closeModal(); if(!S.termOpen)setTerm(true); showView('findings');
-  const msg=`Test this zero-day hypothesis and PROVE it. Bug: ${hyp.bug}. Test: ${hyp.test||''}. It's proven when: ${hyp.proves||''}`;
-  document.getElementById('term-input').value=msg; termSend(msg); document.getElementById('term-input').value='';
-}
-function planExecute(it){
-  closeModal();
-  const node=String(it.node||''); const cls=(it.cls||'').toLowerCase();
-  // route the plan item to the right agent / terminal action
-  if(it.action==='chain'){ runAgent('/api/hunt/chain',{},'executing plan: chain'); return; }
-  if(it.action==='recon'){ runAgent('/api/hunt/recon',{focus:node},'executing plan: recon '+node.slice(0,30)); return; }
-  // test/enumerate → ask the agent to actually test it (it has real tools + proof)
-  if(!S.termOpen) setTerm(true); showView('findings');
-  const msg=`Test ${node} for ${it.cls||'vulnerabilities'} and PROVE it. Context: ${it.rationale||''}`;
-  document.getElementById('term-input').value=msg; termSend(msg); document.getElementById('term-input').value='';
-}
+function zerodayTest(hyp){ closeModal(); flash('HUNTR tests its own hypotheses — the dashboard is watch-only',''); }
+function planExecute(it){ closeModal(); flash('HUNTR runs its own plan — the dashboard is watch-only',''); }
 
 /* ═══ #6 scope editor ═══ */
 async function openScope(){
@@ -3387,6 +3397,169 @@ function timeAgo(ts){
   if(d<86400) return Math.floor(d/3600)+'h ago';
   return Math.floor(d/86400)+'d ago';
 }
+
+/* ═══ LIVE 3D CONSTELLATION — watch-only window into the autonomous hunt ═══
+   Driven entirely by the polled run.json (endpoints / hosts / findings / tested / status).
+   No steering: clicking a node only focuses the camera and shows its label. The agent-presence
+   is a heuristic view of where the hunt's attention is (newest finding, else wandering untested). */
+(function(){
+  let scene,cam,renderer,GTEX,running=false,rafId=null,sig='';
+  let NODES=[],EDGES=[],HUBS={},agent=null,ripples=[],lastFindCount=0,pickTimer=0;
+  const orbit={az:0.7,pol:1.05,rad:70,tRad:70,focus:null,tFocus:null};
+  let dragging=false,lx=0,ly=0,moved=false;
+  const ACCENT='#A78BFA', C_UNT='#6a6f7c', C_CLEAN='#3d4350', C_HUB='#8894a8';
+  const SEV={c:'#FF3B5C',h:'#FF8A3D',m:'#FFD23D',l:'#3BA0FF',i:'#9CA3AF'};
+  function V(){return new THREE.Vector3();}
+  function hostOf(u){try{return new URL(u).host;}catch{return '(other)';}}
+  function epList(run){return (run.endpoints||[]).map(e=>typeof e==='string'?e:(e&&(e.url||e.endpoint)||'')).filter(Boolean);}
+  function randUnit(){const u=Math.random()*2-1,th=Math.random()*6.283,s=Math.sqrt(1-u*u);return new THREE.Vector3(s*Math.cos(th),s*Math.sin(th),u);}
+
+  function glowTex(){const c=document.createElement('canvas');c.width=c.height=64;const x=c.getContext('2d');
+    const gr=x.createRadialGradient(32,32,0,32,32,32);gr.addColorStop(0,'rgba(255,255,255,1)');gr.addColorStop(.28,'rgba(255,255,255,.65)');gr.addColorStop(1,'rgba(255,255,255,0)');
+    x.fillStyle=gr;x.fillRect(0,0,64,64);return new THREE.CanvasTexture(c);}
+  function sprite(color,scale,op){const m=new THREE.SpriteMaterial({map:GTEX,color:new THREE.Color(color),transparent:true,blending:THREE.AdditiveBlending,depthWrite:false,depthTest:false,opacity:op==null?1:op});
+    const s=new THREE.Sprite(m);s.scale.set(scale,scale,1);scene.add(s);return s;}
+
+  function initScene(){
+    const cv=document.getElementById('live-sky');
+    renderer=new THREE.WebGLRenderer({canvas:cv,alpha:true,antialias:true});
+    renderer.setPixelRatio(Math.min(2,window.devicePixelRatio||1));
+    scene=new THREE.Scene();
+    cam=new THREE.PerspectiveCamera(50,1,0.1,800);
+    GTEX=glowTex();orbit.focus=V();orbit.tFocus=V();
+    // starfield
+    const sg=new THREE.BufferGeometry(),sp=new Float32Array(500*3);
+    for(let i=0;i<500;i++){const d=randUnit().multiplyScalar(130+Math.random()*180);sp[i*3]=d.x;sp[i*3+1]=d.y;sp[i*3+2]=d.z;}
+    sg.setAttribute('position',new THREE.BufferAttribute(sp,3));
+    scene.add(new THREE.Points(sg,new THREE.PointsMaterial({color:0x8794a8,size:0.6,transparent:true,opacity:.45,sizeAttenuation:true})));
+    agent={pos:V(),target:null,glow:sprite(ACCENT,6,.45),core:sprite('#E6DCFF',2.4,1),hist:[]};
+    agent.trail=[];for(let i=0;i<14;i++){agent.trail.push(sprite(ACCENT,1.6,0));}
+    bindInput(cv);
+  }
+  function bindInput(cv){
+    const tip=document.getElementById('live-tip');const ray=new THREE.Raycaster();
+    function s2(mx,my){const b=cv.getBoundingClientRect();const n=new THREE.Vector2((mx/b.width)*2-1,-(my/b.height)*2+1);ray.setFromCamera(n,cam);
+      let best=null,bd=1e9;for(const nd of NODES){const d=ray.ray.distanceToPoint(nd.pos);const thr=nd.hub?2.6:1.6;if(d<thr&&d<bd){bd=d;best=nd;}}return best;}
+    cv.addEventListener('pointerdown',e=>{dragging=true;moved=false;lx=e.clientX;ly=e.clientY;cv.setPointerCapture(e.pointerId);});
+    cv.addEventListener('pointermove',e=>{const b=cv.getBoundingClientRect();const nd=s2(e.clientX,e.clientY);
+      if(nd){cv.style.cursor='pointer';tip.style.opacity='1';tip.style.left=(e.clientX-b.left+12)+'px';tip.style.top=(e.clientY-b.top+12)+'px';
+        tip.textContent=nd.label+(nd.found?' · '+nd.found:nd.status==='clear'?' · tested':' · untested');}
+      else{cv.style.cursor=dragging?'grabbing':'grab';tip.style.opacity='0';}
+      if(!dragging)return;const dx=e.clientX-lx,dy=e.clientY-ly;if(Math.abs(dx)+Math.abs(dy)>3)moved=true;
+      orbit.az-=dx*0.005;orbit.pol=Math.max(0.2,Math.min(2.94,orbit.pol-dy*0.005));lx=e.clientX;ly=e.clientY;});
+    cv.addEventListener('pointerup',e=>{dragging=false;if(!moved){const nd=s2(e.clientX,e.clientY);
+      if(nd){orbit.tFocus.copy(nd.pos);orbit.tRad=40;}else{orbit.tFocus.set(0,0,0);orbit.tRad=70;}}});
+    cv.addEventListener('wheel',e=>{e.preventDefault();orbit.tRad=Math.max(26,Math.min(140,orbit.tRad*(1+e.deltaY*0.001)));},{passive:false});
+  }
+  function sizeNow(){const cv=document.getElementById('live-sky');const b=cv.getBoundingClientRect();if(!b.width)return;
+    renderer.setSize(b.width,b.height,false);cam.aspect=b.width/b.height;cam.updateProjectionMatrix();}
+
+  // (re)build the node set from the current surface
+  function rebuild(run){
+    // clear old sprites/lines
+    NODES.forEach(n=>{scene.remove(n.glow);scene.remove(n.core);});
+    EDGES.forEach(e=>scene.remove(e.line));
+    NODES=[];EDGES=[];HUBS={};
+    const eps=epList(run);
+    let hosts=[...new Set(eps.map(hostOf))];
+    (run.hosts||[]).forEach(h=>{const hn=(h&&(h.host||h))||'';if(hn&&!hosts.includes(hn))hosts.push(hn);});
+    if(!hosts.length)hosts=[S.target||'target'];
+    hosts.forEach((h,hi)=>{
+      const base=randUnit().multiplyScalar(14+hosts.length*2);if(hosts.length===1)base.set(0,0,0);
+      const hub={hub:true,label:h,pos:base.clone(),base,status:'clear',glow:sprite(C_HUB,4.5,.3),core:sprite('#c8d0dc',1.8,1)};
+      NODES.push(hub);HUBS[h]=hub;
+    });
+    eps.forEach(u=>{const h=hostOf(u),hub=HUBS[h]||NODES[0];
+      const off=randUnit().multiplyScalar(6+Math.random()*7);
+      const n={hub:false,label:u.replace(/^https?:\/\/[^/]+/,'')||'/',url:u,pos:hub.base.clone().add(off),base:hub.base.clone().add(off),
+        ph:Math.random()*6.28,status:'untested',glow:sprite(C_UNT,2.6,.16),core:sprite(C_UNT,1,1)};
+      NODES.push(n);
+      const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(6),3));
+      const line=new THREE.Line(geo,new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:.06}));scene.add(line);
+      EDGES.push({a:hub,b:n,line});
+    });
+    document.getElementById('live-nodes').textContent=NODES.filter(n=>!n.hub).length;
+  }
+
+  function applyStatus(run){
+    const findEp={};(run.findings||[]).forEach(f=>{if(f.verdict==='false_positive')return;if(f.endpoint)findEp[f.endpoint]=f.sev||'m';});
+    const tested=run.tested&&typeof run.tested==='object'?run.tested:{};
+    for(const n of NODES){if(n.hub)continue;
+      if(findEp[n.url]!==undefined){n.status='finding';n.sev=findEp[n.url];}
+      else if(tested[n.url]!==undefined){n.status='clear';}
+      else n.status='untested';}
+    // agent target: newest finding on increase, else wander untested while running
+    const fc=(run.findings||[]).filter(f=>f.verdict!=='false_positive').length;
+    if(fc>lastFindCount){const last=(run.findings||[]).filter(f=>f.verdict!=='false_positive').slice(-1)[0];
+      const node=last&&NODES.find(n=>!n.hub&&n.url===last.endpoint);
+      if(node){agent.target=node;ripples.push({pos:node.pos.clone(),life:1});}}
+    lastFindCount=fc;
+    if(!agent.target){const unt=NODES.filter(n=>!n.hub&&n.status==='untested');agent.target=(unt[0]||NODES.find(n=>!n.hub)||NODES[0]);}
+  }
+
+  window.liveSync=function(run){
+    if(!window.THREE||!scene)return;
+    const eps=epList(run);const s=eps.length+'|'+(run.hosts?run.hosts.length:0);
+    if(s!==sig){sig=s;rebuild(run);}
+    applyStatus(run);
+  };
+
+  function tick(ts){
+    if(!running){return;}
+    const time=ts/1000;
+    // agent wander + motion
+    const runningHunt=S.run&&S.run.status==='running';
+    if(agent.target){const d=agent.pos.distanceTo(agent.target.pos);
+      if(d>0.7)agent.pos.add(agent.target.pos.clone().sub(agent.pos).multiplyScalar(Math.min(28/60,d)/d));
+      else if(runningHunt){pickTimer+=1/60;if(pickTimer>2.2){pickTimer=0;const unt=NODES.filter(n=>!n.hub&&n.status==='untested');
+        agent.target=unt.length?unt[Math.floor(Math.random()*unt.length)]:NODES.find(n=>!n.hub);}}}
+    agent.hist.unshift(agent.pos.clone());if(agent.hist.length>14)agent.hist.pop();
+    // node drift + render
+    for(const n of NODES){if(!n.hub){n.pos.x=n.base.x+Math.sin(time*0.5+n.ph)*0.5;n.pos.y=n.base.y+Math.cos(time*0.4+n.ph)*0.5;}
+      const active=agent.target===n&&runningHunt;
+      let col=n.hub?C_HUB:(n.status==='finding'?(SEV[n.sev]||SEV.m):n.status==='clear'?C_CLEAN:C_UNT);
+      if(active)col=ACCENT;
+      const gs=(n.hub?4.5:2.6)*(n.status==='finding'?1.2:1)*(active?1.25:1);
+      n.glow.position.copy(n.pos);n.glow.scale.set(gs,gs,1);n.glow.material.color.set(col);
+      n.glow.material.opacity=n.status==='finding'?.4:active?.4:n.hub?.3:.16;
+      n.core.position.copy(n.pos);const cs=(n.hub?1.8:1)*(active?1.3:1);n.core.scale.set(cs,cs,1);n.core.material.color.set(col);}
+    for(const e of EDGES){const pa=e.line.geometry.attributes.position.array;
+      pa[0]=e.a.pos.x;pa[1]=e.a.pos.y;pa[2]=e.a.pos.z;pa[3]=e.b.pos.x;pa[4]=e.b.pos.y;pa[5]=e.b.pos.z;e.line.geometry.attributes.position.needsUpdate=true;
+      const lit=e.b.status==='finding'||agent.target===e.b;e.line.material.color.set(lit?ACCENT:'#ffffff');e.line.material.opacity=lit?.28:.05;}
+    agent.glow.position.copy(agent.pos);agent.core.position.copy(agent.pos);
+    for(let i=0;i<agent.trail.length;i++){const h=agent.hist[i];if(h){const a=1-i/agent.trail.length;agent.trail[i].position.copy(h);agent.trail[i].scale.set(1.6*a+0.3,1.6*a+0.3,1);agent.trail[i].material.opacity=a*0.4;}else agent.trail[i].material.opacity=0;}
+    // ripples
+    for(let i=ripples.length-1;i>=0;i--){const rp=ripples[i];rp.life-=1/60;if(rp.life<=0){if(rp.m){scene.remove(rp.m);}ripples.splice(i,1);continue;}
+      if(!rp.m){const g=new THREE.RingGeometry(0.6,1,36);rp.m=new THREE.Mesh(g,new THREE.MeshBasicMaterial({color:0xFF3B5C,transparent:true,opacity:.6,side:THREE.DoubleSide,depthWrite:false}));rp.m.position.copy(rp.pos);scene.add(rp.m);}
+      const sc=1+(1-rp.life)*14;rp.m.scale.set(sc,sc,sc);rp.m.material.opacity=rp.life*0.55;rp.m.quaternion.copy(cam.quaternion);}
+    // camera
+    if(!dragging)orbit.az+=0.0015;
+    orbit.rad+=(orbit.tRad-orbit.rad)*0.07;orbit.focus.lerp(orbit.tFocus,0.06);
+    const sp=orbit.pol,ca=orbit.az;
+    cam.position.set(orbit.focus.x+orbit.rad*Math.sin(sp)*Math.cos(ca),orbit.focus.y+orbit.rad*Math.cos(sp),orbit.focus.z+orbit.rad*Math.sin(sp)*Math.sin(ca));
+    cam.lookAt(orbit.focus);
+    // labels (hubs + findings)
+    const layer=document.getElementById('live-labels');const cv=document.getElementById('live-sky');const b=cv.getBoundingClientRect();
+    let li=0;const pool=layer.children;const tmp=V();
+    for(const n of NODES){if(!(n.hub||n.status==='finding'))continue;tmp.copy(n.pos).project(cam);if(tmp.z>1)continue;
+      let el=pool[li];if(!el){el=document.createElement('div');el.className='live-lbl';layer.appendChild(el);}
+      el.className='live-lbl'+(n.hub?' hub':' found');el.textContent=n.hub?n.label:n.label;
+      el.style.left=((tmp.x*0.5+0.5)*b.width)+'px';el.style.top=((-tmp.y*0.5+0.5)*b.height)+'px';el.style.display='block';li++;}
+    for(;li<pool.length;li++)pool[li].style.display='none';
+    renderer.render(scene,cam);rafId=requestAnimationFrame(tick);
+  }
+
+  window.liveStart=function(){
+    const hud=document.getElementById('live-hud');
+    if(!window.THREE){if(hud)hud.textContent='3D unavailable (three.js failed to load)';return;}
+    if(!scene)initScene();
+    sizeNow();
+    if(S.run)window.liveSync(S.run);
+    if(!running){running=true;rafId=requestAnimationFrame(tick);}
+  };
+  window.liveStop=function(){running=false;if(rafId){cancelAnimationFrame(rafId);rafId=null;}};
+  window.addEventListener('resize',()=>{if(running)sizeNow();});
+})();
 
 boot(true);   // initial load: auto-resume a live hunt. showScope()/New-hunt calls boot() (no auto-resume).
 updateModeUI();   // show/hide the credentials panel based on the default mode (grey)
