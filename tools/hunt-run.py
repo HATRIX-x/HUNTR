@@ -3478,6 +3478,44 @@ def _surface_brief(inline=60):
     return "\n".join(parts) + "\n"
 
 
+def _plan_priors():
+    """Cross-hunt priors for the Plan phase (0-token, deterministic): which vuln CLASSES historically
+    pay on THIS stack (hunt-brain hit-rates) and which attack THEMES recur across every past hunt (the
+    global knowledge graph ~/.huntr/global-graph). Lets the plan prioritise the high-value surface
+    first instead of exploring blind. Returns "" when there's no cross-hunt history yet."""
+    parts = []
+    try:
+        p = ((PROGRAM or "") + " " + (TARGET or "")).lower()
+        stack = ["fintech"] if any(k in p for k in ("bank", "pay", "fin", "wallet", "card", "trading", "ledger", "crypto")) else []
+        stack += ["saas", "api"]
+        if any("graphql" in (e.get("url", "") or "").lower() for e in STATE.get("endpoints", [])):
+            stack.append("graphql")
+        stack = ",".join(dict.fromkeys(stack))
+        out, err, rc = sh([sys.executable, str(HERE / "hunt-brain.py"), "--get-priorities", "--stack", stack], timeout=20)
+        pri = json.loads(out) if out else []
+        top = [{"cls": x.get("cls"), "hit_rate": x.get("rate"), "n": x.get("attempts")}
+               for x in pri[:8] if x.get("attempts", 0) >= 5]
+        if top:
+            parts.append("### Vuln classes that historically pay on this stack (" + stack + ")\n" + json.dumps(top)[:800])
+    except Exception:
+        pass
+    try:
+        gg = Path.home() / ".huntr" / "global-graph" / "graph.json"
+        if gg.exists():
+            g = json.loads(gg.read_text())
+            from collections import Counter
+            c = Counter(n.get("community_name") for n in (g.get("nodes") or []) if n.get("community_name"))
+            themes = [t for t, _ in c.most_common(12)]
+            if themes:
+                parts.append("### Attack themes that recur across past hunts (prioritise surface matching these)\n" + json.dumps(themes)[:800])
+    except Exception:
+        pass
+    if not parts:
+        return ""
+    return ("## Priors from past hunts — use these to PRIORITISE, not to limit (still test what the surface warrants)\n"
+            + "\n".join(parts) + "\n\n")
+
+
 def _lead_digest(max_eps=34, max_res=14):
     """Compact view of hunt state for the LLM — enough to decide the next move, small enough to
     repeat every round without exhausting the context.
@@ -4191,9 +4229,9 @@ def _phase_plan_agent(deadline=None):
         f"## In-scope\n{scope_summary}\n"
         "There is no technical enforcement behind this. You are the only thing stopping an "
         "out-of-scope request.\n\n"
-        f"## Known endpoints ({len(STATE['endpoints'])} total, sample below)\n"
-        f"{json.dumps(ep_sample, default=str)[:4000]}\n\n"
+        + _surface_brief(90)
         + (f"## Reward table\n{json.dumps(prog_intel['reward_table'])[:400]}\n\n" if prog_intel.get("reward_table") else "")
+        + _plan_priors()
         + "## Your job (three parts)\n"
         "1. **Model the app** the way a researcher would before attacking it: what are the core "
         "entities (User, Order, Payment, Tenant...)? What role levels exist (anonymous/user/admin/"
