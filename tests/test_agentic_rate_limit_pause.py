@@ -48,6 +48,11 @@ class RateLimitDetection(unittest.TestCase):
     def test_cli_limit_regex_matches_real_wording(self):
         self.assertTrue(HR._CLI_LIMIT_RE.search("You've hit your session limit · resets 5:10pm"))
         self.assertTrue(HR._CLI_LIMIT_RE.search("usage limit reached"))
+        # the live incident: "5-hour" between "your" and "limit" slipped past a fixed literal and the
+        # hunt cascaded through every phase instead of pausing. This is the regression guard.
+        self.assertTrue(HR._CLI_LIMIT_RE.search("You've hit your 5-hour limit · resets 7:10pm (Africa/Cairo)"))
+        self.assertTrue(HR._CLI_LIMIT_RE.search("You've hit your weekly limit"))
+        self.assertTrue(HR._CLI_LIMIT_RE.search("resets 7:10pm (Africa/Cairo)"))
 
     def test_long_agent_output_mentioning_rate_limit_does_not_false_positive(self):
         """A real finding write-up ("no rate limit on the login endpoint...") can be long and still

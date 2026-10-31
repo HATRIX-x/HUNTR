@@ -234,7 +234,13 @@ def check_pause():
 # main() cascade straight through every remaining agentic phase on a dead account with status "done"
 # at the end. This regex is intentionally the same wording list as llm_client's.
 _CLI_LIMIT_RE = re.compile(
-    r"hit your session limit|hit your limit|usage limit|rate limit|please run /login|"
+    # "hit your 5-hour limit" / "hit your session limit" / "hit your limit" — the middle word
+    # ("5-hour", "session", "weekly", …) was missed by a fixed "hit your limit" literal, so the
+    # real Claude CLI message "You've hit your 5-hour limit · resets 7:10pm" slipped through and the
+    # hunt cascaded through every phase instead of pausing. Match the variable form, plus the
+    # "resets HH:MM" reset-time notice the CLI always prints alongside a limit.
+    r"hit your (?:[\w-]+ ){0,3}limit|\d+-hour limit|usage limit|rate limit|"
+    r"reset[s]?\s+(?:at\s+)?\d{1,2}:\d{2}|please run /login|"
     r"invalid api key|credit balance is too low|out of credit|\bquota\b", re.I)
 _CLI_RESET_RE = re.compile(r"resets?\s+(\d{1,2}:\d{2}\s*[ap]m)\s*(?:\(([^)]+)\))?", re.I)
 
