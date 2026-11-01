@@ -929,6 +929,12 @@ body{background:
 @keyframes workDots{0%{content:"";}25%{content:"·";}50%{content:"··";}75%{content:"···";}100%{content:"";}}
 .pl-row.run .pl-name::after{content:"";display:inline-block;width:1px;}
 .pl-row.run{background:linear-gradient(90deg,var(--accent-weak),transparent 60%);}
+/* paused-at phase: gold "waiting here", not a green "done" */
+.pl-row.paused .pl-dot{background:var(--gold) !important;border-color:var(--gold) !important;box-shadow:0 0 0 4px var(--gold-weak),0 0 12px var(--gold) !important;animation:opsPulse 2.2s infinite;}
+.pl-row.paused .pl-name{color:var(--txt);font-weight:700;}
+.pl-row.paused .pl-tag{color:var(--gold) !important;border-color:rgba(231,201,131,.4) !important;}
+.pl-row.paused{background:linear-gradient(90deg,var(--gold-weak),transparent 60%);}
+.pl-row.paused .pl-name::after{content:" · waiting";color:var(--gold);font-weight:600;font-size:11px;}
 .ops-phase{font-family:var(--sans);font-weight:800;font-size:12px;letter-spacing:1.6px;text-transform:uppercase;color:var(--accent2);}
 .ops-action{font-size:22px;font-weight:700;color:var(--txt);line-height:1.25;letter-spacing:-.2px;max-width:60ch;}
 .ops-target{margin-top:6px;font-family:var(--mono);font-size:12px;color:var(--txt3);}
@@ -3722,9 +3728,13 @@ function renderOps(run){
     ['v gold','Pipeline EV', ev?('$'+Number(ev).toLocaleString()):'$0'],
   ].map(([c,k,v])=>`<div class="ops-stat"><div class="${c==='v gold'?'v gold':'v'}">${v}</div><div class="k">${k}</div></div>`).join('');
   // ── pipeline spine ──
-  const done=st==='done';
+  // The phase the hunt is AT is 'run' while running, 'paused' while paused (NOT 'done' — nothing is
+  // done, it's waiting there), 'done' only for phases genuinely behind the frontier.
+  const done=st==='done', paused=st==='paused';
   document.getElementById('pl-body').innerHTML=OPS_PHASES.map((p,i)=>{
-    const cls=done?'done':(aIdx<0?'':(i<aIdx?'done':i===aIdx?(running?'run':'done'):''));
+    let cls='';
+    if(done) cls='done';
+    else if(aIdx>=0) cls = (i<aIdx) ? 'done' : (i===aIdx ? (running?'run':paused?'paused':'done') : '');
     return `<div class="pl-row ${cls}"><div class="pl-node"><div class="pl-dot"></div></div><div class="pl-name">${p.n}</div><div class="pl-tag">${p.tag}</div></div>`;
   }).join('');
   document.getElementById('pl-count').textContent=(done?10:Math.max(0,aIdx+1))+' / 10';
