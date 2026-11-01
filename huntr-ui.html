@@ -2226,8 +2226,8 @@ function renderCostMeter(run){
   const cost=run.cost_usd||0;
   el.hidden=false;
   if(cost>0){
-    el.textContent='$'+cost.toFixed(cost<1?3:2)+' · '+calls+' calls';
-    el.title=(run.llm_input_tokens||0).toLocaleString()+' in / '+(run.llm_output_tokens||0).toLocaleString()+' out tokens this hunt';
+    el.textContent='~$'+cost.toFixed(cost<1?3:2)+' API-equiv · '+calls+' calls';
+    el.title='API-equivalent cost of this hunt (what the same work would bill at Anthropic API rates). Your subscription is flat-fee, so there is no actual charge. '+(run.llm_input_tokens||0).toLocaleString()+' in / '+(run.llm_output_tokens||0).toLocaleString()+' out tokens.';
   }else{
     el.textContent=calls+' LLM calls · subscription';
     el.title='Running on the Pro/Max subscription — no per-call token billing exists to meter.';
@@ -2281,7 +2281,7 @@ function renderHuntRail(run){
     (!calls ? `<div class="gi-empty" style="padding:8px 2px;text-align:left;">no LLM calls yet this hunt</div>` :
     `<div class="rail-cost-row"><span>calls</span><b>${calls}</b></div>`+
     (cost>0
-      ? `<div class="rail-cost-row"><span>spend</span><b>$${cost.toFixed(cost<1?3:2)}</b></div>`
+      ? `<div class="rail-cost-row"><span title="What this hunt would cost at Anthropic API rates. Your subscription is flat-fee — no actual charge.">API-equiv</span><b>~$${cost.toFixed(cost<1?3:2)}</b></div>`
       : `<div class="rail-cost-row"><span>billing</span><b title="running on the Pro/Max subscription">subscription</b></div>`)+
     `<div class="rail-cost-row"><span>tokens in/out</span><b>${(run.llm_input_tokens||0).toLocaleString()}/${(run.llm_output_tokens||0).toLocaleString()}</b></div>`);
 }

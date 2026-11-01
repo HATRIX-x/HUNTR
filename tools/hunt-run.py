@@ -284,6 +284,32 @@ _MODEL_PRICE = {
 }
 
 
+def _record_cli_cost(cost_usd, usage, model=None, phase=None):
+    """Record the REAL metered usage + cost reported by a `claude -p --output-format json` phase run.
+    The subscription is flat-fee so there is no actual per-hunt charge, but the CLI still reports what
+    the same work WOULD cost at API rates (total_cost_usd) — this surfaces that API-equivalent $ on the
+    dashboard (it read $0 before because subscription usage was invisible), and feeds the operator's
+    optional spend cap with real numbers. Also keeps a per-phase breakdown in STATE['phase_costs']."""
+    with _STATE_LOCK:
+        STATE["llm_calls"] = STATE.get("llm_calls", 0) + 1
+        u = usage or {}
+        itok = (u.get("input_tokens", 0) or 0) + (u.get("cache_read_input_tokens", 0) or 0) + \
+               (u.get("cache_creation_input_tokens", 0) or 0)
+        otok = u.get("output_tokens", 0) or 0
+        if itok:
+            STATE["llm_input_tokens"] = STATE.get("llm_input_tokens", 0) + itok
+        if otok:
+            STATE["llm_output_tokens"] = STATE.get("llm_output_tokens", 0) + otok
+        if isinstance(cost_usd, (int, float)) and cost_usd > 0:
+            STATE["cost_usd"] = round(STATE.get("cost_usd", 0.0) + float(cost_usd), 4)
+            STATE.setdefault("phase_costs", []).append({"phase": phase or "", "usd": round(float(cost_usd), 4)})
+    # same opt-in spend cap the API-key path uses — now also meaningful on the subscription
+    cap = STATE.get("cost_cap_usd")
+    if cap and STATE.get("cost_usd", 0.0) >= cap and not _RL["hit"]:
+        _RL["hit"] = True
+        _RL["cost_cap"] = True
+
+
 def _record_llm_cost():
     """Pull the usage from the call llm_client just made (if any) into STATE, so the dashboard's
     cost meter reflects real spend under an API key, or an honest call-count under the subscription."""
@@ -3872,6 +3898,7 @@ def _run_phase_agent(phase_name, stage_label, stage_pct, brief, budget_sec, resu
            "--add-dir", str(HUNT_DIR),
            "--permission-mode", "bypassPermissions",
            "--allowedTools", "Bash", "Read", "Write",
+           "--output-format", "json",   # stdout becomes a result object carrying the REAL metered usage/cost
            "--no-session-persistence"]
     env = dict(os.environ)
     cdir = os.environ.get("HUNT_CLAUDE_CLI_DIR") or (
@@ -3889,6 +3916,20 @@ def _run_phase_agent(phase_name, stage_label, stage_pct, brief, budget_sec, resu
         log("warn", "→ " + phase_name + " failed to launch: " + str(e)[:200])
         return False
 
+    # --output-format json → stdout is one JSON result object: {"result": "<text>", "total_cost_usd":
+    # 0.42, "usage": {...}}. Parse it so (a) the limit/summary detection below sees the agent's text,
+    # and (b) we record the TRUE API-equivalent $ this phase cost (the flat-fee subscription hides
+    # this, which is why the cost meter used to read $0). On a timeout / limit notice the output may
+    # not be valid JSON — keep the raw text for detection and simply skip cost capture.
+    raw = summary
+    try:
+        _obj = json.loads(raw)
+        if isinstance(_obj, dict):
+            summary = str(_obj.get("result") or _obj.get("error") or "").strip() or raw
+            _record_cli_cost(_obj.get("total_cost_usd"), _obj.get("usage"), model, phase_name)
+    except Exception:
+        pass
+
     # This subprocess is raw `claude -p`, not routed through llm_client/llm_call — the account's
     # 5-hour session limit (or a dead/auth-less CLI) prints its notice to stdout/stderr here and
     # would otherwise just look like "produced nothing", letting main() cascade through every
@@ -3901,8 +3942,8 @@ def _run_phase_agent(phase_name, stage_label, stage_pct, brief, budget_sec, resu
     # mention "rate limit" early on (e.g. "no rate limit on the login endpoint" as a finding) can be
     # long — only a short, limit-shaped output is treated as the notice, never a substring match
     # inside real agent prose.
-    if len(summary) < 400 and _CLI_LIMIT_RE.search(summary):
-        reset_epoch = _parse_cli_reset(summary[:400])
+    if (len(summary) < 400 and _CLI_LIMIT_RE.search(summary)) or (len(raw) < 500 and _CLI_LIMIT_RE.search(raw)):
+        reset_epoch = _parse_cli_reset(summary[:400]) or _parse_cli_reset(raw[:500])
         with _STATE_LOCK:
             _RL["hit"] = True
             if reset_epoch:
