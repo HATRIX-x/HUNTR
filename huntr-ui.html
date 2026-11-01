@@ -1144,22 +1144,14 @@ body{background:
       </button>
       <div id="adv-panel">
         <div class="f-row">
-          <div class="f-group">
-            <span class="f-label">Auth token</span>
-            <input class="f-input" id="f-tok" type="password" placeholder="Bearer eyJ…">
-          </div>
-          <div class="f-group">
-            <span class="f-label">Cookie</span>
-            <input class="f-input" id="f-cookie" type="text" placeholder="session=abc123 (or paste a Netscape cookie file)">
+          <div class="f-group" style="flex:1">
+            <span class="f-label">Session <span style="opacity:.5">· paste anything — HUNTR sorts it out</span></span>
+            <textarea class="f-input" id="f-session" style="height:88px;padding:11px 13px;font-family:var(--mono);font-size:12.5px;line-height:1.6" placeholder="Paste a cookie, a bearer / JWT token, a header line (X-Auth: …), a Netscape cookie file, or a copied cURL (DevTools → Copy as cURL). HUNTR detects which it is."></textarea>
           </div>
         </div>
         <div class="f-row">
-          <div class="f-group" style="flex:1">
-            <span class="f-label">Auth header <span style="opacity:.5">· for header-based APIs</span></span>
-            <input class="f-input" id="f-authhdr" type="text" placeholder="X-FilesAPI-Auth: a249baf3…  (one per line)">
-          </div>
-          <div class="f-group narrow" style="min-width:130px;max-width:150px">
-            <span class="f-label">CDP port <span style="opacity:.5">· SPA localStorage auth</span></span>
+          <div class="f-group narrow" style="min-width:150px;max-width:180px">
+            <span class="f-label">CDP port <span style="opacity:.5">· logged-in Chrome (SPA)</span></span>
             <input class="f-input" id="f-cdp" type="number" placeholder="9222" min="1024" max="65535">
           </div>
         </div>
@@ -1654,9 +1646,7 @@ async function startHunt(){
     target:scope,
     program:document.getElementById('f-prog').value.trim(),
     mode:document.getElementById('f-mode').value,
-    session_token:document.getElementById('f-tok').value.trim(),
-    cookie:document.getElementById('f-cookie').value.trim(),
-    auth_header:(document.getElementById('f-authhdr')||{}).value?document.getElementById('f-authhdr').value.trim():'',
+    session:(document.getElementById('f-session')||{}).value?document.getElementById('f-session').value.trim():'',
     cdp_port:parseInt((document.getElementById('f-cdp')||{}).value||'0')||0,
     ua:document.getElementById('f-ua').value.trim(),
     budget_sec:Math.max(3600,(parseInt(document.getElementById('f-budget').value)||24)*3600),
@@ -3432,13 +3422,9 @@ function openCreds(urgentMsg, isCdp){
       'Hand the engine a new session — e.g. after the old one expired or was rotated. '+
       'Test it live before committing, or update straight away. Takes effect on the hunt\'s very next '+
       'authenticated request — no restart needed.'}</div>
-    <div class="m-lbl">Auth token</div>
-    <input class="f-input" id="cr-tok" type="password" placeholder="Bearer eyJ…">
-    <div class="m-lbl">Cookie</div>
-    <input class="f-input" id="cr-cookie" type="text" placeholder="session=abc123">
-    <div class="m-lbl">Auth header <span style="opacity:.5">· one per line, for header-based APIs</span></div>
-    <textarea class="m-ta" id="cr-authhdr" style="min-height:52px" placeholder="X-FilesAPI-Auth: a249baf3…"></textarea>
-    <div class="m-lbl">CDP port <span style="opacity:.5">· SPA localStorage auth — attach to your already-logged-in Chrome</span></div>
+    <div class="m-lbl">Session <span style="opacity:.5">· paste anything — cookie, token, header, Netscape file, or a copied cURL</span></div>
+    <textarea class="m-ta" id="cr-session" style="min-height:92px;font-family:var(--mono);font-size:12px" placeholder="Paste a cookie, a bearer / JWT token, a header line, a Netscape cookie file, or a copied cURL (DevTools → Copy as cURL). HUNTR detects which it is."></textarea>
+    <div class="m-lbl">CDP port <span style="opacity:.5">· logged-in Chrome (SPA localStorage auth)</span></div>
     <input class="f-input" id="cr-cdp" type="number" placeholder="9222" min="1024" max="65535">
     <div class="m-lbl">Test URL <span style="opacity:.5">· optional — defaults to the target's root</span></div>
     <input class="f-input" id="cr-url" type="text" placeholder="https://…">
@@ -3450,15 +3436,13 @@ function openCreds(urgentMsg, isCdp){
 }
 function _credsBody(){
   return {target:S.target,
-    session_token:(document.getElementById('cr-tok')||{}).value?.trim()||'',
-    cookie:(document.getElementById('cr-cookie')||{}).value?.trim()||'',
-    auth_header:(document.getElementById('cr-authhdr')||{}).value?.trim()||'',
+    session:(document.getElementById('cr-session')||{}).value?.trim()||'',
     cdp_port:parseInt((document.getElementById('cr-cdp')||{}).value||'0')||0};
 }
 async function testCreds(){
   const body=_credsBody();
   body.url=(document.getElementById('cr-url')||{}).value?.trim()||'';
-  if(!body.session_token && !body.cookie && !body.auth_header){ flash('enter at least one credential first','no'); return; }
+  if(!body.session && !body.cdp_port){ flash('paste a session (or a CDP port) first','no'); return; }
   const el=document.getElementById('cr-result');
   if(el) el.innerHTML='<div class="cr-detail">⠋ firing anon + authed requests through scope-guard…</div>';
   const r=await api('/api/hunt/creds/test',body);
@@ -3488,7 +3472,7 @@ function renderCredsResult(r){
 }
 async function updateCreds(){
   const body=_credsBody();
-  if(!body.session_token && !body.cookie && !body.auth_header){ flash('enter at least one credential first','no'); return; }
+  if(!body.session && !body.cdp_port){ flash('paste a session (or a CDP port) first','no'); return; }
   const r=await api('/api/hunt/creds',body);
   if(r&&r.ok){
     flash(r.auto_resumed?'credentials updated — hunt resumed':'credentials updated — the hunt will use them on its next request','ok');

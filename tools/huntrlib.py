@@ -186,6 +186,57 @@ def normalize_cookie(raw):
     return "; ".join(n + "=" + v for n, v in pairs) if pairs else raw
 
 
+def parse_session_blob(blob):
+    """Accept WHATEVER an operator can grab from a logged-in browser in ONE paste — a Cookie-header
+    string, a Netscape cookie-jar file, a bearer/JWT token, a single header line, a raw headers block,
+    or a copied cURL command — and sort it into {cookie, session_token, auth_header}. Best-effort; the
+    cookie is left for normalize_cookie() to finish. Empty fields stay empty so a caller can merge this
+    over anything the operator also typed into explicit fields."""
+    out = {"cookie": "", "session_token": "", "auth_header": ""}
+    t = (blob or "").strip()
+    if not t:
+        return out
+    # Netscape cookie-jar file → straight into cookie (normalize_cookie fixes the tab format later)
+    if "Netscape HTTP Cookie File" in t or re.search(r"\t(?:TRUE|FALSE)\t", t):
+        out["cookie"] = t
+        return out
+    hdrs = []
+    low = t.lower()
+    if "curl " in low and ("-h " in low or "--header" in low or "-b " in low or "--cookie" in low):
+        # copied cURL command (DevTools → Copy as cURL)
+        for m in re.finditer(r"(?:-H|--header)\s+(['\"])(.+?)\1", t):
+            hdrs.append(m.group(2))
+        cks = [m.group(2) for m in re.finditer(r"(?:-b|--cookie)\s+(['\"])(.+?)\1", t)]
+        if cks:
+            out["cookie"] = "; ".join(cks)
+    else:
+        for ln in t.splitlines():
+            ln = ln.strip().strip(",").strip()
+            if not ln:
+                continue
+            if re.match(r"(?i)^cookie\s*:", ln):
+                out["cookie"] = ln.split(":", 1)[1].strip()
+            elif re.match(r"^[A-Za-z0-9-]+\s*:\s*\S", ln):            # a header line
+                hdrs.append(ln)
+            elif re.match(r"(?i)^bearer\s+\S", ln) or re.match(r"^eyJ[\w-]+\.[\w-]+\.", ln):
+                out["session_token"] = ln
+            elif "=" in ln and (";" in ln or ln.count("=") == 1):    # cookie-ish "a=b; c=d" or "a=b"
+                out["cookie"] = (out["cookie"] + "; " + ln).strip("; ") if out["cookie"] else ln
+            elif re.match(r"^[A-Za-z0-9._-]{20,}$", ln):             # a bare opaque token
+                out["session_token"] = ln
+    for h in hdrs:                                                   # route header lines
+        k, _, v = h.partition(":")
+        k = k.strip().lower(); v = v.strip()
+        if k == "authorization":
+            out["session_token"] = v
+        elif k == "cookie":
+            out["cookie"] = v
+        elif k:
+            out["auth_header"] = (out["auth_header"] + "\n" + h.strip()).strip()
+    out["session_token"] = re.sub(r"(?i)^bearer\s+", "", out["session_token"]).strip()
+    return out
+
+
 def spine(url, method="GET", data=None, identity=None, headers=None, timeout=45):
     """THE canonical HTTP spine for the whole engine: every request through scope-guard,
     every response saved as evidence. This is a thin, importable wrapper over exec-http.py so

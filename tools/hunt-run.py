@@ -8919,14 +8919,25 @@ def main():
     # authenticated surface is actually reached. Also seed an exec-http/agent identity named 'session'.
     try:
         _ah = _auth_headers()
-        if _ah and MODE != "black":
-            os.environ["HUNT_AUTH_HEADERS"] = json.dumps(_ah)
+        _ck = (_creds().get("cookie") or "").strip()
+        _tok = (_creds().get("session_token") or "").strip()
+        # Seed the 'session' identity (what exec-http and the agentic hunt authenticate with) whenever
+        # ANY form of session is supplied — cookie, bearer token, OR custom header. This was previously
+        # gated on a custom header only (`if _ah`), so a cookie-only or token-only session silently never
+        # reached exec-http and the whole authenticated surface was hunted unauthenticated. (Live incident.)
+        if MODE != "black" and (_ah or _ck or _tok):
+            if _ah:
+                os.environ["HUNT_AUTH_HEADERS"] = json.dumps(_ah)
             try:
                 import importlib.util as _ilu
                 _spec = _ilu.spec_from_file_location("agent_core", str(HERE / "agent_core.py"))
                 _ac = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_ac)
-                _ck = (_creds().get("cookie") or "").strip()
-                _ac.set_identity("session", cookie=_ck or None, headers=_ah)
+                _authz = None
+                if _tok:
+                    _authz = _tok if _tok.lower().startswith("bearer ") else ("Bearer " + _tok)
+                _ac.set_identity("session", cookie=_ck or None, authorization=_authz, headers=_ah or None)
+                log("ok", "✓ session ready for the hunt · " +
+                    " + ".join(k for k, v in (("cookie", _ck), ("token", _tok), ("header", _ah)) if v))
             except Exception:
                 pass
     except Exception:

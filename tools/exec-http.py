@@ -62,6 +62,22 @@ def headers_for(name):
     return hs
 
 
+def _default_identity():
+    """When no --identity is passed, authenticate with the 'session' identity if the hunt seeded one
+    (cookie/token/header from creds). This is what makes the agentic hunt actually use the operator's
+    session without the agent having to know the plumbing. Pass --identity anon to force the
+    unauthenticated case (e.g. the negative baseline for an IDOR/authz check)."""
+    name = arg("--identity")
+    if name:
+        return None if name.lower() in ("anon", "none", "unauth") else name
+    try:
+        if IDS.exists() and "session" in (json.loads(IDS.read_text() or "{}") or {}):
+            return "session"
+    except Exception:
+        pass
+    return None
+
+
 def next_id():
     EV.mkdir(parents=True, exist_ok=True)
     n = 1
@@ -177,7 +193,7 @@ def main():
     # --waf: retry a blocked payload through the bypass matrix
     waf = arg("--waf")
     if waf:
-        base_out, base_st, _ = one(method, url, arg("--identity"), extra_headers, data, approve, "baseline")
+        base_out, base_st, _ = one(method, url, _default_identity(), extra_headers, data, approve, "baseline")
         if base_st not in (403, 406, 429, 501):
             print(f"[exec] baseline not blocked (status {base_st}) — no WAF bypass needed.")
             sys.exit(0)
@@ -186,7 +202,7 @@ def main():
         for name, variant in waf_variants(waf).items():
             vurl = url.replace(urllib.parse.quote(waf), urllib.parse.quote(variant)) if urllib.parse.quote(waf) in url else \
                    (url.replace(waf, variant) if waf in url else url + ("&" if "?" in url else "?") + "p=" + urllib.parse.quote(variant))
-            _, st, d = one(method, vurl, arg("--identity"), extra_headers, data, approve, name)
+            _, st, d = one(method, vurl, _default_identity(), extra_headers, data, approve, name)
             if st and st not in (403, 406, 429, 501):
                 wins.append((name, st, d))
         print()
@@ -198,7 +214,7 @@ def main():
         sys.exit(0)
 
     # plain single request
-    out, st, d = one(method, url, arg("--identity"), extra_headers, data, approve)
+    out, st, d = one(method, url, _default_identity(), extra_headers, data, approve)
     sys.exit(0 if out is not None else 2)
 
 

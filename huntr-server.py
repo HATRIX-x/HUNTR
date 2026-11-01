@@ -53,6 +53,25 @@ LOCAL_TOOLS = REPO / "tools"
 TOOLS = LOCAL_TOOLS if LOCAL_TOOLS.exists() else Path.home() / ".claude" / "tools"
 # UI/bridge live in the repo root, NOT in tools/ — look in both so either layout works
 ASSETS = [REPO, Path.home() / ".claude" / "tools", TOOLS]
+
+_HL = None
+def _parse_session_blob(blob):
+    """One-box auth: run a pasted blob (cookie / token / header / Netscape file / copied cURL) through
+    huntrlib.parse_session_blob → {cookie, session_token, auth_header}. Cached import."""
+    global _HL
+    if _HL is None:
+        try:
+            import importlib.util as _il
+            _s = _il.spec_from_file_location("huntrlib", str(TOOLS / "huntrlib.py"))
+            _HL = _il.module_from_spec(_s); _s.loader.exec_module(_HL)
+        except Exception:
+            _HL = False
+    if not _HL:
+        return {"cookie": "", "session_token": "", "auth_header": ""}
+    try:
+        return _HL.parse_session_blob(blob)
+    except Exception:
+        return {"cookie": "", "session_token": "", "auth_header": ""}
 # The dashboard is now the only interface (no terminal path left) — every UI-launched hunt always
 # runs the full-agentic pipeline (Phases 1-8). hunt-run.py's own HUNT_AGENTIC_PHASES env var stays
 # the on/off switch for reversibility; this is just what the UI always sets it to.
@@ -380,6 +399,16 @@ class H(BaseHTTPRequestHandler):
         st = (b.get("session_token") or "").strip()
         t2 = (b.get("token2") or "").strip()
         ck = (b.get("cookie") or "").strip()      # cookie-session auth (web apps that don't use bearer)
+        # ONE-BOX convenience: the operator can paste ANYTHING (cookie, bearer/JWT, a header line, a
+        # Netscape cookie file, or a copied cURL) into a single `session` field — parse it and fill
+        # whatever wasn't typed into the explicit fields.
+        _ahb = ""
+        _blob = (b.get("session") or "").strip()
+        if _blob:
+            _p = _parse_session_blob(_blob)
+            st = st or (_p.get("session_token") or "")
+            ck = ck or (_p.get("cookie") or "")
+            _ahb = _p.get("auth_header") or ""
         # If the operator pasted a whole Netscape cookie file (curl/Firefox export), convert it to a
         # real `name=value; name=value` header. Drop analytics/tracking noise so only session cookies
         # go to the scanners. A bare header is passed through unchanged.
@@ -405,7 +434,7 @@ class H(BaseHTTPRequestHandler):
         ua = (b.get("ua") or "").strip()          # program-required UA suffix (e.g. yeswehack)
         cf = hd / "creds.json"
         try:
-            ah = (b.get("auth_header") or "").strip()   # custom auth header(s), e.g. X-FilesAPI-Auth: <tok>
+            ah = (b.get("auth_header") or "").strip() or _ahb   # custom auth header(s), e.g. X-FilesAPI-Auth: <tok>
             cdp = int(b.get("cdp_port") or 0)
             creds = {k: v for k, v in (("session_token", st), ("token2", t2), ("cookie", ck), ("auth_header", ah), ("ua", ua)) if v}
             if cdp:
@@ -1967,6 +1996,13 @@ class H(BaseHTTPRequestHandler):
                 cur = json.loads(cf.read_text()) if cf.exists() else {}
             except Exception:
                 cur = {}
+            # one-box: a pasted `session` blob fills whatever explicit field wasn't typed
+            _blob = (b.get("session") or "").strip()
+            if _blob:
+                _p = _parse_session_blob(_blob)
+                for _k in ("cookie", "session_token", "auth_header"):
+                    if _p.get(_k) and not (b.get(_k) or "").strip():
+                        b[_k] = _p[_k]
             for k in ("session_token", "token2", "cookie", "auth_header", "ua"):
                 v = (b.get(k) or "").strip()
                 if v:
@@ -2054,6 +2090,13 @@ class H(BaseHTTPRequestHandler):
                 probe = f"https://{host}/" if host else ""
             if not probe:
                 return self._send({"ok": False, "error": "no target/url to probe"})
+            # one-box: a pasted `session` blob fills the explicit fields for the probe
+            _blob = (b.get("session") or "").strip()
+            if _blob:
+                _p = _parse_session_blob(_blob)
+                for _k in ("cookie", "session_token", "auth_header"):
+                    if _p.get(_k) and not (b.get(_k) or "").strip():
+                        b[_k] = _p[_k]
             args = ["--url", probe, "--json"]
             if (b.get("session_token") or "").strip():
                 args += ["--authorization", b["session_token"].strip()]
