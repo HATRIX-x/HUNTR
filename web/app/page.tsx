@@ -95,7 +95,7 @@ export default function Home() {
             </h2>
           </Reveal>
           <div className="mt-16 grid gap-12 sm:grid-cols-3">
-            <Reveal delay={0}><Stat value={70} suffix="+" label="Vulnerability classes" sub="Hunted end-to-end — recon to validated report." tone="brand" /></Reveal>
+            <Reveal delay={0}><Stat value={58} label="Vulnerability classes" sub="Hunted end-to-end — recon to validated report." tone="brand" /></Reveal>
             <Reveal delay={120}><Stat value={30} label="Ground-truth bugs" sub="Benchmarked against certain answers — not guessed." tone="fg" /></Reveal>
             <Reveal delay={240}><Stat value={0} label="Auto-submissions" sub="You review and send. Every finding, every time." tone="green" /></Reveal>
             <ZeroDayStat />

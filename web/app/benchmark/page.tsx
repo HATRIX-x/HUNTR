@@ -2,16 +2,16 @@ import type { Metadata } from "next";
 import { Reveal } from "@/components/reveal";
 import { Stat } from "@/components/stat";
 import { Waitlist } from "@/components/waitlist";
-import { RecallGrid } from "@/components/recall-grid";
+import { AttackCoverage } from "@/components/attack-coverage";
 
 export const metadata: Metadata = {
   title: "Benchmark — Measured against ground truth",
   description:
-    "HUNTR is measured, not claimed: a benchmark of known-vulnerable targets with certain ground truth across 25 vuln classes and 5 suites. Zero auto-submissions.",
+    "HUNTR is measured, not claimed: a benchmark of known-vulnerable targets with certain ground truth across 25 ground-truth classes and 5 suites. Zero auto-submissions.",
   alternates: { canonical: "/benchmark/" },
   openGraph: {
     title: "HUNTR Benchmark — Measured against ground truth",
-    description: "Known-vulnerable targets with certain answers. 25 vuln classes, 5 suites, 70+ classes hunted end-to-end.",
+    description: "Known-vulnerable targets with certain answers. 58 vuln classes hunted, 5 suites, 30 planted bugs with certain answers.",
     url: "https://huntr.run/benchmark",
     images: [{ url: "/og.png", width: 1200, height: 630 }],
   },
@@ -54,7 +54,7 @@ export default function Benchmark() {
               </Reveal>
             </div>
             <Reveal delay={200} className="w-full">
-              <RecallGrid />
+              <AttackCoverage />
             </Reveal>
           </div>
         </div>
@@ -64,7 +64,7 @@ export default function Benchmark() {
       <section className="border-b border-line bg-surface">
         <div className="site-wrap py-20 sm:py-28">
           <div className="grid gap-12 sm:grid-cols-3">
-            <Reveal><Stat value={70} suffix="+" label="Vulnerability classes" sub="Hunted end-to-end — recon to validated report." tone="brand" /></Reveal>
+            <Reveal><Stat value={58} label="Vulnerability classes" sub="Hunted end-to-end — recon to validated report." tone="brand" /></Reveal>
             <Reveal delay={120}><Stat value={30} label="Ground-truth bugs" sub="Planted across 5 suites with certain answers." tone="fg" /></Reveal>
             <Reveal delay={240}><Stat value={0} label="Auto-submissions" sub="You review and send. Every finding, every time." tone="green" /></Reveal>
           </div>

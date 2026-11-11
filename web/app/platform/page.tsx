@@ -27,7 +27,7 @@ const steps = [
 
 const engine = [
   ["Recon", "Map the surface", "Enumerates hosts, endpoints, parameters, and auth flows — building the real attack surface before a single payload is sent."],
-  ["Test", "70+ vuln classes", "Drives targeted tests across injection, access-control, auth, SSRF, logic, and client-side — chosen for the surface it found."],
+  ["Test", "58 vuln classes", "Drives targeted tests across injection, access-control, auth, SSRF, logic, and client-side — chosen for the surface it found."],
   ["Validate", "Drop the noise", "Every candidate is re-proven before it counts. False positives are discarded so your queue is signal, not a scanner dump."],
   ["Draft", "Report-ready", "Reproduction steps and impact come written with each finding, in the format your program expects. You review and submit."],
 ];
