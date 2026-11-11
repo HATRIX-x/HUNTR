@@ -19,12 +19,15 @@ const sevColor: Record<string, string> = {
 };
 
 export function FireControl() {
-  const [typed, setTyped] = useState("");
-  const [phase, setPhase] = useState<"idle" | "recon" | "test" | "report">("idle");
-  const [endpoints, setEndpoints] = useState(0);
-  const [shown, setShown] = useState(0);
-  const [resolved, setResolved] = useState(0);
-  const [cov, setCov] = useState(0);
+  // Initialise to the completed "report" snapshot so the static HTML (and any
+  // no-JS / crawler fetch) shows a confident finished hunt — never a bare "0".
+  // The live typing demo still plays as an enhancement (see the first-hold below).
+  const [typed, setTyped] = useState(TARGET);
+  const [phase, setPhase] = useState<"idle" | "recon" | "test" | "report">("report");
+  const [endpoints, setEndpoints] = useState(94);
+  const [shown, setShown] = useState(FINDINGS.length);
+  const [resolved, setResolved] = useState(FINDINGS.length);
+  const [cov, setCov] = useState(100);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -62,8 +65,16 @@ export function FireControl() {
     };
 
     (async function loop() {
+      // Hold the initial completed snapshot on first view (no flash from the
+      // static "report" state to 0), then replay the live hunt on every loop.
+      let first = true;
       while (mounted) {
         await waitVisible();
+        if (first) {
+          first = false;
+          await sleep(2600);
+          continue;
+        }
         reset();
         await sleep(500);
         for (let i = 0; i <= TARGET.length; i++) {
