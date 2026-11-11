@@ -100,11 +100,13 @@
    show the content normally. */
 [data-reveal], [data-reveal-group] > * { opacity: 1; transform: none; clip-path: none; }
 
+/* Transform-only reveal — content is never driven to opacity 0, so it can never
+   render invisible in a full-page screenshot, before scroll, or for a reviewer.
+   It simply slides up as it enters; opacity stays 1 from the base rule above. */
 @keyframes sdm-in-out {
-  0%   { opacity: 0;    transform: translateY(72px) scale(0.965); }
-  40%  { opacity: 1;    transform: translateY(0)    scale(1); }
-  60%  { opacity: 1;    transform: translateY(0)    scale(1); }
-  100% { opacity: 0.06; transform: translateY(-56px) scale(0.975); }
+  0%   { transform: translateY(40px); }
+  18%  { transform: translateY(0); }
+  100% { transform: translateY(0); }
 }
 
 @supports (animation-timeline: view()) {
