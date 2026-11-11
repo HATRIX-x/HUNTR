@@ -6,10 +6,13 @@ const COLS = 10;
 const ROWS = 3;
 const TOTAL = COLS * ROWS; // 30 planted bugs
 const MISSED = new Set<number>(); // finds all 30
+const FOUND = TOTAL - MISSED.size;
 
 export function RecallGrid() {
   const wrap = useRef<HTMLDivElement | null>(null);
-  const [found, setFound] = useState(0);
+  // Start at the real recall (30/30) so the static HTML — what a crawler or a
+  // JS-disabled reviewer sees — is correct. The scan is a reveal enhancement only.
+  const [found, setFound] = useState(FOUND);
 
   const cells = useMemo(
     () =>
@@ -23,39 +26,28 @@ export function RecallGrid() {
   );
 
   useEffect(() => {
-    const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const el = wrap.current;
     if (!el) return;
+    const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduce || typeof IntersectionObserver === "undefined") return; // leave the final 30/30 in place
 
-    if (reduce) {
+    // Already on screen at load? Keep the final state — no flash from 30 -> 0 -> 30.
+    const rect = el.getBoundingClientRect();
+    const alreadyVisible = rect.top < window.innerHeight && rect.bottom > 0;
+    if (alreadyVisible) return;
+
+    let ctx: gsap.Context | null = null;
+    let done = false;
+    const runReveal = () => {
+      if (done) return;
+      done = true;
       el.querySelectorAll<SVGElement>(".rc-cell").forEach((c, i) => {
-        if (!MISSED.has(i)) c.classList.add("rc-on");
+        if (!MISSED.has(i)) c.classList.remove("rc-on");
       });
-      setFound(TOTAL - MISSED.size);
-      return;
-    }
-
-    const vis = { current: true };
-    let io: IntersectionObserver | null = null;
-    if (typeof IntersectionObserver !== "undefined") {
-      io = new IntersectionObserver((es) => es.forEach((e) => (vis.current = e.isIntersecting)), { threshold: 0.05 });
-      io.observe(el);
-    }
-
-    const ctx = gsap.context(() => {
-      const scan = el.querySelector(".rc-scan");
-      const loop = () => {
-        if (!vis.current) {
-          gsap.delayedCall(0.3, loop);
-          return;
-        }
-        el.querySelectorAll<SVGElement>(".rc-cell").forEach((c) => c.classList.remove("rc-on"));
-        setFound(0);
-        const tl = gsap.timeline({
-          onComplete: () => {
-            gsap.delayedCall(1.4, loop);
-          },
-        });
+      setFound(0);
+      ctx = gsap.context(() => {
+        const scan = el.querySelector(".rc-scan");
+        const tl = gsap.timeline();
         tl.fromTo(scan, { attr: { x: 10 } }, { attr: { x: 560 }, duration: 3.0, ease: "none" });
         for (let col = 0; col < COLS; col++) {
           const at = (col / COLS) * 3.0 + 0.15;
@@ -69,21 +61,24 @@ export function RecallGrid() {
                     node.classList.add("rc-on");
                     gsap.fromTo(node, { scale: 0.6 }, { scale: 1, duration: 0.4, ease: "back.out(2)", transformOrigin: "center", transformBox: "fill-box" });
                   }
-                  setFound((f) => f + 1);
+                  setFound((f) => Math.min(FOUND, f + 1));
                 });
             },
             undefined,
             at
           );
         }
-        tl.to({}, { duration: 0.6 });
-      };
-      loop();
-    }, el);
+      }, el);
+    };
 
+    const io = new IntersectionObserver(
+      (es) => es.forEach((e) => e.isIntersecting && runReveal()),
+      { threshold: 0.05 }
+    );
+    io.observe(el);
     return () => {
-      ctx.revert();
-      io?.disconnect();
+      io.disconnect();
+      ctx?.revert();
     };
   }, [cells]);
 
@@ -107,8 +102,9 @@ export function RecallGrid() {
         {cells.map((c) => {
           const cx = pad + c.col * cellW + cellW / 2;
           const cy = pad + c.row * cellH + cellH / 2;
+          // Render found cells "on" by default so the static grid matches the 30/30 count.
           return (
-            <g key={c.i} data-rc={c.i} className={`rc-cell ${c.missed ? "rc-missed" : ""}`}>
+            <g key={c.i} data-rc={c.i} className={`rc-cell ${c.missed ? "rc-missed" : "rc-on"}`}>
               <circle cx={cx} cy={cy} r={9} className="rc-ring" fill="none" stroke="rgba(255,255,255,0.1)" strokeWidth={1} />
               <circle cx={cx} cy={cy} r={4} className="rc-dot" fill="#3A4150" />
             </g>

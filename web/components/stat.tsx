@@ -15,19 +15,23 @@ export function Stat({
   tone?: "brand" | "green" | "fg";
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
-  const [n, setN] = useState(0);
+  // Initialise to the real value so the static HTML (and no-JS / crawlers) always
+  // shows the correct figure. The count-up is a progressive enhancement only.
+  const [n, setN] = useState(value);
   const ran = useRef(false);
 
   useEffect(() => {
     const el = ref.current;
-    if (!el) return;
-    const run = () => {
+    if (!el || value === 0) return;
+    const reduce =
+      typeof window !== "undefined" &&
+      window.matchMedia &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduce || typeof IntersectionObserver === "undefined") return; // keep the real value
+
+    const animate = () => {
       if (ran.current) return;
       ran.current = true;
-      if (value === 0) {
-        setN(0);
-        return;
-      }
       const dur = 1200;
       const t0 = performance.now();
       const step = (t: number) => {
@@ -38,17 +42,20 @@ export function Stat({
       };
       requestAnimationFrame(step);
     };
-    if (typeof IntersectionObserver === "undefined") {
-      setN(value);
-      return;
-    }
-    const io = new IntersectionObserver((es) => es.forEach((e) => e.isIntersecting && run()), { threshold: 0.4 });
+
+    // If the stat is already on screen at load, leave the real number in place
+    // (no flash from value -> 0 -> value). Only animate when it scrolls in from below.
+    const rect = el.getBoundingClientRect();
+    const alreadyVisible = rect.top < window.innerHeight && rect.bottom > 0;
+    if (alreadyVisible) return;
+
+    setN(0);
+    const io = new IntersectionObserver(
+      (es) => es.forEach((e) => e.isIntersecting && animate()),
+      { threshold: 0.4 }
+    );
     io.observe(el);
-    const t = setTimeout(run, 2600);
-    return () => {
-      io.disconnect();
-      clearTimeout(t);
-    };
+    return () => io.disconnect();
   }, [value]);
 
   const color = tone === "green" ? "text-green" : tone === "fg" ? "text-fg" : "text-brand";
