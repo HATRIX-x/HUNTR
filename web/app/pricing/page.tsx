@@ -53,7 +53,7 @@ const plans = [
     highlight: false,
     features: [
       "Everything in Monthly",
-      "Best value — about $41 / month",
+      "Works out to about $41 / month",
       "One invoice a year",
       "Cancel anytime",
     ],
