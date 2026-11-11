@@ -372,6 +372,10 @@ button,input,select,textarea{font-family:inherit;}
 #live-sky:active{cursor:grabbing;}
 #live-hud{position:absolute;top:12px;left:14px;font-family:var(--mono);font-size:10px;letter-spacing:1px;color:var(--text3);pointer-events:none;}
 #live-hud .live-s{color:var(--accent);}
+.live-mode{position:absolute;top:10px;right:14px;display:flex;gap:2px;background:rgba(10,12,20,.55);border:1px solid var(--gbrd);border-radius:8px;padding:2px;backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);z-index:3;}
+.lm-btn{font-family:var(--mono);font-size:10.5px;letter-spacing:.4px;color:var(--text3);background:transparent;border:0;padding:5px 11px;border-radius:6px;cursor:pointer;transition:background .13s,color .13s;}
+.lm-btn:hover{color:var(--text);}
+.lm-btn.on{background:rgba(167,139,250,.18);color:var(--accent);}
 #live-hint{position:absolute;bottom:10px;left:14px;font-family:var(--mono);font-size:10px;color:var(--text3);pointer-events:none;opacity:.6;}
 #live-labels{position:absolute;inset:0;pointer-events:none;}
 .live-lbl{position:absolute;transform:translate(-50%,-150%);font-family:var(--mono);font-size:11px;white-space:nowrap;color:var(--text);text-shadow:0 1px 4px #000;}
@@ -953,9 +957,7 @@ body{background:
 /* pipeline spine */
 .pl-body{padding:6px 0;}
 .pl-row{display:flex;align-items:center;gap:13px;padding:10px 18px;position:relative;}
-.pl-node{width:26px;flex-shrink:0;display:flex;justify-content:center;position:relative;}
-.pl-node::before{content:"";position:absolute;top:22px;bottom:-20px;width:1.5px;background:var(--gbrd);}
-.pl-row:last-child .pl-node::before{display:none;}
+.pl-node{width:40px;height:40px;flex-shrink:0;position:relative;}
 .pl-dot{width:13px;height:13px;border-radius:50%;border:2px solid var(--gbrd-2);background:var(--bg,#0c0818);z-index:1;transition:all .3s;}
 .pl-row.done .pl-dot{background:var(--good,#34D399);border-color:var(--good,#34D399);}
 .pl-row.run .pl-dot{background:var(--accent);border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-weak),0 0 14px var(--accent);animation:opsPulse 1.8s infinite;}
@@ -965,6 +967,395 @@ body{background:
 .pl-tag{font-family:var(--mono);font-size:9px;letter-spacing:.5px;text-transform:uppercase;color:var(--txt3);border:1px solid var(--gbrd);border-radius:4px;padding:2px 7px;}
 .pl-row.run .pl-tag{color:var(--accent2);border-color:var(--accent-bd,rgba(167,139,250,.42));}
 .pl-row.done .pl-tag{color:var(--good,#34D399);border-color:rgba(52,211,153,.35);}
+/* incomplete: ran but produced nothing (rate-limited / empty) — amber, not a lying green */
+.pl-row.incomplete{background:linear-gradient(90deg,var(--gold-weak,rgba(231,201,131,.1)),transparent 60%);}
+.pl-row.incomplete .pl-dot{background:var(--gold,#E7C983);border-color:var(--gold,#E7C983);box-shadow:0 0 0 3px var(--gold-weak,rgba(231,201,131,.15));}
+.pl-row.incomplete .pl-name{color:var(--txt);}
+.pl-row.incomplete .pl-tag{color:var(--gold,#E7C983);border-color:rgba(231,201,131,.4);}
+
+/* ═══ pipeline v2 — motion-graphics phase badges (2026-11-02) ═══
+   Rows are built ONCE and only their state class changes per poll (see renderOps), so these
+   animations run continuously instead of restarting every POLL_MS. State drives everything:
+   ''=upcoming · run · done · paused · incomplete · just-done (one-shot, added by JS on transition). */
+.pl-row{gap:15px;padding:10px 18px;transition:background .5s;}
+.pl-row::after{content:"";position:absolute;inset:0;pointer-events:none;opacity:0;}
+.pl-row.run::after{opacity:1;background:linear-gradient(100deg,transparent 38%,rgba(196,181,253,.11) 50%,transparent 62%) 0 0/250% 100% no-repeat;animation:plBeam 3.2s cubic-bezier(.45,0,.25,1) infinite;}
+@keyframes plBeam{from{background-position:100% 0}to{background-position:0 0}}
+.pl-row.enter{animation:plIn .65s cubic-bezier(.2,.8,.2,1) both;animation-delay:calc(var(--i)*60ms);}
+@keyframes plIn{from{opacity:0;transform:translateX(-10px)}to{opacity:1;transform:none}}
+/* spine: rail runs centre→centre behind the opaque badges */
+.pl-rail{position:absolute;left:50%;top:50%;width:2px;margin-left:-1px;height:calc(100% + 20px);background:rgba(255,255,255,.07);border-radius:2px;overflow:hidden;z-index:0;}
+.pl-row:last-child .pl-rail{display:none;}
+.pl-rail::after{content:"";position:absolute;inset:0;transform:scaleY(0);transform-origin:top;transition:transform 1s cubic-bezier(.6,0,.2,1);}
+.pl-row.done .pl-rail::after{transform:scaleY(1);background:linear-gradient(180deg,#34D399 0 38%,#D1FAE5 50%,#34D399 62% 100%) 0 0/100% 300%;animation:plShim 2.6s linear infinite;}
+.pl-row.incomplete .pl-rail::after,.pl-row.paused .pl-rail::after{transform:scaleY(1);background:linear-gradient(180deg,rgba(231,201,131,.55) 0 100%);}
+.pl-row.run .pl-rail::after{transform:scaleY(1);background:repeating-linear-gradient(180deg,var(--accent2) 0 4px,transparent 4px 9px) 0 0/100% 18px;animation:plFlow .55s linear infinite;}
+@keyframes plShim{from{background-position:0 100%}to{background-position:0 0}}
+@keyframes plFlow{from{background-position:0 0}to{background-position:0 18px}}
+/* badge */
+.pl-badge{position:relative;z-index:1;width:40px;height:40px;border-radius:50%;display:grid;place-items:center;background:#120B24;border:1px solid rgba(255,255,255,.09);color:var(--txt3);transition:color .45s,border-color .45s,box-shadow .45s,background .45s,transform .45s cubic-bezier(.3,1.4,.5,1);}
+.pl-badge::before,.pl-badge::after{content:"";position:absolute;border-radius:50%;pointer-events:none;opacity:0;}
+.pl-ic{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.55;stroke-linecap:round;stroke-linejoin:round;overflow:visible;opacity:.42;transition:opacity .45s;}
+.pl-ic *{transform-box:view-box;}
+.pl-row.run .pl-badge{color:#E4DCFF;transform:scale(1.1);border-color:var(--accent-bd);background:radial-gradient(circle at 50% 38%,rgba(167,139,250,.34),#160D2C 72%),#160D2C;box-shadow:0 0 26px -2px rgba(167,139,250,.6),inset 0 0 12px rgba(167,139,250,.28);}
+.pl-row.run .pl-ic{opacity:1;filter:drop-shadow(0 0 3px rgba(196,181,253,.75));}
+/* comet ring orbiting the active badge */
+.pl-row.run .pl-badge::before{inset:-5px;opacity:1;padding:1.6px;background:conic-gradient(from 0deg,transparent 0 52%,rgba(167,139,250,.5) 78%,#fff 93%,transparent 94%);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0);animation:plSpin 1.7s linear infinite;}
+.pl-row.run .pl-badge::after{inset:0;border:1.5px solid var(--accent);animation:plPing 2.1s cubic-bezier(.2,.6,.3,1) infinite;}
+@keyframes plSpin{to{transform:rotate(360deg)}}
+@keyframes plPing{0%{transform:scale(1);opacity:.75}100%{transform:scale(1.95);opacity:0}}
+.pl-row.done .pl-badge{color:#34D399;border-color:rgba(52,211,153,.38);background:radial-gradient(circle at 50% 38%,rgba(52,211,153,.14),#0F1A1C 75%),#0F1A1C;}
+.pl-row.done .pl-ic{opacity:.95;}
+.pl-row.paused .pl-badge{color:var(--gold);border-color:rgba(231,201,131,.5);background:radial-gradient(circle at 50% 38%,rgba(231,201,131,.2),#1A1424 75%),#1A1424;animation:plBreath 3.2s ease-in-out infinite;}
+.pl-row.paused .pl-ic{opacity:1;}
+@keyframes plBreath{0%,100%{box-shadow:0 0 0 0 rgba(231,201,131,0),0 0 10px -4px rgba(231,201,131,.4)}50%{box-shadow:0 0 0 6px rgba(231,201,131,.1),0 0 26px -2px rgba(231,201,131,.7)}}
+.pl-row.incomplete .pl-badge{color:var(--gold);border-color:rgba(231,201,131,.42);background:#1A1424;animation:plFlicker 1.3s steps(1,end) 1;}
+.pl-row.incomplete .pl-ic{opacity:.9;}
+@keyframes plFlicker{0%,22%,40%,100%{opacity:1}12%,30%{opacity:.35}}
+/* one-shot completion impact */
+.pl-row.just-done .pl-badge{animation:plPop .85s cubic-bezier(.3,1.7,.5,1);}
+.pl-row.just-done .pl-badge::after{inset:0;border:2px solid #34D399;animation:plPing .9s cubic-bezier(.2,.6,.3,1) 1;}
+@keyframes plPop{0%{transform:scale(1.1)}30%{transform:scale(.82)}65%{transform:scale(1.18);box-shadow:0 0 30px 2px rgba(52,211,153,.55)}100%{transform:scale(1)}}
+/* corner glyph: ✓ on done, ↻ on incomplete */
+.pl-corner{position:absolute;right:-3px;bottom:-3px;width:15px;height:15px;border-radius:50%;display:none;place-items:center;z-index:2;border:1.5px solid #120B24;}
+.pl-corner svg{width:9px;height:9px;fill:none;stroke:#0B0716;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
+.pl-row.done .pl-ok{display:grid;background:#34D399;}
+.pl-row.incomplete .pl-rt{display:grid;background:var(--gold);}
+.pl-row.just-done .pl-ok{animation:plCorner .6s .25s cubic-bezier(.3,1.8,.5,1) both;}
+@keyframes plCorner{from{transform:scale(0) rotate(-90deg)}to{transform:none}}
+
+/* ── per-phase icon motion (running only; at rest every part sits in its final pose) ── */
+.pl-row.run .pi-draw{stroke-dasharray:1 1;}
+/* Intel — radar sweep + contact blip */
+.pi-intel .pi-dim{opacity:.5;stroke-dasharray:1.4 2;}
+.pi-intel .pi-wedge{fill:currentColor;stroke:none;opacity:.22;}
+.pi-intel .pi-blip{fill:currentColor;stroke:none;opacity:0;transform-box:fill-box;transform-origin:center;}
+.pl-row.run .pi-intel .pi-sw{transform-origin:12px 12px;animation:plSpin 2.2s linear infinite;}
+.pl-row.run .pi-intel .pi-blip{animation:piBlip 2.2s linear infinite;}
+@keyframes piBlip{0%,33%{opacity:0;transform:scale(.4)}37%{opacity:1;transform:scale(2)}55%{opacity:.9;transform:scale(1)}100%{opacity:0;transform:scale(1)}}
+/* Recon — data flowing out along edges, nodes light up in sequence */
+.pi-recon .pi-edges{opacity:.7;}
+.pi-recon .pi-n{transform-box:fill-box;transform-origin:center;}
+.pl-row.run .pi-recon .pi-edges{stroke-dasharray:1.6 2.2;animation:piFlowOut .7s linear infinite;}
+.pl-row.run .pi-recon .pi-n{animation:piNode 2.4s ease-in-out infinite;}
+.pl-row.run .pi-recon .pi-n1{animation-delay:.3s}.pl-row.run .pi-recon .pi-n2{animation-delay:.6s}.pl-row.run .pi-recon .pi-n3{animation-delay:.9s}.pl-row.run .pi-recon .pi-n4{animation-delay:1.2s}
+@keyframes piFlowOut{to{stroke-dashoffset:-3.8}}
+@keyframes piNode{0%,100%{fill:transparent;transform:scale(1)}14%{fill:currentColor;transform:scale(1.45)}34%{fill:currentColor;transform:scale(1)}52%{fill:transparent}}
+/* Auth — key turns, shackle springs open, re-locks */
+.pi-auth .pi-kh{transform-origin:12px 15.8px;}
+.pl-row.run .pi-auth .pi-kh{animation:piTurn 2.6s cubic-bezier(.5,0,.2,1) infinite;}
+.pl-row.run .pi-auth .pi-shackle{animation:piShackle 2.6s cubic-bezier(.3,1.5,.5,1) infinite;}
+.pl-row.run .pi-auth .pi-body{animation:piBodyFlash 2.6s ease-out infinite;}
+@keyframes piTurn{0%,12%{transform:rotate(0)}30%,72%{transform:rotate(90deg)}88%,100%{transform:rotate(0)}}
+@keyframes piShackle{0%,30%{transform:translateY(0)}42%,70%{transform:translateY(-2.6px)}82%,100%{transform:translateY(0)}}
+@keyframes piBodyFlash{0%,32%,60%,100%{stroke-width:1.55}40%{stroke-width:2.3}}
+/* Plan — tree draws, options evaluated, winning route + goal lock in */
+.pi-plan .pi-goal{transform-origin:18.5px 19.6px;}
+.pl-row.run .pi-plan .pi-tr{animation:piDrawA 2.8s ease-out infinite;}
+.pl-row.run .pi-plan .pi-o1{animation:piEval 2.8s infinite;}
+.pl-row.run .pi-plan .pi-o2{animation:piEval 2.8s .25s infinite;}
+.pl-row.run .pi-plan .pi-o3{animation:piPick 2.8s infinite;}
+.pl-row.run .pi-plan .pi-route{animation:piDrawB 2.8s ease-out infinite;}
+.pl-row.run .pi-plan .pi-goal{animation:piGoal 2.8s cubic-bezier(.3,1.8,.5,1) infinite;}
+@keyframes piDrawA{0%{stroke-dashoffset:1}32%,90%{stroke-dashoffset:0}100%{stroke-dashoffset:0;opacity:0}}
+@keyframes piEval{0%,30%{fill:transparent;opacity:.4}40%{fill:currentColor;opacity:1}52%,100%{fill:transparent;opacity:.45}}
+@keyframes piPick{0%,52%{fill:transparent}62%,92%{fill:currentColor}100%{fill:transparent}}
+@keyframes piDrawB{0%,60%{stroke-dashoffset:1}72%,92%{stroke-dashoffset:0}100%{stroke-dashoffset:0;opacity:0}}
+@keyframes piGoal{0%,70%{transform:scale(0);fill:transparent}80%{transform:scale(1.4);fill:currentColor}88%,94%{transform:scale(1);fill:currentColor}100%{transform:scale(1);fill:transparent}}
+/* Active Hunt — reticle hunts, closes in, locks on */
+.pi-hunt .pi-lock{opacity:0;}
+.pl-row.run .pi-hunt .pi-ticks{transform-origin:12px 12px;animation:piClose 1.9s cubic-bezier(.6,0,.3,1.3) infinite;}
+.pl-row.run .pi-hunt .pi-lock{transform-origin:12px 12px;animation:piLock 1.9s ease-out infinite;}
+.pl-row.run .pi-hunt .pi-ring{transform-origin:12px 12px;animation:piRing 1.9s ease-in-out infinite;}
+.pl-row.run .pi-hunt .pi-core{transform-box:fill-box;transform-origin:center;animation:piCore 1.9s infinite;}
+@keyframes piClose{0%{transform:scale(1.25) rotate(-45deg)}45%,85%{transform:scale(1) rotate(0)}100%{transform:scale(1.25) rotate(-45deg)}}
+@keyframes piLock{0%,40%{opacity:0;transform:scale(1.5) rotate(0)}55%{opacity:1;transform:scale(1) rotate(60deg)}85%{opacity:.6;transform:scale(1) rotate(120deg)}100%{opacity:0;transform:scale(1) rotate(140deg)}}
+@keyframes piRing{0%,100%{transform:scale(1.15)}45%,85%{transform:scale(1)}}
+@keyframes piCore{0%,42%{transform:scale(.6);opacity:.5}50%{transform:scale(2.1);opacity:1}62%,90%{transform:scale(1);opacity:1}100%{transform:scale(.6);opacity:.5}}
+/* Deep Questions — lens glides, layers scroll beneath the glass */
+.pi-deep .pi-layers{opacity:.55;}
+.pi-deep .pi-glint{opacity:.5;}
+.pl-row.run .pi-deep .pi-lens{animation:piGlide 3.2s ease-in-out infinite;}
+.pl-row.run .pi-deep .pi-layers{animation:piScroll 1.1s linear infinite;}
+.pl-row.run .pi-deep .pi-glint{animation:piGlint 3.2s infinite;}
+@keyframes piGlide{0%,100%{transform:translate(0,0)}25%{transform:translate(1.4px,-1px)}50%{transform:translate(-.6px,1.2px)}75%{transform:translate(-1.2px,-.6px)}}
+@keyframes piScroll{to{transform:translateY(-6px)}}
+@keyframes piGlint{0%,40%,100%{opacity:.2}50%{opacity:1}60%{opacity:.2}}
+/* Zero-Day — crack races down the shield, halves split, sparks burst */
+.pi-zero .pi-spark{opacity:0;transform-origin:12px 11.5px;}
+.pl-row.run .pi-zero .pi-crack{animation:piCrack 2.4s ease-in infinite;}
+.pl-row.run .pi-zero .pi-hl{transform-origin:12px 21px;animation:piSplitL 2.4s cubic-bezier(.3,1.6,.5,1) infinite;}
+.pl-row.run .pi-zero .pi-hr{transform-origin:12px 21px;animation:piSplitR 2.4s cubic-bezier(.3,1.6,.5,1) infinite;}
+.pl-row.run .pi-zero .pi-spark{animation:piSpark 2.4s ease-out infinite;}
+@keyframes piCrack{0%{stroke-dashoffset:1;opacity:1}30%,80%{stroke-dashoffset:0;opacity:1}92%,100%{stroke-dashoffset:0;opacity:0}}
+@keyframes piSplitL{0%,32%{transform:none}44%,76%{transform:translateX(-1.6px) rotate(-5deg)}90%,100%{transform:none}}
+@keyframes piSplitR{0%,32%{transform:none}44%,76%{transform:translateX(1.6px) rotate(5deg)}90%,100%{transform:none}}
+@keyframes piSpark{0%,34%{opacity:0;transform:scale(.3)}42%{opacity:1;transform:scale(1.1)}62%,100%{opacity:0;transform:scale(1.5)}}
+/* Verify — scanline sweeps the shield, then the check is stamped */
+.pi-ver .pi-scan{opacity:0;}
+.pi-ver .pi-trail{fill:currentColor;stroke:none;opacity:.22;}
+.pl-row.run .pi-ver .pi-scan{animation:piScan 2.6s cubic-bezier(.5,0,.5,1) infinite;}
+.pl-row.run .pi-ver .pi-check{stroke-width:2;animation:piCheck 2.6s ease-out infinite;}
+@keyframes piScan{0%{opacity:1;transform:translateY(0)}52%{opacity:1;transform:translateY(19px)}58%,100%{opacity:0;transform:translateY(19px)}}
+@keyframes piCheck{0%,52%{stroke-dashoffset:1}66%,90%{stroke-dashoffset:0;opacity:1}100%{stroke-dashoffset:0;opacity:0}}
+/* Chain + Economics — links pull apart, snap together with a flash, value rises out */
+.pi-chain .pi-coin{opacity:.55;}
+.pi-chain .pi-flash{opacity:0;fill:currentColor;stroke:none;transform-box:fill-box;transform-origin:center;}
+.pl-row.run .pi-chain .pi-la{animation:piLinkA 2.4s cubic-bezier(.5,0,.3,1.4) infinite;}
+.pl-row.run .pi-chain .pi-lb{animation:piLinkB 2.4s cubic-bezier(.5,0,.3,1.4) infinite;}
+.pl-row.run .pi-chain .pi-bar{animation:piBar 2.4s infinite;}
+.pl-row.run .pi-chain .pi-flash{animation:piFlash 2.4s ease-out infinite;}
+.pl-row.run .pi-chain .pi-coin{animation:piCoin 2.4s ease-out infinite;}
+@keyframes piLinkA{0%,8%{transform:none}28%{transform:translate(-1.8px,1.8px)}44%,100%{transform:none}}
+@keyframes piLinkB{0%,8%{transform:none}28%{transform:translate(1.8px,-1.8px)}44%,100%{transform:none}}
+@keyframes piBar{0%,30%{opacity:0}44%,100%{opacity:1}}
+@keyframes piFlash{0%,42%{opacity:0;transform:scale(.2)}47%{opacity:1;transform:scale(1.8)}62%,100%{opacity:0;transform:scale(2.4)}}
+@keyframes piCoin{0%,46%{opacity:0;transform:translate(4px,4px) scale(.5)}62%{opacity:1;transform:translate(0,0) scale(1.1)}82%{opacity:1;transform:translate(0,-.8px) scale(1)}100%{opacity:0;transform:translate(0,-2.4px) scale(1)}}
+/* Report — lines type out, the seal stamps down */
+.pi-rep .pi-seal circle{fill:#120B24;}
+.pl-row.run .pi-rep .pi-seal circle{fill:#1B1035;}
+.pi-rep .pi-seal{transform-origin:16.8px 18.6px;}
+.pl-row.run .pi-rep .pi-l1{animation:piType1 2.8s linear infinite;}
+.pl-row.run .pi-rep .pi-l2{animation:piType2 2.8s linear infinite;}
+.pl-row.run .pi-rep .pi-l3{animation:piType3 2.8s linear infinite;}
+.pl-row.run .pi-rep .pi-seal{animation:piStamp 2.8s cubic-bezier(.5,0,.3,1.5) infinite;}
+@keyframes piType1{0%{stroke-dashoffset:1}16%,94%{stroke-dashoffset:0}100%{stroke-dashoffset:1}}
+@keyframes piType2{0%,16%{stroke-dashoffset:1}32%,94%{stroke-dashoffset:0}100%{stroke-dashoffset:1}}
+@keyframes piType3{0%,32%{stroke-dashoffset:1}44%,94%{stroke-dashoffset:0}100%{stroke-dashoffset:1}}
+@keyframes piStamp{0%,50%{opacity:0;transform:scale(2.2) rotate(-25deg)}62%{opacity:1;transform:scale(.88) rotate(0)}70%,92%{opacity:1;transform:scale(1)}100%{opacity:0;transform:scale(1)}}
+@media (prefers-reduced-motion:reduce){.pl-row,.pl-row *,.pl-row *::before,.pl-row *::after{animation:none !important;transition:none !important;}}
+
+/* ═══════════ MOTION SYSTEM — the pipeline concept, everywhere (2026-11-03) ═══════════
+   One vocabulary across every screen: line-art icons whose parts move (mi-*), the orb (.mo — comet
+   ring + ping), flowing rails, shimmer bars, one-shot pops on real state changes. An icon animates
+   only when its context is LIVE: active tab, hovered control, running hunt, a stat that just moved. */
+.mi *{transform-box:view-box;}
+.mi .mi-trace,.mi .mi-ghost,.mi .mi-cell{opacity:0;}
+.mi .mi-cell{fill:currentColor;stroke:none;}
+:is(.vr-btn.on,.vr-btn:hover,.tb-btn:hover,#tb-resume,#hunt-btn,.mo,.ops-stat:hover,.ops-stat.bump,body.hunting .ops-card-h,body.hunting .gi-h,.mi-live) .mi{--live:1;}
+/* ops — a bright pulse races along the trace */
+:is(.vr-btn.on,.vr-btn:hover,.mo,body.hunting .ops-card-h,.mi-live) .mi-trace{opacity:1;stroke-width:2.6;stroke-dasharray:.22 .78;filter:drop-shadow(0 0 2.5px currentColor);animation:miTrace 1.6s linear infinite;}
+@keyframes miTrace{from{stroke-dashoffset:.25}to{stroke-dashoffset:-1}}
+/* findings — flag ripples */
+:is(.vr-btn.on,.vr-btn:hover,.mo,.mi-live) .mi-flag{transform-origin:6px 8px;animation:miFlag 1.4s ease-in-out infinite;}
+@keyframes miFlag{0%,100%{transform:skewY(0) scaleX(1)}30%{transform:skewY(-7deg) scaleX(.93)}65%{transform:skewY(4deg) scaleX(1.03)}}
+/* constellation / hub — stars ignite in sequence, edges carry signal */
+.mi .mi-s{transform-box:fill-box;transform-origin:center;}
+:is(.vr-btn.on,.vr-btn:hover,.mo,.ops-stat:hover,.ops-stat.bump,.mi-live) .mi-s{animation:miStar 2.1s ease-in-out infinite;}
+:is(.vr-btn.on,.vr-btn:hover,.mo,.ops-stat:hover,.ops-stat.bump,.mi-live) .mi-s2{animation-delay:.35s}
+:is(.vr-btn.on,.vr-btn:hover,.mo,.ops-stat:hover,.ops-stat.bump,.mi-live) .mi-s3{animation-delay:.7s}
+:is(.vr-btn.on,.vr-btn:hover,.mo,.ops-stat:hover,.ops-stat.bump,.mi-live) :is(.mi-edges,.mi-spokes){stroke-dasharray:1.6 2;animation:miFlow .7s linear infinite;}
+@keyframes miStar{0%,100%{fill:transparent;transform:scale(1)}18%{fill:currentColor;transform:scale(1.45)}40%{fill:currentColor;transform:scale(1)}60%{fill:transparent}}
+@keyframes miFlow{to{stroke-dashoffset:-3.6}}
+/* coverage — cells get tested one by one */
+:is(.vr-btn.on,.vr-btn:hover,.mo,.mi-live) .mi-cell{animation:miCell 2.5s infinite;}
+:is(.vr-btn.on,.vr-btn:hover,.mo,.mi-live) .mi-c2{animation-delay:.3s}:is(.vr-btn.on,.vr-btn:hover,.mo,.mi-live) .mi-c3{animation-delay:.6s}
+:is(.vr-btn.on,.vr-btn:hover,.mo,.mi-live) .mi-c4{animation-delay:.9s}:is(.vr-btn.on,.vr-btn:hover,.mo,.mi-live) .mi-c5{animation-delay:1.2s}
+@keyframes miCell{0%,100%{opacity:0}12%{opacity:.85}45%{opacity:.35}70%{opacity:0}}
+/* surface — tree grows, leaves pop */
+.mi .mi-leaf{transform-box:fill-box;transform-origin:center;}
+:is(.vr-btn.on,.vr-btn:hover,.mo,.mi-live) .mi-links{stroke-dasharray:1 1;animation:miGrow 2.4s ease-out infinite;}
+:is(.vr-btn.on,.vr-btn:hover,.mo,.mi-live) .mi-leaf{animation:miLeaf 2.4s cubic-bezier(.3,1.7,.5,1) infinite;}
+:is(.vr-btn.on,.vr-btn:hover,.mo,.mi-live) .mi-l2{animation-delay:.12s}
+@keyframes miGrow{0%{stroke-dashoffset:1}38%,92%{stroke-dashoffset:0}100%{stroke-dashoffset:0;opacity:.3}}
+@keyframes miLeaf{0%,34%{transform:scale(0)}50%{transform:scale(1.25)}58%,100%{transform:scale(1)}}
+/* scope / reticle — rotates a notch, core flashes; reticle closes in and locks */
+:is(.tb-btn:hover,.mo,.mi-live) .mi-spin{transform-origin:12px 12px;animation:miNotch 1.6s cubic-bezier(.6,0,.2,1.3) infinite;}
+@keyframes miNotch{0%{transform:rotate(0)}60%,100%{transform:rotate(90deg)}}
+.mi .mi-core{transform-box:fill-box;transform-origin:center;}
+:is(.tb-btn:hover,#hunt-btn,.mo,.ops-stat:hover,.ops-stat.bump,.mi-live) .mi-core{animation:miCore 1.6s infinite;}
+@keyframes miCore{0%,45%{transform:scale(.7)}55%{transform:scale(2)}70%,100%{transform:scale(1)}}
+:is(#hunt-btn,.mo,.mi-live) .mi-tk{transform-origin:12px 12px;animation:miClose 1.9s cubic-bezier(.6,0,.3,1.3) infinite;}
+:is(#hunt-btn,.mo,.mi-live) .mi-rg{transform-origin:12px 12px;animation:miRing 1.9s ease-in-out infinite;}
+@keyframes miClose{0%{transform:scale(1.22) rotate(-45deg)}45%,85%{transform:scale(1) rotate(0)}100%{transform:scale(1.22) rotate(-45deg)}}
+@keyframes miRing{0%,100%{transform:scale(1.12)}45%,85%{transform:scale(1)}}
+/* creds — key turns in the lock */
+:is(.tb-btn:hover,.mo,.mi-live) .mi-key{transform-origin:8px 12px;animation:miKey 1.5s cubic-bezier(.5,0,.2,1.4) infinite;}
+:is(.tb-btn:hover,.mo,.mi-live) .mi-tooth{transform-origin:16px 12px;animation:miTooth 1.5s infinite;}
+@keyframes miKey{0%,100%{transform:translateX(0) rotate(0)}30%{transform:translateX(1.2px) rotate(0)}60%,80%{transform:translateX(1.2px) rotate(-28deg)}}
+@keyframes miTooth{0%,30%,85%,100%{transform:scaleY(1)}55%{transform:scaleY(.4)}}
+/* pause — bars breathe out of phase · stop — square tightens · resume — play surges forward */
+:is(.tb-btn:hover,.mi-live) .mi-b1{transform-origin:9px 12px;animation:miBreath 1s ease-in-out infinite;}
+:is(.tb-btn:hover,.mi-live) .mi-b2{transform-origin:15px 12px;animation:miBreath 1s .5s ease-in-out infinite;}
+@keyframes miBreath{0%,100%{transform:scaleY(1)}50%{transform:scaleY(.62)}}
+:is(.tb-btn:hover,.mi-live) .mi-sq{transform-origin:12px 12px;animation:miSq 1.1s cubic-bezier(.5,0,.3,1.5) infinite;}
+@keyframes miSq{0%,100%{transform:scale(1)}45%{transform:scale(.72) rotate(8deg)}}
+:is(#tb-resume,.tb-btn:hover,.mi-live) .mi-play{animation:miPlay 1.5s cubic-bezier(.5,0,.2,1.3) infinite;}
+:is(#tb-resume,.tb-btn:hover,.mi-live) .mi-ghost{animation:miGhost 1.5s ease-out infinite;}
+@keyframes miPlay{0%,100%{transform:translateX(0)}35%{transform:translateX(2.4px)}55%{transform:translateX(-.6px)}}
+@keyframes miGhost{0%,30%{opacity:0;transform:translateX(0)}40%{opacity:.6}80%,100%{opacity:0;transform:translateX(5px)}}
+/* re-hunt — loop arrow sweeps round */
+:is(#tb-resume,.tb-btn:hover,.mi-live) .mi-rot{transform-origin:12px 12px;animation:miRot 1.8s cubic-bezier(.6,0,.3,1) infinite;}
+@keyframes miRot{0%{transform:rotate(0)}70%,100%{transform:rotate(360deg)}}
+/* new — plus spins a quarter turn */
+:is(.tb-btn:hover,.mi-live) .mi-plus{transform-origin:12px 12px;animation:miPlus 1.2s cubic-bezier(.5,0,.2,1.4) infinite;}
+@keyframes miPlus{0%{transform:rotate(0)}55%,100%{transform:rotate(90deg)}}
+/* economics — trend line redraws, arrow surges up-right */
+:is(body.hunting .ops-card-h,.mo,.mi-live) .mi-tr{stroke-dasharray:1 1;animation:miTr 2.2s ease-out infinite;}
+:is(body.hunting .ops-card-h,.mo,.mi-live) .mi-head{animation:miHead 2.2s ease-out infinite;}
+@keyframes miTr{0%{stroke-dashoffset:1}55%,100%{stroke-dashoffset:0}}
+@keyframes miHead{0%,45%{transform:translate(-1.5px,1.5px);opacity:0}60%{transform:translate(.8px,-.8px);opacity:1}75%,100%{transform:none;opacity:1}}
+/* reasoning — prompt nudges, cursor blinks */
+:is(body.hunting .ops-card-h,.mi-live) .mi-prompt{animation:miNudge 1.2s ease-in-out infinite;}
+:is(body.hunting .ops-card-h,.mi-live) .mi-cur{animation:miBlink 1s steps(1,end) infinite;}
+@keyframes miNudge{0%,100%{transform:translateX(0)}50%{transform:translateX(1.2px)}}
+@keyframes miBlink{0%,49%{opacity:1}50%,100%{opacity:0}}
+/* momentum bolt — flickers like a live wire */
+:is(body.hunting .gi-h,.mi-live) .mi-zap{animation:miZap 2s steps(1,end) infinite;}
+@keyframes miZap{0%,8%,14%,100%{opacity:1}5%,11%{opacity:.25}}
+/* stat tiles */
+:is(.ops-stat:hover,.ops-stat.bump,.mi-live) .mi-ly1{animation:miLy1 1.6s cubic-bezier(.5,0,.3,1.4) infinite;}
+:is(.ops-stat:hover,.ops-stat.bump,.mi-live) .mi-ly3{animation:miLy3 1.6s cubic-bezier(.5,0,.3,1.4) infinite;}
+@keyframes miLy1{0%,100%{transform:none}45%{transform:translateY(-2.2px)}}
+@keyframes miLy3{0%,100%{transform:none}45%{transform:translateY(2.2px)}}
+:is(.ops-stat:hover,.ops-stat.bump,body.hunting .gi-h,.mo,.mi-live) .mi-arc{transform-origin:12px 12px;animation:plSpin 1.4s linear infinite;}
+:is(.ops-stat:hover,.ops-stat.bump,.mo,.mi-live) .mi-ck{stroke-dasharray:1 1;stroke-width:2.1;animation:miCk 1.8s ease-out infinite;}
+@keyframes miCk{0%,15%{stroke-dashoffset:1}50%,100%{stroke-dashoffset:0}}
+:is(.ops-stat:hover,.ops-stat.bump,.mi-live) .mi-top{animation:miDrop 1.5s cubic-bezier(.5,0,.3,1.6) infinite;}
+@keyframes miDrop{0%{transform:translateY(-4px);opacity:0}35%{transform:translateY(0);opacity:1}100%{transform:none;opacity:1}}
+:is(body.hunting .gi-h,.mi-live) .mi-pins{stroke-dasharray:1.2 1.2;animation:miFlow .9s linear infinite;}
+:is(body.hunting .gi-h,.mi-live) .mi-die{animation:miDie 1.8s ease-in-out infinite;}
+@keyframes miDie{0%,100%{fill:transparent}50%{fill:currentColor}}
+.mi .mi-r{transform-origin:0 18px;}
+:is(body.hunting .gi-h,.mi-live) .mi-r{animation:miBar 2.4s cubic-bezier(.3,1.5,.5,1) infinite;}
+:is(body.hunting .gi-h,.mi-live) .mi-r2{animation-delay:.15s}:is(body.hunting .gi-h,.mi-live) .mi-r3{animation-delay:.3s}:is(body.hunting .gi-h,.mi-live) .mi-r4{animation-delay:.45s}
+@keyframes miBar{0%,100%{transform:scaleY(1)}20%{transform:scaleY(.25)}45%{transform:scaleY(1)}}
+
+/* ── orb: the active-phase badge, reusable (launch hero, empty states) ── */
+.mo{--mo:64px;position:relative;flex-shrink:0;width:var(--mo);height:var(--mo);border-radius:50%;display:inline-grid;place-items:center;color:#E4DCFF;
+  border:1px solid var(--accent-bd);background:radial-gradient(circle at 50% 38%,rgba(167,139,250,.34),#160D2C 72%),#160D2C;
+  box-shadow:0 0 34px -4px rgba(167,139,250,.55),inset 0 0 16px rgba(167,139,250,.25);}
+.mo .icn{width:46%;height:46%;stroke-width:1.55;filter:drop-shadow(0 0 3px rgba(196,181,253,.75));}
+.mo::before,.mo::after{content:"";position:absolute;border-radius:50%;pointer-events:none;}
+.mo::before{inset:-6px;padding:1.8px;background:conic-gradient(from 0deg,transparent 0 52%,rgba(167,139,250,.5) 78%,#fff 93%,transparent 94%);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0);animation:plSpin 2.2s linear infinite;}
+.mo::after{inset:0;border:1.5px solid var(--accent);animation:plPing 2.4s cubic-bezier(.2,.6,.3,1) infinite;}
+.mo.calm::before{animation-duration:5s;opacity:.6;}.mo.calm::after{display:none;}
+.mo.ok{color:#34D399;border-color:rgba(52,211,153,.4);background:radial-gradient(circle at 50% 38%,rgba(52,211,153,.18),#0F1A1C 75%),#0F1A1C;box-shadow:0 0 30px -6px rgba(52,211,153,.5);}
+.mo.ok::before{display:none;}.mo.ok::after{border-color:#34D399;animation:plPing 1s 1;}
+
+/* ── 1. navigation rail: active tab becomes a live badge ── */
+.vr-ic{width:38px;height:38px;border-radius:50%;position:relative;transition:background .35s,box-shadow .35s;}
+.vr-btn.on .vr-ic{background:radial-gradient(circle at 50% 38%,rgba(167,139,250,.3),transparent 72%);box-shadow:inset 0 0 0 1px var(--accent-bd),0 0 20px -4px rgba(167,139,250,.6);}
+.vr-btn.on .vr-ic .icn{filter:drop-shadow(0 0 3px rgba(196,181,253,.7));}
+.vr-ic::before,.vr-ic::after{content:"";position:absolute;border-radius:50%;pointer-events:none;opacity:0;}
+.vr-btn.on .vr-ic::before{opacity:1;inset:-3px;padding:1.4px;background:conic-gradient(from 0deg,transparent 0 60%,rgba(167,139,250,.45) 82%,#fff 94%,transparent 95%);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0);animation:plSpin 3s linear infinite;}
+.vr-btn.on .vr-ic::after{inset:0;border:1.5px solid var(--accent);animation:plPing .9s cubic-bezier(.2,.6,.3,1) 1;}
+.vr-btn .vr-ic .icn{transition:transform .35s cubic-bezier(.3,1.6,.5,1);}
+.vr-btn:hover .vr-ic .icn{transform:scale(1.1);}
+.vr-badge{animation:miBadge .5s cubic-bezier(.3,1.8,.5,1);}
+@keyframes miBadge{from{transform:scale(0)}to{transform:scale(1)}}
+
+/* ── 2. top bar ── */
+#logo em{display:inline-block;animation:miLogo 3.2s ease-in-out infinite;}
+@keyframes miLogo{0%,100%{text-shadow:0 0 0 transparent;transform:scale(1)}50%{text-shadow:0 0 12px var(--accent);transform:scale(1.25)}}
+#sdot.run{position:relative;}
+#sdot.run::after{content:"";position:absolute;inset:0;border-radius:50%;border:1.5px solid var(--accent);animation:plPing 1.8s cubic-bezier(.2,.6,.3,1) infinite;}
+#tb-resume{position:relative;overflow:hidden;}
+#tb-resume::after,#hunt-btn::after{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(100deg,transparent 35%,rgba(255,255,255,.38) 50%,transparent 65%) 0 0/250% 100% no-repeat;animation:plBeam 2.8s cubic-bezier(.45,0,.25,1) infinite;}
+.tb-btn .icn{transition:transform .3s cubic-bezier(.3,1.6,.5,1);}
+.tb-btn:not([hidden]){animation:miTbIn .45s cubic-bezier(.2,.8,.2,1) backwards;}
+@keyframes miTbIn{from{opacity:0;transform:translateY(-6px)}}
+
+/* ── 3. launch page ── */
+.sv-mark{display:flex;align-items:center;gap:16px;margin-bottom:22px;}
+.sv-mark .sv-eyebrow{margin-bottom:0;}
+.sv-hero h1,.sv-hero p,.sv-mark{animation:plIn .8s cubic-bezier(.2,.8,.2,1) both;}
+.sv-hero h1{animation-delay:.08s}.sv-hero p{animation-delay:.16s}
+#hunt-btn{position:relative;overflow:hidden;}
+#hunt-btn:disabled::after{display:none;}
+#hunt-btn .mi{filter:drop-shadow(0 0 2px rgba(255,255,255,.4));}
+
+#portfolio-stats .pf-tile,.rr{animation:plIn .6s cubic-bezier(.2,.8,.2,1) backwards;animation-delay:calc(var(--i,0)*55ms + .15s);}
+.rr-dot.run{position:relative;}
+.rr-dot.run::after{content:"";position:absolute;inset:0;border-radius:50%;border:1.5px solid var(--accent);animation:plPing 1.8s cubic-bezier(.2,.6,.3,1) infinite;}
+.rr-rehunt{transition:transform .45s cubic-bezier(.3,1.6,.5,1) !important;}
+.rr-rehunt:hover{transform:rotate(-200deg);}
+/* ── 4. ops: stat tiles + card headers ── */
+.ops-stat{position:relative;overflow:hidden;transition:border-color .3s,transform .3s cubic-bezier(.3,1.6,.5,1),background .3s;}
+.ops-stat:hover{border-color:var(--gbrd-2);transform:translateY(-2px);}
+.ops-stat-ic{position:absolute;top:13px;right:13px;width:30px;height:30px;border-radius:50%;display:grid;place-items:center;color:var(--accent2);background:rgba(167,139,250,.08);border:1px solid rgba(167,139,250,.18);transition:all .35s;}
+.ops-stat-ic .icn{width:16px;height:16px;}
+.ops-stat[data-k="ev"] .ops-stat-ic{color:var(--gold);background:rgba(231,201,131,.08);border-color:rgba(231,201,131,.22);}
+.ops-stat[data-k="conf"] .ops-stat-ic{color:#34D399;background:rgba(52,211,153,.08);border-color:rgba(52,211,153,.22);}
+.ops-stat.bump{border-color:var(--accent-bd);}
+.ops-stat.bump .ops-stat-ic{transform:scale(1.18);box-shadow:0 0 18px -2px currentColor;}
+.ops-stat.bump .v{animation:miVal .7s cubic-bezier(.3,1.6,.5,1);}
+@keyframes miVal{0%{transform:translateY(0)}35%{transform:translateY(-3px);text-shadow:0 0 14px rgba(196,181,253,.8)}100%{transform:none}}
+.ops-stat::after{content:"";position:absolute;inset:0;pointer-events:none;opacity:0;background:linear-gradient(100deg,transparent 35%,rgba(196,181,253,.14) 50%,transparent 65%) 0 0/250% 100% no-repeat;}
+.ops-stat.bump::after{opacity:1;animation:plBeam .9s ease-out 1;}
+.ops-stat.enter{animation:plIn .6s cubic-bezier(.2,.8,.2,1) both;animation-delay:calc(var(--i)*70ms);}
+.ops-card{animation:plIn .7s cubic-bezier(.2,.8,.2,1) both;}
+.ops-card-h .icn{width:16px;height:16px;}
+body.hunting .ops-card-h .icn{filter:drop-shadow(0 0 3px rgba(167,139,250,.6));}
+.rs-line.nw{animation:miLine .5s cubic-bezier(.2,.8,.2,1) both;}
+@keyframes miLine{from{opacity:0;transform:translateX(-6px)}to{opacity:1;transform:none}}
+
+/* ── 5. findings: stepper rail, severity glow ── */
+.fc-pipe{gap:0 !important;}
+.fc-pipe-step{gap:7px !important;background:transparent !important;border-color:transparent !important;padding:4px 6px !important;}
+.fp-dot{position:relative;width:16px;height:16px;border-radius:50%;flex-shrink:0;display:grid;place-items:center;border:1.5px solid var(--gbrd-2,rgba(255,255,255,.15));background:#120B24;}
+.fp-dot svg{width:9px;height:9px;fill:none;stroke:#0B0716;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;}
+.fc-pipe-step.done .fp-dot{background:#34D399;border-color:#34D399;animation:plPop .6s cubic-bezier(.3,1.7,.5,1) both;animation-delay:calc(var(--i)*90ms);}
+.fc-pipe-step.cur .fp-dot{border-color:var(--accent);box-shadow:0 0 10px -1px var(--accent);}
+.fc-pipe-step.cur .fp-dot::after{content:"";position:absolute;inset:-1.5px;border-radius:50%;border:1.5px solid var(--accent);animation:plPing 1.8s cubic-bezier(.2,.6,.3,1) infinite;}
+.fc-pipe-step.cur{color:var(--accent2) !important;}
+.fc-pipe-step.todo{opacity:.55;}
+.fc-pipe-sep{position:relative;width:22px !important;height:2px !important;border-radius:2px;overflow:hidden;background:rgba(255,255,255,.08) !important;}
+.fc-pipe-sep.done{background:linear-gradient(90deg,#34D399 0 38%,#D1FAE5 50%,#34D399 62% 100%) 0 0/300% 100% !important;animation:miSepShim 2.4s linear infinite;}
+.fc-pipe-sep.into{background:repeating-linear-gradient(90deg,var(--accent2) 0 4px,transparent 4px 8px) 0 0/16px 100% !important;animation:miSepFlow .5s linear infinite;}
+@keyframes miSepShim{from{background-position:100% 0}to{background-position:0 0}}
+@keyframes miSepFlow{from{background-position:0 0}to{background-position:16px 0}}
+.fc.c .fc-badge{animation:miSevC 2.4s ease-in-out infinite;}
+.fc.h .fc-badge{animation:miSevH 3.2s ease-in-out infinite;}
+@keyframes miSevC{0%,100%{box-shadow:0 0 0 0 rgba(255,59,92,0)}50%{box-shadow:0 0 14px 1px rgba(255,59,92,.45)}}
+@keyframes miSevH{0%,100%{box-shadow:0 0 0 0 rgba(255,138,61,0)}50%{box-shadow:0 0 10px 0 rgba(255,138,61,.3)}}
+.fc{transition:transform .3s cubic-bezier(.3,1.4,.5,1),border-color .3s;}
+.fsev{transition:transform .25s cubic-bezier(.3,1.6,.5,1);}
+.fsev:active{transform:scale(.9);}
+
+/* ── 6. coverage / surface / constellation ── */
+.mo-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:56px 20px;text-align:center;color:var(--txt3);font-size:13px;animation:plIn .6s cubic-bezier(.2,.8,.2,1) both;}
+.mo-empty b{display:block;font-family:var(--sans);font-size:15px;font-weight:700;color:var(--txt);margin-bottom:4px;}
+#sd-empty.mo-empty{height:100%;}
+.cov-cell.finding .cov-dot{animation:miSevH 2s ease-in-out infinite;box-shadow:0 0 8px 0 var(--h);}
+.cov-cell{transition:background .4s;}
+#live-hud .live-s{position:relative;padding-left:12px;}
+#live-hud .live-s::before{content:"";position:absolute;left:0;top:50%;width:6px;height:6px;margin-top:-3px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 0 rgba(167,139,250,.6);animation:opsPulse 1.8s infinite;}
+#surface-pane,#coverage-pane,#find-pane,#ops-pane,#live-pane{}
+.pane-in{animation:miPane .45s cubic-bezier(.2,.8,.2,1) both;}
+@keyframes miPane{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+/* findings empty-state ring gets the comet while the hunt runs */
+body.hunting #es-icon::before{content:"";position:absolute;inset:-6px;border-radius:50%;padding:1.8px;background:conic-gradient(from 0deg,transparent 0 55%,rgba(167,139,250,.5) 80%,#fff 93%,transparent 94%);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0);animation:plSpin 2.4s linear infinite;pointer-events:none;}
+
+/* ── 7. right rail: section icons + live bars ── */
+.gi-h .icn{width:14px !important;height:14px !important;}
+.gi-bar,.mom-bar.warm,.mom-bar.hot{position:relative;overflow:hidden;}
+.gi-bar::after,.mom-bar.warm::after,.mom-bar.hot::after,.ops-hero .ops-prog::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent 0 30%,rgba(255,255,255,.55) 50%,transparent 70% 100%) 0 0/300% 100% no-repeat;animation:miBarShim 2.4s linear infinite;animation-delay:var(--sync,0s);}
+@keyframes miBarShim{from{background-position:100% 0}to{background-position:0 0}}
+.rail-mini-stat{transition:transform .3s cubic-bezier(.3,1.6,.5,1),border-color .3s;}
+.rail-mini-stat:hover{transform:translateY(-2px);}
+
+/* ── 8. modals + activity drawer ── */
+#modal.on{animation:miFade .25s ease-out both;}
+#modal.on #modal-box{animation:miModal .5s cubic-bezier(.2,1.2,.3,1) both;}
+@keyframes miFade{from{opacity:0}to{opacity:1}}
+@keyframes miModal{from{opacity:0;transform:translateY(14px) scale(.96);filter:blur(4px)}to{opacity:1;transform:none;filter:none}}
+#modal-box::before{content:"";position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--accent),var(--gold),transparent) 0 0/200% 100%;animation:miTopLine 3s linear infinite;border-radius:var(--r-lg) var(--r-lg) 0 0;}
+@keyframes miTopLine{from{background-position:100% 0}to{background-position:-100% 0}}
+.modal-x{transition:transform .3s cubic-bezier(.3,1.6,.5,1),background .2s,color .2s !important;}
+.modal-x:hover{transform:rotate(90deg);}
+#term-bar .tb-livedot.run{position:relative;}
+#term-bar .tb-livedot.run::after{content:"";position:absolute;inset:0;border-radius:50%;border:1.5px solid var(--accent);animation:plPing 1.8s cubic-bezier(.2,.6,.3,1) infinite;}
+#term-bar .tb-ico{transition:transform .35s cubic-bezier(.3,1.6,.5,1) !important;}
+#term-log .ll.nw{animation:miLine .4s cubic-bezier(.2,.8,.2,1) both;}
+#tb-max{transition:transform .3s cubic-bezier(.3,1.6,.5,1),color .2s,border-color .2s;}
+#tb-max:hover{transform:scale(1.12);}
+
+@media (prefers-reduced-motion:reduce){
+  .mi *,.mo,.mo::before,.mo::after,.vr-ic::before,.vr-ic::after,#logo em,#sdot::after,#tb-resume::after,#hunt-btn::after,.tb-btn,
+  .ops-stat,.ops-stat *,.ops-stat::after,.ops-card,.rs-line,.fc-pipe *,.fc-badge,.mo-empty,.cov-dot,.pane-in,#es-icon::before,
+  .gi-bar::after,.mom-bar::after,#portfolio-stats .pf-tile,.rr,.rr-dot::after,#modal.on,#modal-box,#modal-box::before,#term-log .ll,.sv-hero *,.sv-mark,.vr-badge,.live-s::before{animation:none !important;transition:none !important;}
+}
 /* economics */
 .econ-top{display:flex;gap:14px;padding:16px 18px;border-bottom:1px solid var(--gbrd);}
 .econ-big{flex:1;}
@@ -975,7 +1366,19 @@ body{background:
 .econ-item:hover{background:rgba(255,255,255,.04);}
 .econ-sev{width:4px;height:26px;border-radius:3px;flex-shrink:0;}
 .econ-ti{flex:1;min-width:0;font-size:12.5px;color:var(--txt);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.econ-ev{font-family:var(--sans);font-weight:800;font-size:14px;color:var(--gold);}
+.econ-cvss{flex-shrink:0;font-family:var(--mono);font-size:10.5px;font-weight:600;color:var(--text2);background:rgba(255,255,255,.06);border:1px solid var(--gbrd);border-radius:5px;padding:1px 6px;letter-spacing:.3px;}
+/* payout-range editor (new-hunt advanced panel) */
+.payout-block{margin-top:14px;}
+.payout-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;}
+.payout-cur{width:48px !important;text-align:center;padding:6px 4px !important;font-family:var(--mono) !important;}
+.payout-rows{display:flex;flex-direction:column;gap:6px;}
+.payout-row{display:flex;align-items:center;gap:8px;}
+.payout-sev{flex:0 0 68px;font-size:11.5px;font-weight:700;letter-spacing:.3px;}
+.payout-sev.c{color:var(--c);}.payout-sev.h{color:var(--h);}.payout-sev.m{color:var(--m);}.payout-sev.l{color:var(--l);}
+.payout-row .pay-in{flex:1;min-width:0;padding:7px 10px !important;font-family:var(--mono) !important;font-size:12.5px !important;}
+.payout-dash{color:var(--text3);flex:0 0 auto;}
+.payout-note{margin-top:7px;font-size:11px;color:var(--text3);min-height:14px;}
+.econ-ev{font-family:var(--sans);font-weight:800;font-size:14px;color:var(--gold);min-width:60px;text-align:right;}
 .ops-empty{padding:26px 18px;text-align:center;color:var(--txt3);font-size:13px;}
 /* reasoning stream */
 .rs-body{max-height:300px;overflow-y:auto;padding:10px 16px;font-family:var(--mono);font-size:11.5px;line-height:1.85;}
@@ -1078,6 +1481,7 @@ body{background:
     <span id="cost-meter" hidden title=""></span>
   </div>
   <div id="tb-right">
+    <button class="tb-btn"         id="tb-apikey"        data-ic="creds"  onclick="openApiKey()"><span class="bi"></span><span id="tb-apikey-lbl">API key</span></button>
     <button class="tb-btn"         id="tb-scope"  hidden data-ic="scope"  onclick="openScope()"><span class="bi"></span><span>Scope</span></button>
     <button class="tb-btn"         id="tb-creds"  hidden data-ic="creds"  onclick="openCreds()"><span class="bi"></span><span>Creds</span></button>
     <button class="tb-btn danger"  id="tb-pause"  hidden data-ic="pause"  onclick="ctl('pause')"><span class="bi"></span><span>Pause</span></button>
@@ -1101,7 +1505,7 @@ body{background:
     <div class="sv-shell">
      <div class="sv-main">
       <div class="sv-hero">
-        <div class="sv-eyebrow">Autonomous bug-bounty engine</div>
+        <div class="sv-mark"><span class="mo" style="--mo:52px" id="sv-orb"></span><div class="sv-eyebrow">Autonomous bug-bounty engine</div></div>
         <h1>HUNTR<em>.</em></h1>
         <p>Drop a scope. HUNTR hunts it end to end — recon, exploitation, zero-day bypass, verification — and hands back confirmed, priced findings. You watch; it works.</p>
       </div>
@@ -1173,6 +1577,22 @@ body{background:
           <div class="f-check"><input type="checkbox" id="f-stealth"><label for="f-stealth">Stealth mode</label></div>
           <div class="f-check"><input type="checkbox" id="f-single"><label for="f-single">Single host only</label></div>
         </div>
+        <!-- Payout ranges — min/max per severity. Auto-filled from the pasted scope reward table
+             (parseRewardTable, no LLM), editable. Economics prices each finding by interpolating its
+             CVSS within the matching band's range (10.0→max, band-floor→min). -->
+        <div class="payout-block">
+          <div class="payout-head">
+            <span class="f-label">Payout ranges <span style="opacity:.5">· per severity · auto-filled from scope, editable · drives CVSS pricing</span></span>
+            <input class="f-input payout-cur" id="pay-cur" type="text" value="$" maxlength="3" title="currency symbol (cosmetic)">
+          </div>
+          <div class="payout-rows">
+            <div class="payout-row"><span class="payout-sev c">Critical</span><input class="f-input pay-in" id="pay-c-min" type="number" min="0" step="1" placeholder="min"><span class="payout-dash">–</span><input class="f-input pay-in" id="pay-c-max" type="number" min="0" step="1" placeholder="max"></div>
+            <div class="payout-row"><span class="payout-sev h">High</span><input class="f-input pay-in" id="pay-h-min" type="number" min="0" step="1" placeholder="min"><span class="payout-dash">–</span><input class="f-input pay-in" id="pay-h-max" type="number" min="0" step="1" placeholder="max"></div>
+            <div class="payout-row"><span class="payout-sev m">Medium</span><input class="f-input pay-in" id="pay-m-min" type="number" min="0" step="1" placeholder="min"><span class="payout-dash">–</span><input class="f-input pay-in" id="pay-m-max" type="number" min="0" step="1" placeholder="max"></div>
+            <div class="payout-row"><span class="payout-sev l">Low</span><input class="f-input pay-in" id="pay-l-min" type="number" min="0" step="1" placeholder="min"><span class="payout-dash">–</span><input class="f-input pay-in" id="pay-l-max" type="number" min="0" step="1" placeholder="max"></div>
+          </div>
+          <div class="payout-note" id="pay-note"></div>
+        </div>
       </div>
      </div>
      <aside class="sv-side">
@@ -1236,6 +1656,10 @@ body{background:
     <div id="live-pane" style="display:none">
       <canvas id="live-sky"></canvas>
       <div id="live-hud">ATTACK SURFACE · <span id="live-nodes">0</span> nodes · agent <span class="live-s">live</span></div>
+      <div id="live-mode" class="live-mode">
+        <button class="lm-btn on" data-m="graph" onclick="liveSetMode('graph')" title="Semantic knowledge-graph clusters (entities + relations)">Clusters</button>
+        <button class="lm-btn" data-m="surface" onclick="liveSetMode('surface')" title="Endpoint hub-and-spoke surface map">Surface</button>
+      </div>
       <div id="live-hint">drag to orbit · scroll to zoom · HUNTR hunts on its own</div>
       <div id="live-labels"></div>
       <div id="live-tip"></div>
@@ -1303,7 +1727,7 @@ body{background:
       </div>
       <div id="surface-split">
         <div id="surface-tree"></div>
-        <div id="surface-detail"><div id="sd-empty">select an endpoint</div><div id="sd-body"></div></div>
+        <div id="surface-detail"><div id="sd-empty" class="mo-empty"><span class="mo calm" style="--mo:64px"><svg class="icn mi mi-surface" viewBox="0 0 24 24" data-art="surface"></svg></span><div><b>Select an endpoint</b>pick anything in the tree to inspect it</div></div><div id="sd-body"></div></div>
       </div>
     </div>
 
@@ -1363,7 +1787,7 @@ const S={
   findings:[], findSig:'', expanded:new Set(),
   advOpen:false, termOpen:false, termUserSet:false, autoFlipped:false,
   chatHist:[], inputHist:[], inputIdx:-1, chatBusy:false, sessionCookie:'', sessionCookie2:'',
-  view:'findings', graph:null, kgraph:null,
+  view:'findings', graph:null, kgraph:null, mapMode:'graph',
   fQuery:'', sevFilter:new Set(['c','h','m','l','i']), showFP:false,
   notify:false, seenCrit:new Set(), lastStatus:null,
 };
@@ -1405,14 +1829,15 @@ async function boot(autoResume){
     [scoped.length,'targets'],
     [totalFindings,'findings'],
     [running,'running'],
-  ].map(([v,l])=>`<div class="pf-tile${l==='findings'&&v?' crit':''}"><div class="v">${v}</div><div class="l">${l}</div></div>`).join('');
+  ].map(([v,l],i)=>`<div class="pf-tile${l==='findings'&&v?' crit':''}" style="--i:${i}"><div class="v" data-n="${v}">0</div><div class="l">${l}</div></div>`).join('');
+  stats.querySelectorAll('.v[data-n]').forEach(el=>countUp(el,0,+el.dataset.n,v=>v.toLocaleString(),1100));
   const list=document.getElementById('recent-list'); list.innerHTML='';
   targets.forEach(t=>{
     const name=t.raw_scope||t.target;
     const n=t.nfind||t.findings||0;
     const sc=t.status==='running'?'run':(t.status==='done'?'done':'');
     const row=document.createElement('div');
-    row.className='rr';
+    row.className='rr'; row.style.setProperty('--i',list.children.length);
     row.innerHTML=
       `<div class="rr-dot ${sc}"></div>`+
       `<div class="rr-name" title="${esc(name)}">${esc(name.split('\n')[0].slice(0,80))}</div>`+
@@ -1481,6 +1906,7 @@ async function scopePreview(){
   const seq=++_spSeq;
   if(!pv.classList.contains('on')){ pv.className='on'; }
   if(!pv.innerHTML) pv.innerHTML='<div class="sp-head"><span class="sp-spin">⠋ parsing scope…</span></div>';
+  prefillPayouts(raw);                // instant, no-LLM reward-table pre-fill as you type/paste
   let r=null; try{ r=await api('/api/scope/parse',{text:raw,enrich:false}); }catch(e){}
   if(seq!==_spSeq) return;            // a newer keystroke already superseded this
   const sc=r&&r.scope;
@@ -1537,6 +1963,7 @@ async function maybeAutoEnrich(sc, raw){
   S._intakeRaw=raw;  // which pasted text this classification matches — startHunt() checks before trusting it
   const pf=document.getElementById('f-prog');
   if(pf && !pf.value.trim() && es.program) pf.value=es.program;   // auto-fill program name
+  prefillPayouts(raw);                            // refine payout ranges with the LLM-extracted rewards
   renderScopePreview(es);                         // show the real classification + chips
 }
 function renderScopePreview(sc){
@@ -1637,6 +2064,66 @@ function intakeDeny(r,scopeHosts){
   (r&&r.out_of_scope||[]).forEach(x=>{ const m=String(x).match(/(\*\.)?[a-z0-9][a-z0-9.-]*\.[a-z]{2,}/i); if(m && !covers(m[0])) out.push(m[0]); });
   return [...new Set(out)];
 }
+// ── Payout ranges: parse the pasted reward table (no LLM) and pre-fill the editable min/max fields.
+// The engine prices each finding by interpolating its CVSS within the band's range, so these four
+// ranges set the whole economics output. User edits always win over the auto-fill.
+let _payoutDirty=false;
+const _SEVK={critical:'c',high:'h',medium:'m',low:'l'};
+function _payNum(x){ const n=parseInt(String(x==null?'':x).replace(/[^\d]/g,''),10); return isNaN(n)?0:n; }
+function parseRewardTable(text){
+  if(!text) return null;
+  const curM=text.match(/[€£$]/); const cur=curM?curM[0]:'$';
+  const max={};
+  for(const name in _SEVK){
+    const re=new RegExp('\\b'+name+'\\b','ig'); let m;
+    while((m=re.exec(text))){
+      const s=_SEVK[name];
+      // nearest currency amount — prefer the one just AFTER the label (YWH/Intigriti list
+      // "Critical  €1,200"), fall back to the one just before it.
+      const after=text.slice(m.index+name.length, m.index+name.length+40);
+      const before=text.slice(Math.max(0,m.index-40), m.index);
+      let a=after.match(/[€£$]?\s?(\d[\d,\.\s]*)/);
+      let amt=a?_payNum(a[1]):0;
+      if(!amt){ const bs=before.match(/(\d[\d,\.\s]*)\s*[€£$]?\s*$/); amt=bs?_payNum(bs[1]):0; }
+      if(amt && amt>(max[s]||0)) max[s]=amt;
+    }
+  }
+  return Object.keys(max).length?{cur,max}:null;
+}
+function prefillPayouts(raw){
+  // attach the "user took over" watcher once
+  if(!prefillPayouts._armed){ prefillPayouts._armed=true;
+    document.querySelectorAll('.pay-in,#pay-cur').forEach(el=>el.addEventListener('input',()=>{_payoutDirty=true;})); }
+  if(_payoutDirty) return;                       // never clobber manual edits
+  let max={}, cur='$';
+  const sr=(S.intake&&S.intake.severity_rewards)||[];   // LLM-extracted, most authoritative
+  if(sr.length){
+    sr.forEach(x=>{ const s=_SEVK[String(x.severity||'').toLowerCase()]; const a=_payNum(x.amount);
+      if(s&&a) max[s]=Math.max(max[s]||0,a); });
+    const cm=JSON.stringify(sr).match(/[€£$]/); if(cm) cur=cm[0];
+  }
+  if(!Object.keys(max).length){ const p=parseRewardTable(raw); if(p){ max=p.max; cur=p.cur; } }
+  if(!Object.keys(max).length) return;
+  // continuous ladder: a band's MIN = the next-lower populated band's MAX; the lowest band's MIN=its MAX
+  const order=['l','m','h','c']; let prev=null; const rng={};
+  order.forEach(s=>{ if(max[s]){ rng[s]=[prev!=null?prev:max[s], max[s]]; prev=max[s]; } });
+  const cEl=document.getElementById('pay-cur'); if(cEl) cEl.value=cur;
+  ['c','h','m','l'].forEach(s=>{ const r=rng[s]||(max[s]?[Math.round(max[s]/2),max[s]]:null); if(!r) return;
+    const mn=document.getElementById('pay-'+s+'-min'), mx=document.getElementById('pay-'+s+'-max');
+    if(mn) mn.value=r[0]; if(mx) mx.value=r[1]; });
+  const note=document.getElementById('pay-note');
+  if(note) note.textContent='auto-filled from the pasted scope — edit any value; payouts interpolate from each finding’s CVSS';
+}
+function collectPayoutRanges(){
+  const out={}; let any=false;
+  ['c','h','m','l'].forEach(s=>{
+    const mnV=(document.getElementById('pay-'+s+'-min')||{}).value, mxV=(document.getElementById('pay-'+s+'-max')||{}).value;
+    const mn=parseFloat(mnV), mx=parseFloat(mxV);
+    if(!isNaN(mn)||!isNaN(mx)){ const lo=isNaN(mn)?mx:mn, hi=isNaN(mx)?mn:mx;
+      out[s]=[Math.min(lo,hi),Math.max(lo,hi)]; any=true; }
+  });
+  return any?out:null;
+}
 async function startHunt(){
   const scope=document.getElementById('scope-ta').value.trim();
   if(!scope){document.getElementById('scope-ta').focus();return;}
@@ -1655,6 +2142,9 @@ async function startHunt(){
     single_host:document.getElementById('f-single').checked,
     scope_types:['web','api','source'],
   };
+  // per-severity payout ranges (manual or auto-filled) → drives CVSS-interpolated economics
+  const payouts=collectPayoutRanges();
+  if(payouts) body.reward_ranges=payouts;
   // carry the intake summary into the hunt: deny list (stay in scope), rate limit, and the full
   // program context (rewards/rules/focus/caps/poc/ai) so the sweep, triage and reports honor it.
   if(S.intake){
@@ -1715,6 +2205,7 @@ function showHunt(){
 function showScope(){
   stopPoll();
   S.intake=null; S._intakeRaw=null;   // fresh scope page: don't inherit a previous program's deny-list / meta
+  _payoutDirty=false;                 // a new program's reward table may differ — allow auto-fill again
   _lastIconStage=null;
   document.getElementById('hunt-view').classList.remove('on');
   document.getElementById('scope-view').style.display='flex';
@@ -1785,8 +2276,10 @@ async function doPoll(){
 function renderHeader(run){
   const st=run.status||'';
   const f=run.findings||[];
-  const cOK=f.filter(x=>CONFIRMED.includes(x.verdict)).length;
-  const cNR=f.filter(x=>REVIEW.includes(x.verdict)).length;
+  // header "N confirmed · M review" — same gate as the findings-list section split (2026-11-04):
+  // an unproven "confirmed" verdict counts toward review, not confirmed.
+  const cOK=f.filter(x=>CONFIRMED.includes(x.verdict)&&isProven(x)).length;
+  const cNR=f.filter(x=>REVIEW.includes(x.verdict)||(CONFIRMED.includes(x.verdict)&&!isProven(x))).length;
   const vb=document.getElementById('vr-find-badge');
   if(vb){ if(cOK){vb.hidden=false;vb.textContent=cOK>99?'99+':cOK;} else vb.hidden=true; }
   const stage=(run.stage||'hunting').toLowerCase();
@@ -1817,10 +2310,11 @@ function renderHeader(run){
     // findings) — the UI just never offered the button for this one status. Relabel it "Re-hunt"
     // here since the semantics read differently than resuming an interrupted run.
     pp.setAttribute('hidden','');ps.setAttribute('hidden','');
-    pr.removeAttribute('hidden'); pr.textContent='⟳ Re-hunt';
+    pr.removeAttribute('hidden'); pr.innerHTML='<span class="bi">'+ICON('rehunt')+'</span><span>Re-hunt</span>';
   }else if(st==='paused'){
     const prLbl={'rate-limit':'paused · account rate limit','cost-cap':'paused · spend cap reached',
-      'creds-required':'paused · session required','cdp-required':'paused · CDP session unreachable'}[run.paused_reason];
+      'creds-required':'paused · session required','cdp-required':'paused · CDP session unreachable',
+      'llm-auth-required':'paused · hunting-account login expired'}[run.paused_reason];
     // Rate-limit pauses carry a parsed reset timestamp (hunt-run.py's _run_phase_agent) and a server-
     // side watcher auto-resumes once it passes — show the countdown so the operator sees WHY nothing's
     // happening and that it's self-healing, without needing to click Resume themselves.
@@ -1832,16 +2326,16 @@ function renderHeader(run){
                              : ` <span style="opacity:.7">· resuming shortly</span>`;
     }
     stext.innerHTML=`<b>${esc(nm)}</b> · ${prLbl||'paused'}${waitNote}${tail}`;
-    pp.setAttribute('hidden','');ps.removeAttribute('hidden');pr.removeAttribute('hidden');pr.textContent='▷ Resume';
+    pp.setAttribute('hidden','');ps.removeAttribute('hidden');pr.removeAttribute('hidden');pr.innerHTML='<span class="bi">'+ICON('resume')+'</span><span>Resume</span>';
   }else if(st==='stalled'){
     sdot.classList.add('err');
     stext.innerHTML=`<b>${esc(nm)}</b> · stalled — process exited; click Resume${tail}`;
-    pp.setAttribute('hidden','');ps.setAttribute('hidden','');pr.removeAttribute('hidden');pr.textContent='▷ Resume';
+    pp.setAttribute('hidden','');ps.setAttribute('hidden','');pr.removeAttribute('hidden');pr.innerHTML='<span class="bi">'+ICON('resume')+'</span><span>Resume</span>';
     document.getElementById('tb-livedot').classList.remove('run');
   }else if(st==='stopped'||st==='error'){
     sdot.classList.add('err');
     stext.innerHTML= st==='error'?`<b>${esc(nm)}</b> · error`:`<b>${esc(nm)}</b> · stopped${tail}`;
-    pp.setAttribute('hidden','');ps.setAttribute('hidden','');pr.removeAttribute('hidden');pr.textContent='▷ Resume';
+    pp.setAttribute('hidden','');ps.setAttribute('hidden','');pr.removeAttribute('hidden');pr.innerHTML='<span class="bi">'+ICON('resume')+'</span><span>Resume</span>';
   }
   S.stage = stage;
   // progress rail — real signal from STATE['pct'], not decorative
@@ -1907,8 +2401,13 @@ function renderFindings(findings){
   findings.forEach(f=>{ if(f.verdict==='false_positive')return; const sv=(f.sev||'i').toLowerCase(); if(sv in counts) counts[sv]++; });
   Object.keys(counts).forEach(sv=>{ const el=document.getElementById('fsev-n-'+sv); if(el) el.textContent=counts[sv]||''; });
 
-  let conf=findings.map((f,i)=>({f,i})).filter(x=>CONFIRMED.includes(x.f.verdict)&&passFilter(x.f)).sort((a,b)=>rank(a.f)-rank(b.f));
-  let rev =findings.map((f,i)=>({f,i})).filter(x=>REVIEW.includes(x.f.verdict)&&passFilter(x.f)).sort((a,b)=>rank(a.f)-rank(b.f));
+  // 2026-11-04, operator: "then they should be in Needs verification section not in the Confirmed
+  // section" — f.verdict==='confirmed' is one agent's own say-so (see isProven()'s comment); a
+  // finding only earns the Confirmed bucket once it's ACTUALLY proven. An unproven "confirmed"
+  // verdict now falls through to Needs-verification instead, same section an unproven 'likely'/
+  // 'agent' verdict already lived in — the bucket a finding sits in must agree with its own badge.
+  let conf=findings.map((f,i)=>({f,i})).filter(x=>CONFIRMED.includes(x.f.verdict)&&isProven(x.f)&&passFilter(x.f)).sort((a,b)=>rank(a.f)-rank(b.f));
+  let rev =findings.map((f,i)=>({f,i})).filter(x=>(REVIEW.includes(x.f.verdict)||(CONFIRMED.includes(x.f.verdict)&&!isProven(x.f)))&&passFilter(x.f)).sort((a,b)=>rank(a.f)-rank(b.f));
   const fp = S.showFP ? findings.map((f,i)=>({f,i})).filter(x=>x.f.verdict==='false_positive'&&passFilter(x.f)).sort((a,b)=>rank(a.f)-rank(b.f)) : [];
 
   const list=document.getElementById('find-list');
@@ -2018,6 +2517,13 @@ function group(label,count,ok){
   return g;
 }
 
+// THE single definition of "actually proven" on the frontend — a deterministic oracle ran real
+// HTTP itself, or agent-exploit.py live-verified a PoC (see hunt-run.py's _proven(), which this
+// mirrors). f.verdict==='confirmed' alone is just one agent's own say-so and is NEVER enough on
+// its own — used by trustTier, pipelineSteps' Verified step, AND the Confirmed/Needs-verification
+// section split below, so none of them can disagree with each other again.
+function isProven(f){ return f._det===true || (f.proof && f.proof.proven===true); }
+
 // trust tier — never let a finding's own narration be the last word on how sure we are.
 // proven: a deterministic oracle (CDP/HTTP) mechanically confirmed it — the trust boundary this
 // whole engine is built around. reverified: survived an INDEPENDENT second LLM judge pass that
@@ -2025,11 +2531,16 @@ function group(label,count,ok){
 // previously only visible as a line in the terminal log. llm: confirmed, but only by the one
 // judge that proposed it — the weakest real tier, one step above "needs review".
 function trustTier(f){
-  const proven = f._det===true || (f.proof && f.proof.proven===true);
+  const proven = isProven(f);
   if(proven) return {cls:'proven', label:'⚙ proven', title:'Confirmed by a deterministic oracle — not an LLM judgment call.'};
   if(f.adversarial_checked && f.verdict==='confirmed') return {cls:'reverified', label:'✓✓ re-verified', title:'Survived an independent second judge pass before being trusted.'};
   if(f.adversarial_checked && f.verdict!=='confirmed') return {cls:'disputed', label:'⚠ disputed', title:'The adversarial re-check disagreed and this was downgraded: '+(f.judge_reason||'no reason given')};
-  if(f.verdict==='confirmed') return {cls:'llm', label:'LLM-confirmed', title:'Confirmed by one judge pass — not yet independently re-checked or oracle-proven.'};
+  // 2026-11-04: was labeled "LLM-confirmed" — the word "confirmed" in a trust BADGE is exactly the
+  // overclaim the operator spent this whole day closing on the backend (_proven()/hard_triage now
+  // require real exploitation, not a judge's own say-so). The badge sat right next to findings with
+  // zero verification of any kind and still used the word "confirmed" — same lie, different font.
+  // This tier means only "one LLM pass proposed it," nothing more; the label must say that plainly.
+  if(f.verdict==='confirmed') return {cls:'llm', label:'⚠ unverified', title:'Proposed by one LLM pass only — NOT independently re-checked, oracle-proven, or exploited. Treat as a lead, not a confirmed finding.'};
   return null;
 }
 function trustBadge(f){
@@ -2042,15 +2553,29 @@ function pipelineSteps(f){
   if(f.verdict!=='confirmed') return '';
   const steps=[
     {label:'Confirmed', done:true},
-    {label:'Verified',  done: f._det===true || (f.proof&&f.proof.proven===true) || !!f.adversarial_checked},
-    {label:'Exploited', done: !!f.poc},
-    {label:'Reported',  done: !!f.report},
+    // 2026-11-04: dropped the `|| f.adversarial_checked` bypass — surviving a second LLM judge pass
+    // is not exploitation, and letting it tick "Verified" on its own let this stage disagree with
+    // f.proof.proven (which now only goes true once agent-exploit.py actually proves it — see
+    // hunt-run.py's _proven()). f.adversarial_checked still renders its own informational
+    // re-verified/disputed pill elsewhere; it's no longer a shortcut into this lifecycle stage.
+    {label:'Verified',  done: isProven(f)},
+    // f.poc/f.report are drafts agent-exploit.py/agent-report.py write UNCONDITIONALLY, success or
+    // not (poc_verified carries the real outcome) — ticking these steps off bare field-presence
+    // claimed "Exploited"/"Reported" for attempts that never actually verified. Gate both on the
+    // same poc_verified the backend's own _proven() requires, so this stepper can't show a later
+    // stage done while 'Verified' above it is still empty.
+    {label:'Exploited', done: f.poc_verified===true},
+    {label:'Reported',  done: f.poc_verified===true && !!f.report},
   ];
   if((f.cls||'').toLowerCase()!=='info') steps.splice(3,0,{label:'Impact', done: !!f.impact_proven});
-  return `<div class="fc-pipe">`+steps.map((s,i)=>
-    (i? `<span class="fc-pipe-sep"></span>`:'')+
-    `<span class="fc-pipe-step${s.done?' done':' active'}">${s.done?'✓':'○'} ${esc(s.label)}</span>`
-  ).join('')+`</div>`;
+  // rail stepper: done = green node (staggered pop), the first not-done step = live node with a
+  // ping and a flowing rail into it, anything after = dim. Same language as the Ops pipeline.
+  const cur=steps.findIndex(s=>!s.done);
+  return `<div class="fc-pipe">`+steps.map((s,i)=>{
+    const st=s.done?'done':(i===cur?'cur active':'todo');
+    const sep=!i?'':`<span class="fc-pipe-sep${s.done?' done':(i===cur?' into':'')}"></span>`;
+    return sep+`<span class="fc-pipe-step ${st}" style="--i:${i}"><i class="fp-dot">${s.done?PL_OK:''}</i>${esc(s.label)}</span>`;
+  }).join('')+`</div>`;
 }
 
 function card(f,idx,isNR,wide){
@@ -2067,18 +2592,24 @@ function card(f,idx,isNR,wide){
   if(f.impact_text||f.reco) body+=sec('Impact',`<div class="fc-sec-txt">${esc(f.impact_text||f.reco)}</div>`);
   if(steps.length) body+=sec('Reproduce',`<div class="fc-steps">${steps.map((s,i)=>`<div class="fc-step"><span class="fc-step-n">${i+1}</span><span>${esc(s)}</span></div>`).join('')}</div>`);
   if(f.remediation) body+=sec('Fix',`<div class="fc-sec-txt">${esc(f.remediation)}</div>`);
-  if(f.poc) body+=sec('PoC'+(f.poc_verified?' ✓ verified':''),`<pre class="fc-pre">${esc(f.poc)}</pre>`);
-  if(f.report) body+=sec('Report',`<pre class="fc-pre">${esc(f.report)}</pre>`);
+  // Operator directive (2026-11-03): "I don't want the report to be written in the HUNTR dashboard
+  // I want only download option" — the full report/PoC text used to render inline here (<pre>
+  // blocks); now the dashboard only shows status (the pipeline steps above already say "✓
+  // Reported") and a Download button that hands over the real, self-contained report.md (report +
+  // PoC + the actual captured HTTP evidence, built by evidence-bundle.py). No raw text dump, no
+  // meta.json — see tools/evidence-bundle.py.
+  if(f.report||f.poc) body+=sec('Report','<div class="fc-sec-txt">Ready — use Download to get the full report.md (PoC + captured evidence included).</div>');
   // Re-verify/Build PoC/Draft report/Evidence/Share proof removed 2026-10-23 (operator directive:
   // "I want the whole verification process to be automated by claude and drafted with claude either,
   // I want the user to only read the report"). All five are now fully automatic — phase_verify/
   // phase_ai_judge/phase_adversarial_verify (verification), phase_supervisor's EV-ranked dispatch
   // over agent-exploit.py (PoC) and agent-report.py (report) — run unattended as part of every hunt.
-  // Copy is kept: the user still needs to get the finished f.report text out of the dashboard.
+  // NO manual Confirm/Dismiss (removed 2026-11-01, operator: "I don't want the user to confirm or
+  // dismiss it's HUNTR's job"): verification is the autonomous verify agent's call alone — the
+  // dashboard is watch-only, so an unverified finding just shows its 'unverified' tag and waits for
+  // the verify pass, never an operator override button.
   body+=`<div class="fc-acts">
-    <button class="fc-btn copy" onclick="event.stopPropagation();copyReport(${idx})">Copy</button>`;
-  if(isNR) body+=`<button class="fc-btn ok" onclick="event.stopPropagation();triage(${idx},'confirmed')">✓ Confirm</button>
-    <button class="fc-btn no" onclick="event.stopPropagation();triage(${idx},'false_positive')">✗ Dismiss</button>`;
+    <button class="fc-btn copy" onclick="event.stopPropagation();downloadFinding(${idx})">Download report</button>`;
   body+=`</div></div>`;
 
   el.innerHTML=
@@ -2135,7 +2666,10 @@ async function _runAgent_disabled(endpoint, payload, label){
 /* ─── re-verify ALL non-confirmed findings sequentially ─── */
 async function verifyAll(){
   const btn=document.getElementById('tb-verifyall');
-  const todo=S.findings.map((f,i)=>({f,i})).filter(x=>!CONFIRMED.includes(x.f.verdict) && x.f.verdict!=='false_positive');
+  // 2026-11-04: an unproven verdict==='confirmed' finding now lives in Needs-verification, not
+  // Confirmed (see the section-split fix) — it must also be eligible for re-verify here, not skipped
+  // just because its own verdict field happens to say "confirmed".
+  const todo=S.findings.map((f,i)=>({f,i})).filter(x=>!(CONFIRMED.includes(x.f.verdict)&&isProven(x.f)) && x.f.verdict!=='false_positive');
   if(!todo.length){ flash('Nothing left to verify','ok'); return; }
   btn.disabled=true;
   let done=0,conf=0,drop=0;
@@ -2174,18 +2708,8 @@ async function reverify(idx){
   flash(r.dropped ? 'Dismissed — not a real finding' : ('Verdict: '+(r.verdict||'updated')), r.dropped?'no':'ok');
 }
 
-/* ─── triage ─── */
-async function triage(idx,verdict){
-  if(!S.target) return;
-  await api('/api/hunt/triage',{target:S.target,fi:idx,verdict});
-  if(S.findings[idx]) S.findings[idx].verdict=verdict;
-  S.expanded.delete(idx);
-  S.findSig=''; // force re-render
-  renderFindings(S.findings);
-  renderHeader({status:S.status,stage:'',findings:S.findings});
-  flash(verdict==='confirmed'?'✓ Marked confirmed':(verdict==='false_positive'?'Dismissed — false positive':('Verdict: '+verdict)),
-        verdict==='confirmed'?'ok':(verdict==='false_positive'?'no':''));
-}
+/* triage() removed 2026-11-01 — manual operator verdicts (Confirm/Dismiss buttons + /confirm,
+   /dismiss console commands) are gone; the autonomous verify agent owns every verdict. */
 
 /* ─── logs ─── */
 function renderLogs(logs){
@@ -2197,7 +2721,7 @@ function renderLogs(logs){
   for(let i=start;i<logs.length;i++){
     const l=logs[i];
     const d=document.createElement('div');
-    d.className='ll '+(l.t||'info');
+    d.className='ll '+(l.t||'info')+(S.cLog?' nw':'');
     d.textContent=l.v||'';
     log.appendChild(d);
   }
@@ -2248,17 +2772,38 @@ function renderSupervisorFeed(run){
 /* ─── right rail ─── always-visible coverage/cost summary so a sparse hunt (1-2
    findings) doesn't read as a half-empty page; brain priority refreshed on its
    own slower cadence since it shells out hunt-brain.py, unlike the free fields below. */
+// Coverage ledger can lag when a hunt runs agentic-only: findings arrive via the claude -p agents
+// without routing through scan_cell->mark_tested, so run.tested stays empty even after real bugs
+// land. A finding at endpoint E for class C still proves (E,C) was tested, so when run.tested is
+// empty we reconstruct a floor from the findings themselves — the grid/rail then reflect reality
+// instead of reading "0% · still mapping the surface" sitting on top of confirmed findings.
+function effectiveTested(run){
+  const t=(run&&run.tested)||{};
+  if(Object.keys(t).length) return t;
+  const out={};
+  ((run&&run.findings)||[]).forEach(f=>{
+    if(f.verdict==='false_positive'||!f.endpoint||!f.cls) return;
+    (out[f.endpoint]=out[f.endpoint]||new Set()).add(String(f.cls).toLowerCase());
+  });
+  Object.keys(out).forEach(k=>out[k]=[...out[k]]);
+  return out;
+}
 function renderHuntRail(run){
   const rc=document.getElementById('rail-coverage'), rcost=document.getElementById('rail-cost');
   if(!rc) return;
-  const tested=run.tested||{}, eps=run.endpoints||[];
+  const tested=effectiveTested(run), eps=run.endpoints||[];
   const testedN=Object.keys(tested).length, totalN=Math.max(eps.length,testedN);
   const pct=totalN ? Math.round(testedN/totalN*100) : 0;
   const f=run.findings||[];
   const sevN={c:0,h:0,m:0,l:0,i:0};
   f.forEach(x=>{ if(x.verdict!=='false_positive') sevN[x.sev||'i']=(sevN[x.sev||'i']||0)+1; });
   const mom = run.status==='running' ? momentumHtml(testedN) : '';
-  rc.innerHTML=`<div class="gi-h">◱ Coverage</div>
+  const sync=-(Date.now()%2400)+'ms';  // rebuilt each poll: start the bar shimmer at wall-clock phase so it flows, not restarts
+  rc.style.setProperty('--sync',sync); rcost.style.setProperty('--sync',sync);
+  // headers are built once so their live icons keep looping; only the bodies below are re-rendered
+  if(!rc.dataset.built){ rc.innerHTML=`<div class="gi-h">${ICON('ring')} Coverage</div><div class="rb-b"></div>`; rc.dataset.built='1'; }
+  if(!rcost.dataset.built){ rcost.innerHTML=`<div class="gi-h">${ICON('chip')} LLM usage</div><div class="rb-b"></div>`; rcost.dataset.built='1'; }
+  rc.lastElementChild.innerHTML=`
     <div class="rail-mini-stats">
       <div class="rail-mini-stat" onclick="showView('coverage')"><div class="n">${testedN}<span style="font-size:11px;color:var(--text3);font-weight:500;">/${totalN||'?'}</span></div><div class="k">endpoints</div></div>
       <div class="rail-mini-stat" onclick="showView('coverage')"><div class="n">${pct}%</div><div class="k">tested</div></div>
@@ -2267,7 +2812,7 @@ function renderHuntRail(run){
     <div class="gi-sub" style="margin-bottom:0;">${['c','h','m','l'].filter(s=>sevN[s]).map(s=>`<span style="color:var(--${s});font-weight:700;">${sevN[s]}</span> ${({c:'crit',h:'high',m:'med',l:'low'})[s]}`).join(' · ')||'no confirmed findings yet'}</div>
     ${mom}`;
   const calls=run.llm_calls||0, cost=run.cost_usd||0;
-  rcost.innerHTML=`<div class="gi-h">◇ LLM usage</div>`+
+  rcost.lastElementChild.innerHTML=''+
     (!calls ? `<div class="gi-empty" style="padding:8px 2px;text-align:left;">no LLM calls yet this hunt</div>` :
     `<div class="rail-cost-row"><span>calls</span><b>${calls}</b></div>`+
     (cost>0
@@ -2289,7 +2834,7 @@ function momentumHtml(testedN){
   const CAP=20;  // bar fills at 20 endpoints/min — fast for a single-threaded test loop
   const barW=Math.min(100,Math.round(rate/CAP*100));
   const band = rate>=14?'hot' : rate>0.4?'warm' : '';
-  return `<div class="mom-row"><span class="mom-lbl">⚡ momentum</span><span class="mom-val">${rate.toFixed(1)}/min</span></div>
+  return `<div class="mom-row"><span class="mom-lbl" style="display:inline-flex;align-items:center;gap:5px;">${ICON('bolt')} momentum</span><span class="mom-val">${rate.toFixed(1)}/min</span></div>
     <div class="mom-bar-wrap"><span class="mom-bar ${band}" style="width:${barW}%"></span></div>`;
 }
 async function refreshBrainRail(){
@@ -2297,19 +2842,23 @@ async function refreshBrainRail(){
   if(!rb || !S.target) return;
   const brain=await api('/api/hunt/brain?target='+encodeURIComponent(S.target));
   const html=renderBrainSection(brain);
-  rb.innerHTML=html || `<div class="gi-h">◆ Brain priority</div><div class="gi-empty" style="padding:8px 2px;text-align:left;">not enough cross-hunt history on this stack yet</div>`;
+  rb.style.setProperty('--sync',-(Date.now()%2400)+'ms');
+  rb.innerHTML=html || `<div class="gi-h">${ICON('rank')} Brain priority</div><div class="gi-empty" style="padding:8px 2px;text-align:left;">not enough cross-hunt history on this stack yet</div>`;
 }
 
 /* ─── coverage ledger ─── endpoint × vuln-class grid from STATE["tested"], which already carries
    exactly this shape (endpoint -> list of classes actually scanned) — just never had a picture. */
 function renderCoverage(){
   const run=S.run||{}; const body=document.getElementById('cov-body');
-  const tested=run.tested||{}; const q=(document.getElementById('cov-filter').value||'').toLowerCase();
+  const tested=effectiveTested(run); const q=(document.getElementById('cov-filter').value||'').toLowerCase();
   let eps=Object.keys(tested).filter(e=>!q||e.toLowerCase().includes(q));
-  if(!eps.length){ body.innerHTML='<div class="cov-empty">'+(Object.keys(tested).length?'no endpoints match that filter':'no coverage data yet — still mapping the surface')+'</div>'; return; }
+  const setEmpty=(k,h)=>{ if(body.dataset.empty!==k){ body.dataset.empty=k; body.innerHTML=h; } };
+  if(!eps.length){ if(Object.keys(tested).length){ body.dataset.empty=''; body.innerHTML='<div class="cov-empty">no endpoints match that filter</div>'; return; }
+    setEmpty('none','<div class="mo-empty">'+ORB('coverage',72)+'<div><b>No coverage yet</b>still mapping the surface — cells fill in as endpoints get tested</div></div>'); return; }
   const clsSet=new Set(); eps.forEach(e=>(tested[e]||[]).forEach(c=>clsSet.add(c)));
   const classes=[...clsSet].sort();
-  if(!classes.length){ body.innerHTML='<div class="cov-empty">no vuln classes tested yet</div>'; return; }
+  if(!classes.length){ setEmpty('nocls','<div class="mo-empty">'+ORB('reticle',72)+'<div><b>No classes tested yet</b>the grid lights up once the active hunt starts testing</div></div>'); return; }
+  body.dataset.empty='';
   // findings by endpoint+class, worst severity wins the cell
   const findByCell={};
   (run.findings||[]).forEach(f=>{ if(f.verdict==='false_positive'||!f.endpoint||!f.cls) return;
@@ -2479,8 +3028,8 @@ function handleSlash(text){
       if(arg==='all'){ logLine('ok','→ re-verifying all unconfirmed findings…'); verifyAll(); }
       else { const n=num(); if(n==null){logLine('err','usage: /verify N  (or /verify all)');} else {logLine('ok','→ re-verifying #'+n+'…'); reverify(n);} }
       break;
-    case 'confirm': { const n=num(); if(n==null)logLine('err','usage: /confirm N'); else {triage(n,'confirmed');logLine('ok','→ #'+n+' confirmed');} break; }
-    case 'dismiss': { const n=num(); if(n==null)logLine('err','usage: /dismiss N'); else {triage(n,'false_positive');logLine('ok','→ #'+n+' dismissed');} break; }
+    // /confirm and /dismiss removed 2026-11-01 — verdicts are the autonomous verify agent's job, not
+    // an operator decision (watch-only dashboard). Use /verify N to have HUNTR re-judge a finding.
     case 'copy': { const n=num(); if(n==null)logLine('err','usage: /copy N'); else {copyReport(n);logLine('ok','→ #'+n+' report copied');} break; }
     case 'report': { const n=num(); if(n==null)logLine('err','usage: /report N'); else runAgent('/api/hunt/report',{fi:n},'drafting report for #'+n); break; }
     case 'exploit': case 'poc': { const n=num(); if(n==null)logLine('err','usage: /exploit N'); else runAgent('/api/hunt/exploit',{fi:n},'building PoC for #'+n); break; }
@@ -2544,6 +3093,23 @@ async function ctl(action){
     if(!S.pollId) poll();
   }
   if(action==='resume'){ S.cLog=0; document.getElementById('term-log').innerHTML=''; S.autoFlipped=false; poll(); }
+}
+
+/* ─── download finding evidence (report + PoC + request/response + screenshot, zipped) ─── */
+function downloadFinding(idx){
+  if(!S.target) return;
+  const f=S.findings[idx]; if(!f) return;
+  const url='/api/hunt/finding-zip?target='+encodeURIComponent(S.target)+'&fi='+idx;
+  fetch(url).then(r=>{
+    if(!r.ok) throw new Error('no evidence bundle yet');
+    return r.blob();
+  }).then(blob=>{
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download='F'+idx+'-'+(f.title||'finding').replace(/[^a-z0-9]+/gi,'-').slice(0,40)+'.zip';
+    document.body.appendChild(a); a.click(); a.remove();
+    flash('Evidence downloaded','ok');
+  }).catch(()=>flash('No evidence bundle for this finding yet','no'));
 }
 
 /* ─── copy ─── */
@@ -2631,6 +3197,8 @@ function showView(v){
   document.getElementById('graph-pane').style.display = 'none';
   document.getElementById('surface-pane').style.display = v==='surface' ? 'flex' : 'none';
   document.getElementById('coverage-pane').style.display = v==='coverage' ? 'flex' : 'none';
+  const pane={ops:'ops-pane',live:'live-pane',findings:'find-pane',surface:'surface-pane',coverage:'coverage-pane'}[v];
+  const pe=pane&&document.getElementById(pane); if(pe){ pe.classList.remove('pane-in'); void pe.offsetWidth; pe.classList.add('pane-in'); }
   if(v==='live'){ graphStop(); liveStart(); if(S.run) liveSync(S.run); }
   else { liveStop(); graphStop(); if(v==='ops'&&S.run) renderOps(S.run); else if(v==='surface'||v==='coverage') viewRefresh(); }
 }
@@ -3210,7 +3778,7 @@ async function toggleInsights(){
 function renderBrainSection(brain){
   const prio=(brain&&brain.ok&&(brain.priority||[]).length) ? brain.priority : null;
   if(!prio) return '';
-  let h=`<div class="gi-h">◆ Brain priority <span style="opacity:.6;font-weight:400;text-transform:none;">· ${esc(brain.stack||'')}</span></div>`;
+  let h=`<div class="gi-h">${ICON('rank')} Brain priority <span style="opacity:.6;font-weight:400;text-transform:none;">· ${esc(brain.stack||'')}</span></div>`;
   h+=`<div class="gi-sub">historical hit-rate, across every past hunt on this stack — not just this one</div>`;
   prio.slice(0,8).forEach(p=>{
     const pct=Math.round((p.rate||0)*100);
@@ -3275,7 +3843,103 @@ function agentTestEndpoint(url){ closeDetail(); flash('HUNTR tests this itself �
 
 /* ═══ modal ═══ */
 function openModal(html){ document.getElementById('modal-body').innerHTML=html; document.getElementById('modal').classList.add('on'); }
-function closeModal(){ document.getElementById('modal').classList.remove('on'); }
+function closeModal(){ if(window.GATE_TERMS) return; document.getElementById('modal').classList.remove('on'); }
+
+/* ═══ BYO-key onboarding ═══ each user runs HUNTR on THEIR OWN Anthropic API key — the only sanctioned
+   billing model for the product (Claude Code's terms forbid reselling/intermediating Claude usage, and
+   require each end user to authenticate with their own key). Verified live, stored server-side 0600. */
+let ACCOUNT={configured:false,masked:''};
+async function checkAccount(){
+  const a=await api('/api/account');
+  if(a) ACCOUNT=a;
+  const lbl=document.getElementById('tb-apikey-lbl'), btn=document.getElementById('tb-apikey');
+  if(lbl) lbl.textContent = ACCOUNT.configured ? (ACCOUNT.masked||'API key') : 'Connect API key';
+  if(btn) btn.classList.toggle('accent', !ACCOUNT.configured);   // pulse the chip until a key is connected
+  if(a && !ACCOUNT.configured) openApiKey(true);                 // first-run gate: no key → prompt now
+  return ACCOUNT;
+}
+function openApiKey(firstRun){
+  const on=ACCOUNT.configured;
+  openModal(`<div class="m-title">${on?'Anthropic API key':'Connect your Anthropic API key'}</div>
+    <div class="m-sub">HUNTR runs on <b>your own</b> Anthropic API key — usage is billed directly to you by Anthropic, and the key is stored only on this machine.${firstRun?' Add a key to start hunting.':''}</div>
+    ${on?`<div style="margin:12px 0 2px;font-size:13px;color:var(--text2)">Connected: <code style="color:var(--accent)">${esc(ACCOUNT.masked||'')}</code>${ACCOUNT.models?` · ${ACCOUNT.models} models available`:''}</div>`:''}
+    <input id="ak-input" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-api03-…"
+      style="width:100%;margin:12px 0 2px;padding:11px 12px;border-radius:9px;border:1px solid var(--border2);background:var(--surface2);color:var(--text);font-family:var(--mono,ui-monospace,monospace);font-size:13px;box-sizing:border-box">
+    <div id="ak-msg" style="min-height:18px;margin:7px 2px;font-size:12.5px;color:var(--text3)"></div>
+    <div class="m-row">
+      <a class="m-btn s" href="https://platform.claude.com/settings/keys" target="_blank" rel="noopener" style="text-decoration:none;display:inline-flex;align-items:center">Get a key ↗</a>
+      ${on?`<button class="m-btn danger" onclick="removeApiKey()">Remove</button>`:''}
+      <button class="m-btn p" id="ak-save" onclick="saveApiKey()">Verify &amp; save</button>
+    </div>`);
+  const inp=document.getElementById('ak-input');
+  if(inp){ inp.focus(); inp.addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); saveApiKey(); } }); }
+}
+async function saveApiKey(){
+  const inp=document.getElementById('ak-input'), msg=document.getElementById('ak-msg'), btn=document.getElementById('ak-save');
+  const key=((inp&&inp.value)||'').trim();
+  if(!key){ if(msg){ msg.style.color='#e5b567'; msg.textContent='Paste your API key first.'; } return; }
+  if(btn){ btn.disabled=true; btn.textContent='Verifying…'; }
+  if(msg){ msg.style.color='var(--text3)'; msg.textContent='⠋ checking the key against api.anthropic.com…'; }
+  const r=await apiLong('/api/account/key',{key});
+  if(btn){ btn.disabled=false; btn.textContent='Verify & save'; }
+  if(r&&r.ok){
+    ACCOUNT={configured:true,masked:r.masked,models:r.models,verified_at:r.verified_at};
+    if(msg){ msg.style.color='#5fd38a'; msg.textContent='✓ Verified'+(r.throttled?' (valid, currently rate-limited)':'')+' — you’re ready to hunt.'; }
+    checkAccount();
+    setTimeout(closeModal, 950);
+  }else if(msg){
+    msg.style.color='#f0607a'; msg.textContent='✕ '+((r&&r.error)||'verification failed — check the key and try again');
+  }
+}
+async function removeApiKey(){
+  await api('/api/account/key',{delete:true});
+  ACCOUNT={configured:false,masked:''};
+  checkAccount(); openApiKey();
+}
+
+/* ═══ Terms + Acceptable-Use acceptance gate ═══ HUNTR is an offensive tool, so first run (and after any
+   terms change) requires the operator to accept the Terms of Service + Acceptable Use Policy and attest
+   authorized-use before anything else. Recorded server-side; blocks the modal until accepted. */
+async function gateOnboarding(){
+  let t; try{ t=await api('/api/terms'); }catch(e){ t=null; }
+  if(t && !t.accepted){ openTerms(); return; }   // must accept before the API-key gate
+  checkAccount();
+}
+function openTerms(){
+  window.GATE_TERMS=true;
+  const x=document.querySelector('.modal-x'); if(x) x.style.display='none';
+  openModal(`<div class="m-title">Before you hunt — agree to the terms</div>
+    <div class="m-sub">HUNTR is a powerful, autonomous security-testing tool. To use it you must agree to how it may be used. Please read and accept:</div>
+    <label style="display:flex;gap:10px;align-items:flex-start;margin:0 2px 12px;cursor:pointer;font-size:13px;color:var(--text2);line-height:1.5">
+      <input type="checkbox" id="tm-tos" style="margin-top:2px;accent-color:var(--accent);width:16px;height:16px;flex:none" onchange="termsCheck()">
+      <span>I have read and agree to the <a href="https://huntr.run/terms/" target="_blank" rel="noopener" style="color:var(--accent)">Terms of Service</a> and <a href="https://huntr.run/acceptable-use/" target="_blank" rel="noopener" style="color:var(--accent)">Acceptable Use Policy</a>.</span>
+    </label>
+    <label style="display:flex;gap:10px;align-items:flex-start;margin:0 2px 12px;cursor:pointer;font-size:13px;color:var(--text2);line-height:1.5">
+      <input type="checkbox" id="tm-auth" style="margin-top:2px;accent-color:var(--accent);width:16px;height:16px;flex:none" onchange="termsCheck()">
+      <span>I will only run HUNTR against targets I <b>own or am explicitly authorized to test</b>, and I will stay within program scope.</span>
+    </label>
+    <div id="tm-msg" style="min-height:16px;margin:4px 2px;font-size:12.5px;color:var(--text3)"></div>
+    <div class="m-row">
+      <button class="m-btn p" id="tm-agree" onclick="acceptTerms()" disabled>Agree &amp; continue</button>
+    </div>`);
+}
+function termsCheck(){
+  const ok=document.getElementById('tm-tos')?.checked && document.getElementById('tm-auth')?.checked;
+  const b=document.getElementById('tm-agree'); if(b) b.disabled=!ok;
+}
+async function acceptTerms(){
+  const b=document.getElementById('tm-agree'), msg=document.getElementById('tm-msg');
+  if(b){ b.disabled=true; b.textContent='Saving…'; }
+  const r=await api('/api/terms',{accept:true});
+  if(r&&r.ok){
+    window.GATE_TERMS=false;
+    closeModal();
+    checkAccount();   // proceed to the API-key gate
+  }else{
+    if(b){ b.disabled=false; b.textContent='Agree & continue'; }
+    if(msg){ msg.style.color='#f0607a'; msg.textContent='Could not save — '+((r&&r.error)||'try again'); }
+  }
+}
 
 /* ═══ #1 submission export ═══ */
 function buildReportMd(f,idx){
@@ -3290,7 +3954,10 @@ function buildReportMd(f,idx){
   return o.join('\n');
 }
 function exportSubmission(){
-  const conf=(S.findings||[]).map((f,i)=>({f,i})).filter(x=>CONFIRMED.includes(x.f.verdict)&&passFilter(x.f));
+  // 2026-11-04: the Export button hands the operator a file to actually submit — exporting an
+  // unproven finding as submission-ready would be the worst version of today's whole bug class.
+  // Gate it the same as every other "Confirmed" surface.
+  const conf=(S.findings||[]).map((f,i)=>({f,i})).filter(x=>CONFIRMED.includes(x.f.verdict)&&isProven(x.f)&&passFilter(x.f));
   if(!conf.length){ flash('no confirmed findings to export','no'); return; }
   const tgt=(S.rawScope||S.target||'target').split('\n')[0].trim();
   let md=`# Submission queue — ${tgt}\n\n_${conf.length} confirmed finding(s) · exported ${new Date().toISOString().slice(0,10)}_\n\n---\n\n`;
@@ -3548,13 +4215,17 @@ function beep(){ try{
 function notifyCheck(run){
   const finds=run.findings||[];
   // new confirmed critical/high
+  // 2026-11-04, operator: "wire everything together" — a desktop notification crying "🔴 Critical
+  // finding" (or a completion toast claiming "N confirmed") off f.verdict alone, with no exploitation
+  // behind it, is the same overclaim as the badge/section/$-panel fixes above, just pushed straight
+  // to the operator's desktop instead of sitting in the dashboard. Gate both through isProven() too.
   finds.forEach((f,i)=>{ const sev=(f.sev||'').toLowerCase(); const key=S.target+':'+i;
-    if(CONFIRMED.includes(f.verdict)&&(sev==='c'||sev==='h')&&!S.seenCrit.has(key)){
+    if(CONFIRMED.includes(f.verdict)&&isProven(f)&&(sev==='c'||sev==='h')&&!S.seenCrit.has(key)){
       S.seenCrit.add(key); fireNotif((sev==='c'?'🔴 Critical':'🟠 High')+' finding', f.title||'', true);
     }});
   // hunt completion transition
   if(S.lastStatus==='running' && ['done','stopped','error'].includes(run.status)){
-    const n=finds.filter(f=>CONFIRMED.includes(f.verdict)).length;
+    const n=finds.filter(f=>CONFIRMED.includes(f.verdict)&&isProven(f)).length;
     fireNotif('Hunt finished · '+(S.rawScope||S.target||'').split('\n')[0], n+' confirmed finding(s)', true);
   }
   S.lastStatus=run.status;
@@ -3623,25 +4294,41 @@ function timeAgo(ts){
 }
 
 /* ═══ CUSTOM ICON SET — replaces every emoji/cheap glyph with consistent line icons ═══ */
+// Motion icon system (2026-11-03) — same 24-grid, same stroke weight as the pipeline badges. Every
+// part sits in its final pose at rest; named mi-* parts are what the motion CSS moves when an icon
+// is "live" (active tab, hovered button, running hunt, freshly changed stat).
 const ICONS={
-  ops:'<path d="M3 12h3l2-6 3.5 12 2.5-8 1.6 4H21"/>',
-  find:'<path d="M6 3v18"/><path d="M6 4h11l-2.2 4L17 12H6"/>',
-  constellation:'<circle cx="6" cy="7" r="2"/><circle cx="18" cy="8" r="2"/><circle cx="11" cy="18" r="2"/><path d="M7.9 7.6l8.2.6M7.3 8.7l3 7.6M16.4 9.5l-4.6 6.8"/>',
-  coverage:'<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 10h16M4 15h16M10 4v16M15 4v16"/>',
-  surface:'<rect x="9" y="3" width="6" height="4" rx="1"/><rect x="3" y="17" width="6" height="4" rx="1"/><rect x="15" y="17" width="6" height="4" rx="1"/><path d="M12 7v4M6 17v-3h12v3"/>',
-  scope:'<circle cx="12" cy="12" r="7"/><path d="M12 2v3.2M12 18.8V22M2 12h3.2M18.8 12H22"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/>',
-  creds:'<circle cx="8" cy="12" r="4"/><path d="M11.6 12H21l-2.2 2.6M16 12v3"/>',
-  pause:'<path d="M9 5v14M15 5v14"/>',
-  stop:'<rect x="6" y="6" width="12" height="12" rx="2.5"/>',
-  resume:'<path d="M7 5l12 7-12 7z" fill="currentColor" stroke="currentColor"/>',
-  new:'<path d="M12 5v14M5 12h14"/>',
-  ev:'<path d="M4 15.5l5.2-5.2 3 3L20 6.5"/><path d="M15.5 6.5H20V11"/>',
-  stream:'<rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M7 10l2.6 2.5L7 15M12.5 15H16.5"/>',
-  bolt:'<path d="M13 2L5 13h6l-1 9 9-12h-6z" fill="currentColor" stroke="currentColor" stroke-linejoin="round"/>',
-  reticle:'<circle cx="12" cy="12" r="7.5"/><path d="M12 1.5v6M12 16.5v6M1.5 12h6M16.5 12h6"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/>',
+  ops:'<path d="M3 12h3l2-6 3.5 12 2.5-8 1.6 4H21"/><path class="mi-trace" pathLength="1" d="M3 12h3l2-6 3.5 12 2.5-8 1.6 4H21"/>',
+  find:'<path d="M6 3v18"/><path class="mi-flag" d="M6 4h11l-2.2 4L17 12H6"/>',
+  constellation:'<path class="mi-edges" d="M7.9 7.6l8.2.6M7.3 8.7l3 7.6M16.4 9.5l-4.6 6.8"/><circle class="mi-s mi-s1" cx="6" cy="7" r="2"/><circle class="mi-s mi-s2" cx="18" cy="8" r="2"/><circle class="mi-s mi-s3" cx="11" cy="18" r="2"/>',
+  coverage:'<rect class="mi-cell mi-c1" x="4.6" y="4.6" width="4.8" height="4.8" rx=".7"/><rect class="mi-cell mi-c2" x="10.6" y="10.6" width="3.8" height="3.8" rx=".6"/><rect class="mi-cell mi-c3" x="15.6" y="4.6" width="3.8" height="4.8" rx=".6"/><rect class="mi-cell mi-c4" x="4.6" y="15.6" width="4.8" height="3.8" rx=".6"/><rect class="mi-cell mi-c5" x="15.6" y="15.6" width="3.8" height="3.8" rx=".6"/><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 10h16M4 15h16M10 4v16M15 4v16"/>',
+  surface:'<rect class="mi-root" x="9" y="3" width="6" height="4" rx="1"/><path class="mi-links" pathLength="1" d="M12 7v4M6 17v-3h12v3"/><rect class="mi-leaf mi-l1" x="3" y="17" width="6" height="4" rx="1"/><rect class="mi-leaf mi-l2" x="15" y="17" width="6" height="4" rx="1"/>',
+  scope:'<g class="mi-spin"><circle cx="12" cy="12" r="7"/><path d="M12 2v3.2M12 18.8V22M2 12h3.2M18.8 12H22"/></g><circle class="mi-core" cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/>',
+  creds:'<g class="mi-key"><circle cx="8" cy="12" r="4"/><path d="M11.6 12H21l-2.2 2.6"/><path class="mi-tooth" d="M16 12v3"/></g>',
+  pause:'<path class="mi-b1" d="M9 5v14"/><path class="mi-b2" d="M15 5v14"/>',
+  stop:'<rect class="mi-sq" x="6" y="6" width="12" height="12" rx="2.5"/>',
+  resume:'<path class="mi-ghost" d="M7 5l12 7-12 7z"/><path class="mi-play" d="M7 5l12 7-12 7z" fill="currentColor" stroke="currentColor"/>',
+  rehunt:'<g class="mi-rot"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.8 3.8v3.6h-3.6"/></g><circle class="mi-core" cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/>',
+  new:'<path class="mi-plus" d="M12 5v14M5 12h14"/>',
+  ev:'<path class="mi-tr" pathLength="1" d="M4 15.5l5.2-5.2 3 3L20 6.5"/><path class="mi-head" d="M15.5 6.5H20V11"/>',
+  stream:'<rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path class="mi-prompt" d="M7 10l2.6 2.5L7 15"/><path class="mi-cur" d="M12.5 15H16.5"/>',
+  bolt:'<path class="mi-zap" d="M13 2L5 13h6l-1 9 9-12h-6z" fill="currentColor" stroke="currentColor" stroke-linejoin="round"/>',
+  reticle:'<circle class="mi-rg" cx="12" cy="12" r="7.5"/><path class="mi-tk" d="M12 1.5v6M12 16.5v6M1.5 12h6M16.5 12h6"/><circle class="mi-core" cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/>',
+  // stat tiles + rail sections
+  layers:'<path class="mi-ly1" d="M12 3.2l8.6 4.3L12 11.8 3.4 7.5z"/><path class="mi-ly2" d="M3.4 12 12 16.3l8.6-4.3"/><path class="mi-ly3" d="M3.4 16.5 12 20.8l8.6-4.3"/>',
+  hub:'<path class="mi-spokes" d="M12 12V4.5M12 12l6.5 3.8M12 12l-6.5 3.8"/><circle cx="12" cy="12" r="2.3"/><circle class="mi-s mi-s1" cx="12" cy="3.6" r="1.6"/><circle class="mi-s mi-s2" cx="19.3" cy="16.3" r="1.6"/><circle class="mi-s mi-s3" cx="4.7" cy="16.3" r="1.6"/>',
+  ring:'<circle cx="12" cy="12" r="8.5" opacity=".3"/><path class="mi-arc" d="M12 3.5a8.5 8.5 0 1 1-8.5 8.5"/><circle class="mi-core" cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/>',
+  shieldck:'<path d="M12 2.8l7 2.7v5.6c0 4.6-3 8.3-7 10.1-4-1.8-7-5.5-7-10.1V5.5z"/><path class="mi-ck" pathLength="1" d="M8.7 11.9l2.3 2.3 4.4-4.6"/>',
+  coin:'<path d="M5 12v4.5c0 1.6 3.1 2.9 7 2.9s7-1.3 7-2.9V12"/><path d="M5 12c0 1.6 3.1 2.9 7 2.9s7-1.3 7-2.9"/><g class="mi-top"><ellipse cx="12" cy="7.5" rx="7" ry="2.9"/><path d="M5 7.5V10c0 1.6 3.1 2.9 7 2.9s7-1.3 7-2.9V7.5"/></g>',
+  chip:'<path class="mi-pins" d="M10 3.5V7M14 3.5V7M10 17v3.5M14 17v3.5M3.5 10H7M3.5 14H7M17 10h3.5M17 14h3.5"/><rect x="7" y="7" width="10" height="10" rx="2"/><rect class="mi-die" x="10" y="10" width="4" height="4" rx=".8"/>',
+  rank:'<path d="M3.5 20.5h17"/><path class="mi-r mi-r1" d="M6 18V11"/><path class="mi-r mi-r2" d="M10 18V5"/><path class="mi-r mi-r3" d="M14 18V8.5"/><path class="mi-r mi-r4" d="M18 18v-4"/>',
 };
-function ICON(name){const inner=ICONS[name]||'';return '<svg class="icn" viewBox="0 0 24 24">'+inner+'</svg>';}
+function ICON(name){const inner=ICONS[name]||'';return '<svg class="icn mi mi-'+name+'" viewBox="0 0 24 24" aria-hidden="true">'+inner+'</svg>';}
+// big animated emblem (comet ring + ping) — launch hero + every empty state
+function ORB(name,size){return '<span class="mo" style="--mo:'+(size||64)+'px">'+ICON(name)+'</span>';}
 function applyIcons(){
+  document.querySelectorAll('svg[data-art]').forEach(sv=>{ sv.innerHTML=ICONS[sv.dataset.art]||''; });
+  const orb=document.getElementById('sv-orb'); if(orb&&!orb.firstChild) orb.innerHTML=ICON('reticle');
   document.querySelectorAll('[data-ic]').forEach(el=>{
     const svg=ICON(el.dataset.ic);
     const slot=el.querySelector('.vr-ic, .bi');
@@ -3653,32 +4340,110 @@ function applyIcons(){
 
 /* ═══ OPERATIONS — mission-control render (watch-only) ═══ */
 const OPS_PHASES=[
-  {n:'Intel',re:/intel/i,tag:'recon',doing:'Gathering intel on the target and its known attack surface…'},
-  {n:'Recon + Surface',re:/recon|surface/i,tag:'recon',doing:'Mapping the live attack surface — subdomains, hosts and endpoints…'},
-  {n:'Auth + SPA',re:/auth|spa/i,tag:'access',doing:'Establishing an authenticated session and capturing the app’s real API…'},
-  {n:'Plan',re:/\bplan/i,tag:'strategy',doing:'Modelling the app and planning the highest-value attacks…'},
-  {n:'Active Hunt',re:/\bhunt\b/i,tag:'exploit',doing:'Actively testing endpoints and chaining what it finds…'},
-  {n:'Deep Questions',re:/deep question/i,tag:'dig deeper',doing:'Digging deeper — asking the questions a human hunter would…'},
-  {n:'Zero-Day',re:/zero-?day|bypass/i,tag:'novel',doing:'Attempting novel bypasses on the blocked surface…'},
-  {n:'Verify',re:/verify|validate|triage/i,tag:'triage',doing:'Re-verifying every finding and dropping false positives…'},
-  {n:'Chain + Economics',re:/chain|econom/i,tag:'value',doing:'Chaining findings into bigger impact and pricing them…'},
+  {n:'Intel',key:'intel',re:/intel/i,tag:'recon',doing:'Gathering intel on the target and its known attack surface…'},
+  {n:'Recon + Surface',key:'recon_surface',re:/recon|surface/i,tag:'recon',doing:'Mapping the live attack surface — subdomains, hosts and endpoints…'},
+  {n:'Auth + SPA',key:'auth_spa',re:/auth|spa/i,tag:'access',doing:'Establishing an authenticated session and capturing the app’s real API…'},
+  {n:'Plan',key:'plan',re:/\bplan/i,tag:'strategy',doing:'Modelling the app and planning the highest-value attacks…'},
+  {n:'Active Hunt',key:'active_hunt',re:/\bhunt\b/i,tag:'exploit',doing:'Actively testing endpoints and chaining what it finds…'},
+  {n:'Deep Questions',key:'deep_questions',re:/deep question/i,tag:'dig deeper',doing:'Digging deeper — asking the questions a human hunter would…'},
+  {n:'Zero-Day',key:'zero_day',re:/zero-?day|bypass/i,tag:'novel',doing:'Attempting novel bypasses on the blocked surface…'},
+  {n:'Verify',key:'verify',re:/verify|validate|triage/i,tag:'triage',doing:'Re-verifying every finding and dropping false positives…'},
+  {n:'Chain + Economics',key:'chain_econ',re:/chain|econom/i,tag:'value',doing:'Chaining findings into bigger impact and pricing them…'},
   {n:'Report',re:/report|supervis|polish|^done/i,tag:'deliver',doing:'Finalising and writing up the confirmed findings…'},
 ];
+// Phase badge artwork — 24-grid line art, one stroke weight, every part sits in its final pose at
+// rest; named parts (pi-*) are what the .pl-row.run keyframes move. Order matches OPS_PHASES.
+const SHIELD='M12 2.8l7 2.7v5.6c0 4.6-3 8.3-7 10.1-4-1.8-7-5.5-7-10.1V5.5z';
+const PHASE_ART=[
+  ['intel', `<circle cx="12" cy="12" r="9"/><circle class="pi-dim" cx="12" cy="12" r="5"/>
+    <g class="pi-sw"><path class="pi-wedge" d="M12 12V3a9 9 0 0 0-7.79 4.5z"/><path d="M12 12V3"/></g>
+    <circle class="pi-blip" cx="16" cy="15" r="1.1"/><circle cx="12" cy="12" r="1.1" fill="currentColor" stroke="none"/>`],
+  ['recon', `<path class="pi-edges" d="M12 12L5 5.5M12 12l7-6.5M12 12l7 6.5M12 12l-7 6.5M6.7 5.5h10.6"/>
+    <circle class="pi-n pi-n0" cx="12" cy="12" r="2.2"/><circle class="pi-n pi-n1" cx="5" cy="5.5" r="1.7"/>
+    <circle class="pi-n pi-n2" cx="19" cy="5.5" r="1.7"/><circle class="pi-n pi-n3" cx="19" cy="18.5" r="1.7"/>
+    <circle class="pi-n pi-n4" cx="5" cy="18.5" r="1.7"/>`],
+  ['auth', `<path class="pi-shackle" d="M8.2 11V8a3.8 3.8 0 0 1 7.6 0v3"/><rect class="pi-body" x="5" y="11" width="14" height="10" rx="2.2"/>
+    <g class="pi-kh"><circle cx="12" cy="15.3" r="1.35"/><path d="M12 16.65v1.8"/></g>`],
+  ['plan', `<circle cx="12" cy="4.2" r="1.8"/><path class="pi-tr pi-draw" pathLength="1" d="M12 6v3m0 0H5.5v2.5M12 9h6.5v2.5M12 9v2.5"/>
+    <circle class="pi-o1" cx="5.5" cy="13.2" r="1.7"/><circle class="pi-o2" cx="12" cy="13.2" r="1.7"/><circle class="pi-o3" cx="18.5" cy="13.2" r="1.7"/>
+    <path class="pi-route pi-draw" pathLength="1" d="M18.5 14.9v2.6"/><path class="pi-goal" d="M18.5 17.5l2.1 2.1-2.1 2.1-2.1-2.1z"/>`],
+  ['hunt', `<circle class="pi-ring" cx="12" cy="12" r="6.5"/><path class="pi-ticks" d="M12 2.5v4M12 17.5v4M2.5 12h4M17.5 12h4"/>
+    <circle class="pi-lock" cx="12" cy="12" r="9.6" stroke-dasharray="3 3.2"/><circle class="pi-core" cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/>`],
+  ['deep', `<defs><clipPath id="pi-cl-deep"><circle cx="10.5" cy="10.5" r="5"/></clipPath></defs>
+    <g class="pi-lens"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.3 15.3l5.2 5.2" stroke-width="2.2"/>
+    <g clip-path="url(#pi-cl-deep)"><path class="pi-layers" d="M7 5h7M7 8h4.5M7 11h7M7 14h4.5M7 17h7M7 20h4.5M7 23h7"/></g>
+    <path class="pi-glint" d="M7.3 8.6a3.6 3.6 0 0 1 2.4-2.3"/></g>`],
+  ['zero', `<path class="pi-hl" d="M12 2.8 5 5.5v5.6c0 4.6 3 8.3 7 10.1"/><path class="pi-hr" d="M12 2.8l7 2.7v5.6c0 4.6-3 8.3-7 10.1"/>
+    <path class="pi-crack pi-draw" pathLength="1" d="M12 4.5l-1.3 3.6 2.4 2-2.1 3.2 1.8 2.2-.8 3.6"/>
+    <path class="pi-spark" d="M14.6 8.9l1.7-1.7M15.4 11.5h2.3M14.6 14.1l1.7 1.7M9.4 8.9 7.7 7.2M8.6 11.5H6.3M9.4 14.1l-1.7 1.7"/>`],
+  ['ver', `<defs><clipPath id="pi-cl-ver"><path d="${SHIELD}"/></clipPath></defs><path d="${SHIELD}"/>
+    <path class="pi-check pi-draw" pathLength="1" d="M8.7 11.9l2.3 2.3 4.4-4.6"/>
+    <g clip-path="url(#pi-cl-ver)"><g class="pi-scan"><rect class="pi-trail" x="4" y="-1" width="16" height="4"/><path d="M4 3h16"/></g></g>`],
+  ['chain', `<path class="pi-la" d="M10.4 13.6l-1.9 1.9a3.2 3.2 0 0 1-4.5-4.5l2.6-2.6a3.2 3.2 0 0 1 4.5 0"/>
+    <path class="pi-lb" d="M13.6 10.4l1.9-1.9a3.2 3.2 0 0 1 4.5 4.5l-2.6 2.6a3.2 3.2 0 0 1-4.5 0"/>
+    <path class="pi-bar" d="M9.6 14.4l4.8-4.8"/><circle class="pi-flash" cx="12" cy="12" r="1.4"/>
+    <g class="pi-coin"><circle cx="5.6" cy="4.4" r="2.3"/><path d="M5.6 3.3v2.2"/></g>`],
+  ['rep', `<path d="M6.5 2.8h7.2l4.3 4.3v14.1H6.5z"/><path d="M13.7 2.8v4.3H18"/>
+    <path class="pi-l1 pi-draw" pathLength="1" d="M9 10.8h6.5"/><path class="pi-l2 pi-draw" pathLength="1" d="M9 13.8h6.5"/>
+    <path class="pi-l3 pi-draw" pathLength="1" d="M9 16.8h3.2"/>
+    <g class="pi-seal"><circle cx="16.8" cy="18.6" r="3.2"/><path d="M15.4 18.7l1 1 1.9-2"/></g>`],
+];
+const PL_OK='<svg viewBox="0 0 12 12"><path d="M3.2 6.2l1.9 1.9 3.8-4"/></svg>';
+const PL_RT='<svg viewBox="0 0 12 12"><path d="M9 4.3A3.4 3.4 0 1 0 9.4 7.5"/><path d="M9.3 2.1v2.4H6.9"/></svg>';
+function plBuild(body){
+  body.innerHTML=OPS_PHASES.map((p,i)=>{ const [k,art]=PHASE_ART[i];
+    return `<div class="pl-row enter" style="--i:${i}"><div class="pl-node"><span class="pl-rail"></span>`
+      +`<div class="pl-badge"><svg class="pl-ic pi-${k}" viewBox="0 0 24 24" aria-hidden="true">${art}</svg>`
+      +`<span class="pl-corner pl-ok">${PL_OK}</span><span class="pl-corner pl-rt">${PL_RT}</span></div></div>`
+      +`<div class="pl-name">${p.n}</div><div class="pl-tag">${esc(p.tag)}</div></div>`; }).join('');
+  body.dataset.built='1';
+  setTimeout(()=>body.querySelectorAll('.pl-row.enter').forEach(r=>r.classList.remove('enter')),1400);
+}
 function opsActiveIdx(stage){ let idx=-1; const s=(stage||'').toLowerCase();
   OPS_PHASES.forEach((p,i)=>{ if(p.re.test(s)) idx=i; }); return idx; }
+// Stat tiles — built once; a value that moves counts up to its new number and the tile "bumps"
+// (icon plays, beam sweeps). First paint counts up from 0. Never rebuilt per poll.
+const OPS_TILES=[['phase','Phase','layers',v=>v+'<small>/10</small>'],['eps','Endpoints','hub',v=>v.toLocaleString()],
+  ['cov','Coverage','ring',v=>v+'<small>%</small>'],['conf','Confirmed','shieldck',v=>v.toLocaleString()],['ev','Pipeline EV','coin',v=>'$'+v.toLocaleString()]];
+function opsTiles(vals){
+  const box=document.getElementById('ops-stats'); if(!box) return;
+  if(!box.dataset.built){
+    box.innerHTML=OPS_TILES.map(([k,l,ic],i)=>`<div class="ops-stat enter" data-k="${k}" style="--i:${i}"><span class="ops-stat-ic">${ICON(ic)}</span><div class="v${k==='ev'?' gold':''}"></div><div class="k">${l}</div></div>`).join('');
+    box.dataset.built='1';
+    setTimeout(()=>box.querySelectorAll('.ops-stat.enter').forEach(t=>t.classList.remove('enter')),1100);
+  }
+  OPS_TILES.forEach(([k,,,fmt])=>{
+    const tile=box.querySelector(`[data-k="${k}"]`), el=tile.querySelector('.v'), to=Math.round(vals[k]||0);
+    const from=tile._v===undefined?0:tile._v;
+    if(tile._v===to) return;
+    const first=tile._v===undefined; tile._v=to;
+    if(!first){ tile.classList.remove('bump'); void tile.offsetWidth; tile.classList.add('bump');
+      clearTimeout(tile._bt); tile._bt=setTimeout(()=>tile.classList.remove('bump'),1600); }
+    countUp(el,from,to,fmt,first?900:700);
+  });
+}
+function countUp(el,from,to,fmt,ms){
+  cancelAnimationFrame(el._raf);
+  if(from===to||matchMedia('(prefers-reduced-motion: reduce)').matches){ el.innerHTML=fmt(to); return; }
+  const t0=performance.now();
+  const step=t=>{ const p=Math.min(1,(t-t0)/ms), e=1-Math.pow(1-p,3);
+    el.innerHTML=fmt(Math.round(from+(to-from)*e)); if(p<1) el._raf=requestAnimationFrame(step); };
+  el._raf=requestAnimationFrame(step);
+}
 function renderOps(run){
   if(!run) return;
   const st=run.status||'', stage=run.stage||'', nm=S.program||S.target||'target';
   // ── hero ──
   const live=document.getElementById('ops-live'); if(!live) return;
   const running=st==='running';
+  document.body.classList.toggle('hunting', running);   // drives the live motion on headers/rail icons
   live.classList.toggle('idle', !running);
   const hero=document.querySelector('.ops-hero'); if(hero) hero.classList.toggle('running', running);
   // client-side elapsed clock (per target) so a long early phase shows visible, honest progress
   if(running){ if(!S._opsEl||S._opsEl.t!==S.target) S._opsEl={t:S.target,start:Date.now()}; }
   let elapsed='';
   if(running&&S._opsEl){ const s=Math.max(0,Math.floor((Date.now()-S._opsEl.start)/1000)); elapsed=(s>=60?Math.floor(s/60)+'m ':'')+(s%60)+'s'; }
-  const PRLBL={'rate-limit':'Paused · account rate limit','cost-cap':'Paused · spend cap','creds-required':'Paused · session required','cdp-required':'Paused · CDP unreachable'};
+  const PRLBL={'rate-limit':'Paused · account rate limit','cost-cap':'Paused · spend cap','creds-required':'Paused · session required','cdp-required':'Paused · CDP unreachable','llm-auth-required':'Paused · login expired'};
   let phaseLbl = running ? (capitalize(stage)||'Running')
     : st==='paused' ? (PRLBL[run.paused_reason]||'Paused')
     : st==='done' ? 'Hunt complete' : st==='error' ? 'Error' : st==='stopped' ? 'Stopped' : (st?capitalize(st):'Standby');
@@ -3690,7 +4455,7 @@ function renderOps(run){
   const logs=run.logs||[]; let lastLog='';
   for(let i=logs.length-1;i>=0;i--){ const v=(logs[i].v||'').replace(/^[^A-Za-z0-9]+/,'').trim(); if(v.length>6){ lastLog=v; break; } }
   let action;
-  if(st==='done'){ const nf=(run.findings||[]).filter(f=>CONFIRMED.includes(f.verdict)).length; action='Hunt complete — '+nf+' confirmed finding'+(nf===1?'':'s')+' ready.'; }
+  if(st==='done'){ const nf=(run.findings||[]).filter(f=>CONFIRMED.includes(f.verdict)&&isProven(f)).length; action='Hunt complete — '+nf+' confirmed finding'+(nf===1?'':'s')+' ready.'; }
   else if(st==='paused'){ action=(run.creds_alert&&run.creds_alert.msg)||'Hunt paused — it resumes automatically when it can.'; }
   else if(running){ action=(aIdx>=0&&OPS_PHASES[aIdx].doing)||lastLog||'Working the attack surface…'; }
   else { action=lastLog||'Standing by.'; }
@@ -3701,46 +4466,109 @@ function renderOps(run){
   const tested=run.tested||{}, eps=run.endpoints||[];
   const testedN=Object.keys(tested).length, epN=(typeof stats.endpoints==='number'?stats.endpoints:eps.length);
   const totalN=Math.max(epN,testedN), covPct=totalN?Math.round(testedN/totalN*100):0;
-  const confirmed=(run.findings||[]).filter(f=>CONFIRMED.includes(f.verdict)).length;
-  const ev=(run.economics&&run.economics.pipeline_ev)||stats.pipeline_ev||0;
+  const confirmed=(run.findings||[]).filter(f=>CONFIRMED.includes(f.verdict)&&isProven(f)).length;
+  // 2026-11-06: same falsy-fallback bug already fixed for submit_now a few lines below — a
+  // legitimate, gated $0 in run.economics.pipeline_ev would silently fall through to the older,
+  // ungated stats.pipeline_ev. Not currently reachable (both are written together from the same
+  // total_ev at every call site today) but the same landmine, fixed the same way for consistency.
+  const ev=('pipeline_ev' in (run.economics||{}))?run.economics.pipeline_ev:(stats.pipeline_ev||0);
   const phaseNo=st==='done'?10:(aIdx>=0?aIdx+1:0);
-  document.getElementById('ops-stats').innerHTML=[
-    ['v','Phase', phaseNo+'<small>/10</small>'],
-    ['v','Endpoints', epN],
-    ['v','Coverage', covPct+'<small>%</small>'],
-    ['v','Confirmed', confirmed],
-    ['v gold','Pipeline EV', ev?('$'+Number(ev).toLocaleString()):'$0'],
-  ].map(([c,k,v])=>`<div class="ops-stat"><div class="${c==='v gold'?'v gold':'v'}">${v}</div><div class="k">${k}</div></div>`).join('');
+  opsTiles({phase:phaseNo, eps:epN, cov:covPct, conf:confirmed, ev:Number(ev)||0});
   // ── pipeline spine ──
   // The phase the hunt is AT is 'run' while running, 'paused' while paused (NOT 'done' — nothing is
   // done, it's waiting there), 'done' only for phases genuinely behind the frontier.
   const done=st==='done', paused=st==='paused';
-  document.getElementById('pl-body').innerHTML=OPS_PHASES.map((p,i)=>{
+  // per-phase outcomes: a phase the pointer moved PAST but whose agent produced nothing (rate-limited
+  // or empty) is NOT a truthful green 'done' — paint it amber 'incomplete' so "Verify ✓ but every
+  // finding still UNVERIFIED" can never hide behind a green dot again.
+  const po=run.phase_outcomes||{};
+  let incompleteN=0;
+  // Build the rows once, then only mutate state — rebuilding innerHTML every poll would restart every
+  // animation (and replay the one-shot completion pop) each POLL_MS.
+  const plBody=document.getElementById('pl-body');
+  if(!plBody.dataset.built) plBuild(plBody);
+  const plRows=plBody.children;
+  OPS_PHASES.forEach((p,i)=>{
     let cls='';
     if(done) cls='done';
     else if(aIdx>=0) cls = (i<aIdx) ? 'done' : (i===aIdx ? (running?'run':paused?'paused':'done') : '');
-    return `<div class="pl-row ${cls}"><div class="pl-node"><div class="pl-dot"></div></div><div class="pl-name">${p.n}</div><div class="pl-tag">${p.tag}</div></div>`;
-  }).join('');
-  document.getElementById('pl-count').textContent=(done?10:Math.max(0,aIdx+1))+' / 10';
+    let tag=p.tag;
+    if((cls==='done'||cls==='paused') && p.key){
+      const o=po[p.key];
+      if(o && (o.status==='empty'||o.status==='rate_limited')){
+        cls='incomplete'; incompleteN++;
+        tag = o.status==='rate_limited' ? 'rate-limited · rerun' : 'produced nothing · rerun';
+      }
+    }
+    const row=plRows[i]; if(!row) return;
+    const prev=row.dataset.st;
+    if(prev!==cls){
+      ['run','done','paused','incomplete'].forEach(c=>row.classList.toggle(c, c===cls));
+      // one-shot impact only on a live forward transition (run/paused → done), never on first paint
+      if(cls==='done' && (prev==='run'||prev==='paused')){
+        row.classList.add('just-done'); clearTimeout(row._jd);
+        row._jd=setTimeout(()=>row.classList.remove('just-done'),1100);
+      }
+      row.dataset.st=cls;
+    }
+    const tg=row.lastElementChild; if(tg.textContent!==tag) tg.textContent=tag;
+    const note=(cls==='incomplete' && po[p.key] && po[p.key].note) || '';
+    if(note) row.title=note; else row.removeAttribute('title');
+  });
+  // headline count reflects phases GENUINELY done — incompletes don't count toward the frontier number
+  const frontier = done?10:Math.max(0,aIdx+1);
+  document.getElementById('pl-count').textContent=Math.max(0,frontier-incompleteN)+' / 10'+(incompleteN?` · ${incompleteN} to rerun`:'');
   // ── economics ──
-  const econ=run.economics||{}; const submitN=econ.submit_now||stats.submit_ready||0;
+  const econ=run.economics||{}; const submitN=('submit_now' in econ)?econ.submit_now:(stats.submit_ready||0);
   let top=econ.top||[];
-  if(!top.length){ top=(run.findings||[]).filter(f=>f.verdict!=='false_positive'&&f.ev).sort((a,b)=>(b.ev||0)-(a.ev||0)).slice(0,5)
-      .map(f=>({title:f.title,sev:f.sev,ev:f.ev,endpoint:f.endpoint})); }
+  // 2026-11-04, operator: "wire everything together" — this fallback (only used when the backend
+  // hasn't priced anything yet) used to show ANY finding carrying an EV number, verdict and
+  // exploitation status be damned — same ungated pattern the backend econ.top had, just reimplemented
+  // client-side. Gate it through the same isProven() the Confirmed section now uses.
+  if(!top.length){ top=(run.findings||[]).filter(f=>f.verdict!=='false_positive'&&f.ev&&isProven(f)).sort((a,b)=>(b.ev||0)-(a.ev||0)).slice(0,5)
+      .map(f=>({title:f.title,sev:f.sev,ev:f.ev,cvss:f.cvss,endpoint:f.endpoint})); }
   const SEVHEX={c:'#FF3B5C',h:'#FF8A3D',m:'#FFD23D',l:'#3BA0FF',i:'#9CA3AF'};
   let econHtml=`<div class="econ-top"><div class="econ-big"><div class="v">$${Number(ev).toLocaleString()}</div><div class="k">pipeline value</div></div>`
     +`<div class="econ-big"><div class="v" style="color:var(--txt)">${submitN}</div><div class="k">submit-ready</div></div></div>`;
-  if(top.length){ econHtml+='<div class="econ-list">'+top.map(t=>`<div class="econ-item"><span class="econ-sev" style="background:${SEVHEX[t.sev]||SEVHEX.i}"></span><span class="econ-ti">${esc(t.title||'')}</span><span class="econ-ev">$${Number(t.ev||0).toLocaleString()}</span></div>`).join('')+'</div>'; }
+  // each payout is interpolated from the finding's CVSS within the program's reward range, so show
+  // the CVSS that produced it — the number isn't a flat per-severity constant anymore.
+  if(top.length){ econHtml+='<div class="econ-list">'+top.map(t=>`<div class="econ-item"><span class="econ-sev" style="background:${SEVHEX[t.sev]||SEVHEX.i}"></span><span class="econ-ti">${esc(t.title||'')}</span>${t.cvss?`<span class="econ-cvss" title="CVSS ${t.cvss} → interpolated payout">${Number(t.cvss).toFixed(1)}</span>`:''}<span class="econ-ev">$${Number(t.ev||0).toLocaleString()}</span></div>`).join('')+'</div>'; }
   else { econHtml+='<div class="ops-empty">no priced findings yet — economics runs after verification</div>'; }
   document.getElementById('econ-body').innerHTML=econHtml;
   document.getElementById('econ-count').textContent=top.length?(top.length+' ranked'):'';
-  // ── reasoning stream ──
+  // ── reasoning stream ── CURATED milestones only (2026-11-01): this used to mirror the full
+  // run.logs, making it a duplicate of the bottom ACTIVITY drawer. The drawer keeps the raw log;
+  // this feed now shows only the high-signal beats — phase starts/finishes (◆ ✓ ⏱), new findings
+  // (⚑), pause/resume (⏸ ▸ ▷ ■), verdict + dedup summaries, chains, economics/EV, and any warn/err.
   const rs=document.getElementById('rs-body');
   const near = rs.scrollHeight-rs.scrollTop-rs.clientHeight < 40;
   const CL={ok:'ok',err:'hit',warn:'warn',out:'',cmd:'sig'};
-  rs.innerHTML=(logs.slice(-50)).map(l=>`<div class="rs-line ${CL[l.t]||''}"><span class="t">${l.ts?new Date(l.ts*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}):''}</span><span class="m">${esc(l.v||'')}</span></div>`).join('')||'<div class="ops-empty">no activity yet</div>';
+  const milestones=logs.filter(isMilestone);
+  // rebuild only when the feed actually changed, and animate only the lines that are new — a plain
+  // innerHTML every poll would replay the entrance on all 50 lines every 2s.
+  const msig=milestones.length+'|'+((milestones[milestones.length-1]||{}).v||'');
+  if(rs.dataset.sig===msig){ document.getElementById('rs-count').textContent=milestones.length?milestones.length+' milestones':''; return; }
+  const prevN=rs.dataset.sig===undefined?milestones.length:(+rs.dataset.sig.split('|')[0]||0);
+  rs.dataset.sig=msig;
+  const shown=milestones.slice(-50), freshFrom=shown.length-Math.max(0,Math.min(shown.length,milestones.length-prevN));
+  rs.innerHTML=shown.map((l,i)=>`<div class="rs-line ${CL[l.t]||''}${i>=freshFrom?' nw':''}"><span class="t">${l.ts?new Date(l.ts*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}):''}</span><span class="m">${esc(l.v||'')}</span></div>`).join('')||'<div class="ops-empty">no milestones yet</div>';
   if(near) rs.scrollTop=rs.scrollHeight;
-  document.getElementById('rs-count').textContent=logs.length?logs.length+' events':'';
+  document.getElementById('rs-count').textContent=milestones.length?milestones.length+' milestones':'';
+}
+
+// A milestone = a high-signal beat for the curated REASONING feed (the pipeline NARRATIVE), as
+// opposed to the full raw ACTIVITY log. Crucially this EXCLUDES the individual "⚑" finding lines:
+// those are logged as type 'warn' and dominate the log (55 of 114 here), and they already have
+// their own homes (the Findings tab + the Economics card) — leaving them in made REASONING a near-
+// copy of ACTIVITY. What stays is the story: phase lifecycle, verdicts/dedup, chains, economics,
+// pause/resume, and hard failures.
+function isMilestone(l){
+  const v=l.v||'';
+  if(/^\s*⚑/.test(v)) return false;                                   // individual findings → raw ACTIVITY log only
+  if(/^\s*[◆✓⏱⏸▸▷■◇✦]/.test(v)) return true;                         // phase start/done/timeout, pause/resume, terminal
+  if(/Chain\s*→|pipeline EV|finding\(s\)\s+valued|\+\d+\s+finding\(s\)|verdict\(s\)|marked duplicate|result line\(s\)|catch-up verify|produced nothing|wrote no usable|refused/i.test(v)) return true;
+  if(l.t==='err') return true;                                        // hard errors always surface
+  return false;
 }
 
 /* ═══ LIVE 3D CONSTELLATION — watch-only window into the autonomous hunt ═══
@@ -3749,6 +4577,9 @@ function renderOps(run){
    is a heuristic view of where the hunt's attention is (newest finding, else wandering untested). */
 (function(){
   let scene,cam,renderer,GTEX,running=false,rafId=null,sig='';
+  let _fitOnNextBuild=true;   // auto-frame the camera only on a new target or a mode switch — never
+                              // on the incremental rebuilds that fire as endpoints stream in (that
+                              // would yank the view out from under someone inspecting a node).
   let NODES=[],EDGES=[],HUBS={},agent=null,ripples=[],lastFindCount=0,pickTimer=0;
   let GRAPH=null,graphTimer=null,nodeByGid={};
   const COMM_PAL=['#A78BFA','#60A5FA','#34D399','#38BDF8','#C4B5FD','#2DD4BF','#818CF8','#86EFAC','#93C5FD','#5EEAD4','#A5B4FC','#67E8F9'];
@@ -3796,7 +4627,7 @@ function renderOps(run){
       orbit.az-=dx*0.005;orbit.pol=Math.max(0.2,Math.min(2.94,orbit.pol-dy*0.005));lx=e.clientX;ly=e.clientY;});
     cv.addEventListener('pointerup',e=>{dragging=false;if(!moved){const nd=s2(e.clientX,e.clientY);
       if(nd){orbit.tFocus.copy(nd.pos);orbit.tRad=40;}else{orbit.tFocus.set(0,0,0);orbit.tRad=70;}}});
-    cv.addEventListener('wheel',e=>{e.preventDefault();orbit.tRad=Math.max(26,Math.min(140,orbit.tRad*(1+e.deltaY*0.001)));},{passive:false});
+    cv.addEventListener('wheel',e=>{e.preventDefault();orbit.tRad=Math.max(26,Math.min(240,orbit.tRad*(1+e.deltaY*0.001)));},{passive:false});
   }
   function sizeNow(){const cv=document.getElementById('live-sky');const b=cv.getBoundingClientRect();if(!b.width)return;
     renderer.setSize(b.width,b.height,false);cam.aspect=b.width/b.height;cam.updateProjectionMatrix();}
@@ -3826,6 +4657,11 @@ function renderOps(run){
       EDGES.push({a:hub,b:n,line});
     });
     const _ln=document.getElementById('live-nodes'); if(_ln)_ln.textContent=NODES.filter(n=>!n.hub).length;
+    if(_fitOnNextBuild){
+      let maxR=0;for(const n of NODES)maxR=Math.max(maxR,n.base.length());
+      orbit.tRad=orbit.rad=Math.max(40,Math.min(130,maxR*1.5+14));orbit.tFocus.set(0,0,0);orbit.focus.set(0,0,0);
+      _fitOnNextBuild=false;
+    }
   }
 
   function applyStatus(run){
@@ -3849,16 +4685,30 @@ function renderOps(run){
     NODES.forEach(n=>{scene.remove(n.glow);scene.remove(n.core);});EDGES.forEach(e=>scene.remove(e.line));
     NODES=[];EDGES=[];HUBS={};nodeByGid={};
     const comms=[...new Set(g.nodes.map(n=>n.community))], K=comms.length||1, cen={};
-    comms.forEach((c,i)=>{ const y=1-(i/Math.max(1,K-1))*2, rr=Math.sqrt(Math.max(0,1-y*y)), th=i*2.399;
-      cen[c]=new THREE.Vector3(Math.cos(th)*rr,y,Math.sin(th)*rr).multiplyScalar(16+K*1.6);
+    // even distribution on a sphere (golden-angle / Fibonacci) — used for BOTH the cluster centres
+    // and each cluster's member shell, so nothing clumps the way the old random offsets did.
+    const fib=(i,n)=>{const y=n<=1?0:1-(i/(n-1))*2,rr=Math.sqrt(Math.max(0,1-y*y)),th=i*2.39996;
+      return new THREE.Vector3(Math.cos(th)*rr,y,Math.sin(th)*rr);};
+    const RC=20+K*2.2;                                   // cluster radius — separated but compact
+    comms.forEach((c,i)=>{
+      cen[c]=fib(i,K).multiplyScalar(RC);
       const col=COMM_PAL[((c||0)%COMM_PAL.length+COMM_PAL.length)%COMM_PAL.length];
       const cn=(g.nodes.find(n=>n.community===c)||{}).community_name||('Cluster '+c);
       NODES.push({hub:true,label:cn,community:c,ccol:col,pos:cen[c].clone(),base:cen[c].clone(),status:'clear',glow:sprite(col,5,.34),core:sprite('#efeafc',1.9,1)});
     });
-    g.nodes.forEach(n=>{ const base=(cen[n.community]||new THREE.Vector3()).clone().add(randUnit().multiplyScalar(5+Math.random()*5));
-      const col=COMM_PAL[((n.community||0)%COMM_PAL.length+COMM_PAL.length)%COMM_PAL.length];
-      const nd={hub:false,gid:n.id,label:(n.label||n.id).slice(0,46),community:n.community,ccol:col,pos:base.clone(),base:base.clone(),ph:Math.random()*6.28,status:'untested',glow:sprite(col,2.6,.18),core:sprite(col,1,1)};
-      NODES.push(nd);nodeByGid[n.id]=nd;
+    // members evenly on a shell around their cluster centre; the shell grows with the member count
+    // so a big cluster breathes instead of stacking every node onto the hub.
+    const byC={};g.nodes.forEach(n=>{(byC[n.community]=byC[n.community]||[]).push(n);});
+    Object.keys(byC).forEach(ck=>{
+      const members=byC[ck],cnt=members.length,center=cen[members[0].community]||new THREE.Vector3();
+      const shell=7+Math.sqrt(cnt)*2.4;
+      members.forEach((n,idx)=>{
+        const dir=cnt===1?randUnit():fib(idx,cnt);
+        const base=center.clone().add(dir.multiplyScalar(shell*(0.72+0.28*((idx*0.61803)%1))));
+        const col=COMM_PAL[((n.community||0)%COMM_PAL.length+COMM_PAL.length)%COMM_PAL.length];
+        const nd={hub:false,gid:n.id,label:(n.label||n.id).slice(0,46),community:n.community,ccol:col,pos:base.clone(),base:base.clone(),ph:Math.random()*6.28,status:'untested',glow:sprite(col,2.6,.18),core:sprite(col,1,1)};
+        NODES.push(nd);nodeByGid[n.id]=nd;
+      });
     });
     g.links.forEach(l=>{ const a=nodeByGid[l.source],b=nodeByGid[l.target]; if(!a||!b)return;
       const chain=/enabl|requir|chain|exploit|lead|escalat|priv|bypass/i.test(l.relation||'');
@@ -3867,6 +4717,12 @@ function renderOps(run){
       EDGES.push({a,b,line,chain});
     });
     const hud=document.getElementById('live-hud'); if(hud) hud.innerHTML='KNOWLEDGE GRAPH · <span class="live-s">'+g.counts.nodes+'</span> entities · <span class="live-s">'+g.counts.links+'</span> relations';
+    // auto-fit the camera to the whole layout — only on a new target / mode switch (see _fitOnNextBuild)
+    if(_fitOnNextBuild){
+      let maxR=0;for(const n of NODES)maxR=Math.max(maxR,n.base.length());
+      orbit.tRad=orbit.rad=Math.max(40,Math.min(130,maxR*1.4+10));orbit.tFocus.set(0,0,0);orbit.focus.set(0,0,0);
+      _fitOnNextBuild=false;
+    }
   }
   // overlay live hunt state onto the semantic graph (best-effort: match findings to entity labels)
   function applyGraphStatus(run){
@@ -3886,14 +4742,28 @@ function renderOps(run){
 
   window.liveSync=function(run){
     if(!window.THREE||!scene)return;
-    if(GRAPH&&GRAPH.built){ const s='g'+GRAPH.counts.nodes+'|'+GRAPH.counts.links; if(s!==sig){sig=s;buildFromGraph(GRAPH);} applyGraphStatus(run); }
-    else {
-      const eps=epList(run);const s=eps.length+'|'+(run.hosts?run.hosts.length:0);
+    const mode=(S.mapMode||'graph');
+    // 'graph' = semantic clusters when the knowledge graph is built (falls back to surface while it
+    // builds); 'surface' = always the endpoint hub-and-spoke map. The sig is prefixed per layout so
+    // flipping modes always forces a rebuild even if the node counts happen to match.
+    if(mode==='graph' && GRAPH && GRAPH.built){
+      const s='g'+GRAPH.counts.nodes+'|'+GRAPH.counts.links; if(s!==sig){sig=s;buildFromGraph(GRAPH);} applyGraphStatus(run);
+    } else {
+      const eps=epList(run);const s='s'+eps.length+'|'+(run.hosts?run.hosts.length:0);
       if(s!==sig){sig=s;rebuild(run);}
       applyStatus(run);
       const hud=document.getElementById('live-hud'); const n=NODES.filter(x=>!x.hub).length;
-      if(hud) hud.innerHTML='SURFACE MAP · <span class="live-s">'+n+'</span> endpoints · <span class="live-s">'+(run.status==='running'?'building graph…':'agent live')+'</span>';
+      const note = mode==='surface' ? 'surface view' : (run.status==='running'?'building graph…':'agent live');
+      if(hud) hud.innerHTML='SURFACE MAP · <span class="live-s">'+n+'</span> endpoints · <span class="live-s">'+note+'</span>';
     }
+  };
+  // toggle between the two Map layouts; re-frames the camera once for the new layout
+  window.liveSetMode=function(m){
+    if(m!=='surface'&&m!=='graph')return;
+    S.mapMode=m;
+    document.querySelectorAll('#live-mode .lm-btn').forEach(b=>b.classList.toggle('on',b.dataset.m===m));
+    sig=''; _fitOnNextBuild=true;
+    if(window.THREE&&scene&&S.run) window.liveSync(S.run);
   };
 
   function tick(ts){
@@ -3930,13 +4800,38 @@ function renderOps(run){
     const sp=orbit.pol,ca=orbit.az;
     cam.position.set(orbit.focus.x+orbit.rad*Math.sin(sp)*Math.cos(ca),orbit.focus.y+orbit.rad*Math.cos(sp),orbit.focus.z+orbit.rad*Math.sin(sp)*Math.sin(ca));
     cam.lookAt(orbit.focus);
-    // labels (hubs + findings)
+    // labels (hubs + findings) — DECLUTTERED. Drawing every label every frame stacked long
+    // strings on top of each other in dense clusters. Now: project all candidates, prioritise
+    // findings then whatever's nearest the camera, greedily drop any label whose box overlaps one
+    // already placed, cap the total, and fade the far ones. The graph reads instead of smearing.
     const layer=document.getElementById('live-labels');const cv=document.getElementById('live-sky');const b=cv.getBoundingClientRect();
-    let li=0;const pool=layer.children;const tmp=V();
-    for(const n of NODES){if(!(n.hub||n.status==='finding'))continue;tmp.copy(n.pos).project(cam);if(tmp.z>1)continue;
+    const tmp=V();const cand=[];
+    for(const n of NODES){
+      if(!(n.hub||n.status==='finding'))continue;
+      tmp.copy(n.pos).project(cam);
+      if(tmp.z>1)continue;                                         // behind the camera
+      const x=(tmp.x*0.5+0.5)*b.width, y=(-tmp.y*0.5+0.5)*b.height;
+      if(x<-60||x>b.width+60||y<-10||y>b.height+10)continue;       // off-screen
+      cand.push({n,x,y,z:tmp.z});
+    }
+    // findings (results) win over structural hubs; within each, nearer the camera first
+    cand.sort((a,c)=>((a.n.status==='finding'?0:1)-(c.n.status==='finding'?0:1))||a.z-c.z);
+    const MAXL=14,placed=[];let li=0;const pool=layer.children;
+    for(const it of cand){
+      if(li>=MAXL)break;
+      const txt=(it.n.label||'').slice(0,28);
+      const w=txt.length*6.3+10,h=15;
+      // .live-lbl is translate(-50%,-150%): box is centred on x, sitting just above the point
+      const cx=it.x,cy=it.y-16;
+      const x1=cx-w/2,x2=cx+w/2,y1=cy-h/2,y2=cy+h/2;
+      let hit=false;for(const p of placed){if(x1<p.x2&&x2>p.x1&&y1<p.y2&&y2>p.y1){hit=true;break;}}
+      if(hit)continue;
+      placed.push({x1,x2,y1,y2});
       let el=pool[li];if(!el){el=document.createElement('div');el.className='live-lbl';layer.appendChild(el);}
-      el.className='live-lbl'+(n.hub?' hub':' found');el.textContent=n.hub?n.label:n.label;
-      el.style.left=((tmp.x*0.5+0.5)*b.width)+'px';el.style.top=((-tmp.y*0.5+0.5)*b.height)+'px';el.style.display='block';li++;}
+      el.className='live-lbl'+(it.n.hub?' hub':' found');el.textContent=txt;
+      el.style.opacity=Math.max(0.32,Math.min(1,1.15-Math.max(0,it.z)*0.9)).toFixed(2);  // depth fade
+      el.style.left=it.x+'px';el.style.top=it.y+'px';el.style.display='block';li++;
+    }
     for(;li<pool.length;li++)pool[li].style.display='none';
     renderer.render(scene,cam);rafId=requestAnimationFrame(tick);
   }
@@ -3945,7 +4840,7 @@ function renderOps(run){
     const hud=document.getElementById('live-hud');
     if(!window.THREE){if(hud)hud.textContent='3D unavailable (three.js failed to load)';return;}
     if(!scene)initScene();
-    if(S._liveTarget!==S.target){ GRAPH=null; sig=''; S._liveTarget=S.target; }  // new target → drop stale graph
+    if(S._liveTarget!==S.target){ GRAPH=null; sig=''; _fitOnNextBuild=true; S._liveTarget=S.target; }  // new target → drop stale graph + re-frame
     sizeNow();
     fetchGraph();                                          // pull the real knowledge graph (async; surface map shows until it arrives)
     if(S.run)window.liveSync(S.run);
@@ -3957,6 +4852,7 @@ function renderOps(run){
 })();
 
 applyIcons();  // swap every [data-ic] placeholder for its custom line icon
+gateOnboarding();   // first-run gates: accept Terms + AUP, then confirm an Anthropic API key is connected
 boot(true);   // initial load: auto-resume a live hunt. showScope()/New-hunt calls boot() (no auto-resume).
 updateModeUI();   // show/hide the credentials panel based on the default mode (grey)
 </script>

@@ -21,7 +21,7 @@ API (JSON):
   POST /api/hypothesize {target,stack}               → ranked leads
   POST /api/recall      {text,stack}                 → analogous past hunts
 """
-import sys, os, re, json, subprocess, tempfile, threading, time
+import sys, os, re, json, signal, subprocess, tempfile, threading, time
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -53,6 +53,76 @@ LOCAL_TOOLS = REPO / "tools"
 TOOLS = LOCAL_TOOLS if LOCAL_TOOLS.exists() else Path.home() / ".claude" / "tools"
 # UI/bridge live in the repo root, NOT in tools/ — look in both so either layout works
 ASSETS = [REPO, Path.home() / ".claude" / "tools", TOOLS]
+
+# ── BYO-key onboarding ───────────────────────────────────────────────────────────────────────
+# The product ships with NO credentials. Each customer supplies their OWN Anthropic API key, which is
+# verified live and stored 0600 here, then loaded into the environment so every hunt subprocess (and
+# the `claude -p` native path) authenticates — and is billed — as that customer. This is the only
+# sanctioned billing model for a sold product: Anthropic's Claude Code legal/compliance terms forbid
+# reselling or intermediating Claude usage on an end user's behalf and require each end user to
+# authenticate with their own API key. So: no owner key baked in, no subscription relay — their key.
+PRODUCT_KEY_FILE = ROOT / "anthropic.key"      # the raw key, chmod 0600
+PRODUCT_ACCT_FILE = ROOT / "account.json"      # non-secret metadata (masked tail, verified_at, model count)
+TERMS_FILE = ROOT / "terms_accepted.json"      # records which Terms/AUP version the operator accepted
+TERMS_VERSION = "2026-11-11"                    # bump to force re-acceptance when the Terms/AUP change
+
+
+def _mask_key(k):
+    k = (k or "").strip()
+    return (k[:10] + "…" + k[-4:]) if len(k) > 14 else "sk-ant-…"
+
+
+def _load_product_key():
+    """Load the onboarded key into the environment at boot so hunt subprocesses inherit it. An explicit
+    ANTHROPIC_API_KEY already in the environment (owner/dev override) always wins and is left untouched."""
+    try:
+        ROOT.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    if (os.environ.get("ANTHROPIC_API_KEY") or "").strip():
+        return
+    try:
+        k = PRODUCT_KEY_FILE.read_text().strip()
+    except Exception:
+        k = ""
+    if k:
+        os.environ["ANTHROPIC_API_KEY"] = k
+        os.environ.setdefault("HUNT_LLM_PROVIDER", "anthropic")
+
+
+def _verify_anthropic_key(key):
+    """Live-verify an Anthropic API key with a zero-cost GET /v1/models. Returns (ok, info|error, status).
+    A 429 means the key authenticated (a bad key is 401) but is throttled — still valid, so treated as ok."""
+    key = (key or "").strip()
+    if not key:
+        return False, "no key provided", 0
+    if not key.startswith("sk-ant-") or len(key) < 20:
+        return False, "that doesn't look like an Anthropic API key (it should start with sk-ant-…)", 0
+    import urllib.request as _ur, urllib.error as _ue
+    req = _ur.Request("https://api.anthropic.com/v1/models",
+                      headers={"x-api-key": key, "anthropic-version": "2023-06-01"})
+    try:
+        with _ur.urlopen(req, timeout=20) as r:
+            data = json.loads(r.read().decode())
+        models = [m.get("id") for m in (data.get("data") or []) if isinstance(m, dict)]
+        return True, {"models": len(models), "sample": models[:3]}, 200
+    except _ue.HTTPError as e:
+        try:
+            msg = json.loads(e.read().decode()).get("error", {}).get("message", "")
+        except Exception:
+            msg = ""
+        if e.code == 401:
+            return False, "that key was rejected (401) — it's invalid, revoked, or mistyped", 401
+        if e.code == 403:
+            return False, "that key is valid but lacks permission (403) — enable it for the Messages API in the Console", 403
+        if e.code == 429:
+            return True, {"models": None, "throttled": True}, 429
+        return False, (msg or ("verification failed (HTTP %d)" % e.code)), e.code
+    except Exception as e:
+        return False, ("couldn't reach api.anthropic.com: " + str(e)[:150]), 0
+
+
+_load_product_key()
 
 _HL = None
 def _parse_session_blob(blob):
@@ -139,8 +209,15 @@ def _rate_limit_auto_resume_loop():
                 pidf = hd / "run.pid"
                 try:
                     pid = int(pidf.read_text().strip())
-                    os.kill(pid, 0)
-                    continue   # still alive somehow — not our relaunch to make
+                    # fixed 2026-11-06: bare os.kill(pid,0) is the same PID-reuse risk already
+                    # hardened everywhere a signal is actually SENT (is_process() checks the PID is
+                    # alive AND is actually hunt-run.py, not just that the number is in use) — this
+                    # one only gates a decision not to relaunch, never signals, so the risk was a
+                    # false-negative (a stale/recycled PID could wrongly look "still alive" and skip
+                    # auto-resume, leaving a genuinely rate-limited hunt stuck past its reset time
+                    # until the operator noticed), not a mis-signal, but the same discipline applies.
+                    if is_process(pid, "hunt-run.py"):
+                        continue   # still alive — not our relaunch to make
                 except Exception:
                     pass
                 tgt = d.get("target") or hd.parent.name
@@ -210,6 +287,19 @@ def hunt_dir(target):
     d = TARGETS / safe(target) / ".hunt"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _write_secret_json(path, obj):
+    """SECURITY FIX (2026-11-06, full-codebase audit): identities.json (live session tokens/
+    cookies) was written via plain Path.write_text() at several call sites — default umask leaves
+    it readable by any other local account on a multi-user box. /api/hunt/creds's own creds.json
+    write already used os.open(...,0o600) explicitly; apply the same explicit mode everywhere else
+    a credential file gets written."""
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, json.dumps(obj, indent=2).encode())
+    finally:
+        os.close(fd)
 
 
 def is_process(pid, marker):
@@ -462,7 +552,11 @@ class H(BaseHTTPRequestHandler):
         # persist the parsed program summary (rewards/rules/focus/caps/poc/ai/out-of-scope) so the
         # sweep, triage, and report generation can honor it — and the operator can see it later.
         pm = b.get("program_meta")
-        if isinstance(pm, dict) and pm:
+        rr = b.get("reward_ranges")   # per-severity [min,max] payout ranges from the new-hunt page
+        if (isinstance(pm, dict) and pm) or (isinstance(rr, dict) and rr):
+            pm = dict(pm) if isinstance(pm, dict) else {}
+            if isinstance(rr, dict) and rr:
+                pm["reward_ranges"] = rr
             try: (hd / "program.json").write_text(json.dumps(pm, indent=2))
             except Exception: pass
         # program's request-rate cap (e.g. 2 req/s) → rules.json, which scope-guard throttles to
@@ -569,6 +663,44 @@ class H(BaseHTTPRequestHandler):
             except Exception:
                 return self._send(_PROOF_404, 404, "text/html")
             return self._send(_render_proof_page(f, q.get("target", ""), fi, d.get("program", "")), 200, "text/html")
+        if u.path == "/api/hunt/finding-zip":  # GET ?target=&fi= — download the evidence bundle zip for one finding
+            fi_raw = q.get("fi", "")
+            hd = hunt_dir(q.get("target", "")); rf = hd / "run.json"
+            try:
+                fi = int(fi_raw)
+                d = json.loads(rf.read_text())
+                f = d["findings"][fi]
+            except Exception:
+                return self._send({"ok": False, "error": "no such finding"}, 404)
+            bundle = f.get("evidence_bundle")
+            zpath = Path(bundle) if bundle else (hd / "evidence" / ("F" + str(fi)) / ("bundle-F" + str(fi) + ".zip"))
+            if not zpath.exists():
+                # no bundle captured yet (e.g. report/exploit never ran, or ran before this feature) —
+                # build one on the spot from whatever evidence the finding already has, best-effort.
+                try:
+                    ftmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+                    ftmp.write(json.dumps(f)); ftmp.close()
+                    args = ["--id", "F" + str(fi), "--finding-file", ftmp.name, "--json"]
+                    r = run("evidence-bundle.py", args, q.get("target", ""), timeout=120)
+                    os.unlink(ftmp.name)
+                    bd = json.loads((r.get("out") or "").strip().splitlines()[-1])
+                    if bd.get("ok"):
+                        zpath = Path(bd["bundle"])
+                except Exception:
+                    pass
+            if not zpath.exists():
+                return self._send({"ok": False, "error": "no evidence bundle available for this finding"}, 404)
+            try:
+                body = zpath.read_bytes()
+            except Exception as e:
+                return self._send({"ok": False, "error": str(e)[:200]}, 500)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", 'attachment; filename="F' + str(fi) + '-evidence.zip"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if u.path == "/":
             ui = asset("huntr-ui.html")
             if ui:
@@ -670,12 +802,16 @@ class H(BaseHTTPRequestHandler):
                         "status": d.get("status"), "stage": d.get("stage"), "pct": d.get("pct"),
                         "updated": d.get("updated"), "started": d.get("started"),
                         "paused_reason": d.get("paused_reason"),
+                        # per-phase outcome (ok|empty|rate_limited|skipped) so the pipeline spine can
+                        # show a ran-but-produced-nothing phase as amber "needs rerun", not green done.
+                        "phase_outcomes": d.get("phase_outcomes", {}),
                         "findings": d.get("findings", []),
                         "leads": (d.get("leads") or [])[-30:],
                         "logs": (d.get("logs") or [])[-200:],
                         "hosts": d.get("hosts", []),
                         "chains": d.get("chains", []),  # small list — the graph view's chain nodes and the
                                                          # combo banner both need this on every live poll
+                        "economics": d.get("economics", {}),  # pipeline_ev + per-severity reward_ranges + ranked top
                         # the endpoints LIST is capped to 200 for payload size, but that cap must never
                         # leak into a headline STATISTIC — the UI's attack-surface summary card used to
                         # read len(this list) for "Endpoints" (and derive "Hosts" from it too), so any
@@ -694,6 +830,10 @@ class H(BaseHTTPRequestHandler):
                         "session_alert": d.get("session_alert"),
                         "circuit_open": d.get("circuit_open"),
                         "llm_alert": d.get("llm_alert"),
+                        # 5.x-generation persona-refusal → 4.x-fallback events (hunt-run.py's
+                        # _run_claude_cli_fallback) — lets the operator see how often the newer,
+                        # cheaper/stronger primary model is actually flagging under this CLI auth.
+                        "llm_refusals": (d.get("llm_refusals") or [])[-30:],
                     }
                     # full=1 sends everything (used by report generator)
                     if q.get("full") == "1":
@@ -852,6 +992,35 @@ class H(BaseHTTPRequestHandler):
                 return self._send(st)
             except Exception as e:
                 return self._send({"linked": False, "mode": None, "error": str(e)[:200]})
+        if u.path == "/api/account":  # BYO-key onboarding status — never returns the key itself
+            envk = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
+            try:
+                filek = PRODUCT_KEY_FILE.read_text().strip()
+            except Exception:
+                filek = ""
+            try:
+                meta = json.loads(PRODUCT_ACCT_FILE.read_text())
+            except Exception:
+                meta = {}
+            key = filek or envk
+            return self._send({
+                "configured": bool(key),
+                "masked": _mask_key(key) if key else "",
+                "source": ("stored" if filek else ("env" if envk else None)),
+                "verified_at": meta.get("verified_at", 0),
+                "models": meta.get("models"),
+            })
+        if u.path == "/api/terms":  # has the operator accepted the current Terms of Service + Acceptable Use?
+            try:
+                rec = json.loads(TERMS_FILE.read_text())
+            except Exception:
+                rec = {}
+            return self._send({
+                "accepted": rec.get("version") == TERMS_VERSION,
+                "accepted_version": rec.get("version"),
+                "required_version": TERMS_VERSION,
+                "accepted_at": rec.get("accepted_at", 0),
+            })
         if u.path == "/api/earnings":  # the bounty-business ledger summary
             r = run("earnings.py", ["--json"])
             try:
@@ -881,7 +1050,6 @@ class H(BaseHTTPRequestHandler):
                                    "by_program": {}, "by_platform": {}, "by_month": {},
                                    "by_severity": {}, "recent": []})
         if u.path == "/api/earnings/export":  # stream the CSV for download
-            import tempfile
             with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
                 tmp = f.name
             year = q.get("year")
@@ -1752,16 +1920,14 @@ class H(BaseHTTPRequestHandler):
                 return self._send(json.loads(r["out"]))
             except Exception:
                 return self._send({"ok": False, "error": r.get("err", "")[:500]})
-        if u.path == "/api/evidence":  # POST {id, finding?, capture?, screenshot?}
+        if u.path == "/api/evidence":  # POST {id, finding?}
             args = ["--id", b.get("id", ""), "--json"]
-            if b.get("capture"): args += ["--capture", b["capture"]]
-            if b.get("screenshot"): args += ["--screenshot", b["screenshot"]]
             ftmp = None
             if b.get("finding"):
                 ftmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
                 ftmp.write(json.dumps(b["finding"])); ftmp.close()
                 args += ["--finding-file", ftmp.name]
-            r = run("evidence-bundle.py", args, b.get("target"), timeout=90)
+            r = run("evidence-bundle.py", args, b.get("target"), timeout=120)
             if ftmp: os.unlink(ftmp.name)
             try:
                 return self._send(json.loads(r["out"]))
@@ -1968,6 +2134,48 @@ class H(BaseHTTPRequestHandler):
                 return self._send(json.loads(r["out"]))
             except Exception:
                 return self._send({"prob": None, "raw": r.get("out", "") + r.get("err", "")})
+        if u.path == "/api/terms":  # POST {accept:true} → record acceptance of the current Terms + AUP
+            if not b.get("accept"):
+                return self._send({"ok": False, "error": "acceptance required"}, 400)
+            rec = {"version": TERMS_VERSION, "accepted_at": int(time.time())}
+            try:
+                TERMS_FILE.write_text(json.dumps(rec))
+            except Exception as e:
+                return self._send({"ok": False, "error": str(e)[:150]}, 500)
+            return self._send({"ok": True, **rec})
+        if u.path == "/api/account/key":  # POST {key} → verify live + store, or {delete:true} → remove
+            if b.get("delete"):
+                for p in (PRODUCT_KEY_FILE, PRODUCT_ACCT_FILE):
+                    try:
+                        p.unlink()
+                    except Exception:
+                        pass
+                os.environ.pop("ANTHROPIC_API_KEY", None)
+                return self._send({"ok": True, "configured": False})
+            key = (b.get("key") or "").strip()
+            ok, info, status = _verify_anthropic_key(key)
+            if not ok:
+                return self._send({"ok": False, "error": info, "status": status}, 400)
+            # verified — persist 0600 and apply to THIS process + every hunt it launches from now on
+            try:
+                fd = os.open(str(PRODUCT_KEY_FILE), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                try:
+                    os.write(fd, key.encode())
+                finally:
+                    os.close(fd)
+            except Exception as e:
+                return self._send({"ok": False, "error": "verified, but couldn't save it: " + str(e)[:150]}, 500)
+            os.environ["ANTHROPIC_API_KEY"] = key
+            os.environ["HUNT_LLM_PROVIDER"] = "anthropic"
+            meta = {"verified_at": int(time.time()), "masked": _mask_key(key),
+                    "models": (info.get("models") if isinstance(info, dict) else None)}
+            try:
+                _write_secret_json(PRODUCT_ACCT_FILE, meta)
+            except Exception:
+                pass
+            return self._send({"ok": True, "configured": True, "masked": meta["masked"],
+                               "models": meta["models"], "verified_at": meta["verified_at"],
+                               "throttled": bool(isinstance(info, dict) and info.get("throttled"))})
         if u.path == "/api/identity":
             hd = hunt_dir(t)
             p = hd / "identities.json"
@@ -1980,9 +2188,13 @@ class H(BaseHTTPRequestHandler):
             if b.get("authorization"):
                 rec["authorization"] = b["authorization"]
             if b.get("cookie"):
-                rec["cookie"] = b["cookie"]
+                # key fixed 2026-11-06 — "cookieHeader" is what every reader of this file actually
+                # checks (hunt-run.py's _lead_session_headers/_session, agent_core.py's
+                # set_identity, evidence-bundle.py with no fallback); "cookie" was the same
+                # mismatch already fixed at /api/hunt/creds the same day, reintroduced here.
+                rec["cookieHeader"] = b["cookie"]
             ids[name] = rec
-            p.write_text(json.dumps(ids, indent=2))
+            _write_secret_json(p, ids)
             return self._send({"ok": True, "identities": list(ids.keys())})
         if u.path == "/api/hunt/creds":
             # Hot-swap creds on an ALREADY-RUNNING hunt. hunt-run.py's _creds() re-reads
@@ -2028,7 +2240,18 @@ class H(BaseHTTPRequestHandler):
                 if cur.get("session_token"):
                     rec["authorization"] = cur["session_token"]
                 if cur.get("cookie"):
-                    rec["cookie"] = cur["cookie"]
+                    # canonical key every OTHER reader of identities.json's "session" entry uses
+                    # (hunt-run.py's _lead_session_headers/_session, agent_core.py, hunt-agent.py,
+                    # evidence-bundle.py) is "cookieHeader", not "cookie" — writing "cookie" here
+                    # created a second, stale-forever field that only exec-http.py's own
+                    # `idn.get("cookie") or idn.get("cookieHeader")` fallback happened to paper
+                    # over. Every other consumer (notably evidence-bundle.py, which has no such
+                    # fallback) kept reading the OLD cookie out of "cookieHeader" after a hot-swap,
+                    # so a freshly submitted report's repro.sh could embed a dead session even
+                    # though live hunting had already moved on to the new one. Write the key
+                    # everything actually reads, and drop the old mismatched one if present.
+                    rec["cookieHeader"] = cur["cookie"]
+                    rec.pop("cookie", None)
                 if cur.get("auth_header"):
                     hdrs = rec.setdefault("headers", {})
                     for ln in str(cur["auth_header"]).replace("\\n", "\n").splitlines():
@@ -2036,7 +2259,7 @@ class H(BaseHTTPRequestHandler):
                             k2, v2 = ln.split(":", 1)
                             if k2.strip():
                                 hdrs[k2.strip()] = v2.strip()
-                idp.write_text(json.dumps(ids, indent=2))
+                _write_secret_json(idp, ids)
             except Exception:
                 pass
             # the operator just supplied fresh creds — clear any stale-session alert so the

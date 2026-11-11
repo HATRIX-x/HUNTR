@@ -9,7 +9,11 @@ export default function sitemap(): MetadataRoute.Sitemap {
     { url: `${base}/platform/`, lastModified: now, changeFrequency: "monthly", priority: 0.8 },
     { url: `${base}/benchmark/`, lastModified: now, changeFrequency: "monthly", priority: 0.8 },
     { url: `${base}/access/`, lastModified: now, changeFrequency: "monthly", priority: 0.9 },
+    { url: `${base}/pricing/`, lastModified: now, changeFrequency: "monthly", priority: 0.9 },
     { url: `${base}/research/`, lastModified: now, changeFrequency: "weekly", priority: 0.7 },
+    { url: `${base}/terms/`, lastModified: now, changeFrequency: "yearly", priority: 0.4 },
+    { url: `${base}/privacy/`, lastModified: now, changeFrequency: "yearly", priority: 0.4 },
+    { url: `${base}/acceptable-use/`, lastModified: now, changeFrequency: "yearly", priority: 0.4 },
     ...ARTICLES.map((a) => ({
       url: `${base}/research/${a.slug}/`,
       lastModified: new Date(a.modified),
