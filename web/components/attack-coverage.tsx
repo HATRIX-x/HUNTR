@@ -75,7 +75,6 @@ export function AttackCoverage() {
       </div>
       <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-1 font-mono text-[10px] uppercase tracking-[0.1em] text-faint">
         <span>hunted end-to-end — recon to validated report</span>
-        <span className="text-faint/80">30 with planted ground truth · ~96% recall</span>
       </div>
       <style>{`
         .ac-tag { transition: color .25s ease, border-color .25s ease; }

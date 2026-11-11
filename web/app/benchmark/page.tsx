@@ -11,19 +11,19 @@ export const metadata: Metadata = {
   alternates: { canonical: "/benchmark/" },
   openGraph: {
     title: "HUNTR Benchmark — Measured against ground truth",
-    description: "Known-vulnerable targets with certain answers. 58 vuln classes hunted, 5 suites, 30 planted bugs with certain answers.",
+    description: "Known-vulnerable targets with certain answers. 58 vulnerability classes hunted end-to-end across 5 suites. Zero auto-submissions.",
     url: "https://huntr.run/benchmark",
     images: [{ url: "/og.png", width: 1200, height: 630 }],
   },
 };
 
 const suites = [
-  ["Local lab", "Planted bugs", "Black-box web + API lab. SQLi, XSS, SSTI, SSRF, IDOR, authz, CORS, LFI — answers known cold."],
+  ["Local lab", "Known-vuln lab", "Black-box web + API lab. SQLi, XSS, SSTI, SSRF, IDOR, authz, CORS, LFI — answers known cold."],
   ["Auth lab", "Access control", "BFLA, broken access control, privilege boundaries. Tested grey-box."],
   ["ASP.NET", "Framework depth", "Proves the engine retools its methodology for the stack it finds."],
   ["Public", "Real test sites", "Industry-standard vulnweb targets, scored against known baselines."],
-  ["Scoring", "Recall + FP rate", "Did it find the bug? Did it cry wolf? Money-weighted, FP-penalized."],
-  ["Control", "Deterministic", "A no-LLM path makes core recall reproducible — run to run."],
+  ["Scoring", "Signal vs. noise", "Did it find the bug? Did it cry wolf? Money-weighted, FP-penalized."],
+  ["Control", "Deterministic", "A no-LLM path makes core coverage reproducible — run to run."],
 ];
 
 const classes = ["sqli","xss","ssti","ssrf","idor","authz","bfla","cors","lfi","nosqli","crlf","xpath","ldap","cmdi","oauth","graphql","deserialization","mass-assignment","prototype-pollution","host-header","web-cache-deception","file-upload","clickjack","csp","redirect"];
@@ -65,7 +65,7 @@ export default function Benchmark() {
         <div className="site-wrap py-20 sm:py-28">
           <div className="grid gap-12 sm:grid-cols-3">
             <Reveal><Stat value={58} label="Vulnerability classes" sub="Hunted end-to-end — recon to validated report." tone="brand" /></Reveal>
-            <Reveal delay={120}><Stat value={30} label="Ground-truth bugs" sub="Planted across 5 suites with certain answers." tone="fg" /></Reveal>
+            <Reveal delay={120}><Stat value={11} label="Specialist agents" sub="Recon, exploit, chaining, reporting — each a focused agent." tone="fg" /></Reveal>
             <Reveal delay={240}><Stat value={0} label="Auto-submissions" sub="You review and send. Every finding, every time." tone="green" /></Reveal>
           </div>
         </div>
@@ -78,8 +78,8 @@ export default function Benchmark() {
             <span className="label text-muted">The method</span>
             <h2 className="display mt-4 max-w-[20ch] text-[clamp(2rem,5vw,4rem)]">No grading <span className="text-brand">on a curve.</span></h2>
             <p className="mt-5 max-w-[52ch] text-lg text-fg/70">
-              We don&apos;t estimate. Every target ships with planted bugs and known answers — so recall and
-              false positives are scored against the truth.
+              We don&apos;t estimate. HUNTR is run against known-vulnerable targets, so every hit can be
+              checked against what&apos;s actually there — results, not a curated demo.
             </p>
           </Reveal>
           <div className="mt-14 grid gap-px overflow-hidden border border-line sm:grid-cols-2 lg:grid-cols-3" data-reveal-group>
