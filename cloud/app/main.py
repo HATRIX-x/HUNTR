@@ -21,8 +21,12 @@ app = FastAPI(
     redoc_url=None,
 )
 
-# CORS — allow the dashboard (served from the same domain in prod)
-ORIGINS = os.environ.get("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:8899").split(",")
+# CORS — allow the static huntr.run site + local dev to call the API from the browser
+_DEFAULT_ORIGINS = (
+    "https://huntr.run,https://www.huntr.run,"
+    "http://localhost:3000,http://127.0.0.1:3000,http://127.0.0.1:8899"
+)
+ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", _DEFAULT_ORIGINS).split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ORIGINS,

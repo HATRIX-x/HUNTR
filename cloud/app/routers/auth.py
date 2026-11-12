@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db, User
 from ..auth import hash_password, verify_password, create_session_token
+from ..deps import current_user
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
 
@@ -64,9 +65,11 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
 
 
 @router.get("/me")
-def me(db: Session = Depends(get_db),
-       token: str = Depends(lambda authorization=None: authorization)):
-    # handled by current_user dep in callers; this is a convenience endpoint
-    from ..deps import current_user
-    from fastapi import Request
-    return {"note": "use Authorization: Bearer <session_token>"}
+def me(user: User = Depends(current_user)):
+    """Resolve the signed-in user from the Bearer session token."""
+    return {
+        "user_id": user.id,
+        "email": user.email,
+        "plan": user.plan,
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+    }

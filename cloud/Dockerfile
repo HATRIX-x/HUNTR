@@ -17,10 +17,12 @@ USER huntr
 
 EXPOSE 8000
 
-CMD ["gunicorn", "app.main:app", \
-     "-k", "uvicorn.workers.UvicornWorker", \
-     "-w", "2", \
-     "--bind", "0.0.0.0:8000", \
-     "--access-logfile", "-", \
-     "--error-logfile", "-", \
-     "--timeout", "30"]
+# Shell-form CMD so ${PORT} is expanded at runtime (Railway/Render inject PORT;
+# falls back to 8000 locally). Exec-form JSON does NOT expand env vars.
+CMD gunicorn app.main:app \
+    -k uvicorn.workers.UvicornWorker \
+    -w 2 \
+    --bind 0.0.0.0:${PORT:-8000} \
+    --access-logfile - \
+    --error-logfile - \
+    --timeout 30
