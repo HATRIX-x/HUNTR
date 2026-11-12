@@ -1,12 +1,13 @@
 "use client";
 import { useEffect, useRef } from "react";
 
-type Node = { x: number; y: number; z: number; kind: "root" | "ep" | "crit" | "high"; label?: string; found: number };
+type Kind = "root" | "ep" | "crit" | "high";
+type Node = { x: number; y: number; z: number; kind: Kind; label?: string; order: number; hub: number; foundAt: number };
+type Pulse = { e: number; t: number; spd: number };
 
-const LABELS = ["/api", "SQLi", "/auth", "IDOR", "SSRF", "/admin", "graphql", "/upload", "XSS", "/token"];
-const COL = {
-  root: "#A78BFA", ep: "#4ADE80", crit: "#ff5d6c", high: "#e7b84b",
-  faint: "rgba(138,144,156,0.5)", edge: "rgba(167,139,250,0.14)", edgeHot: "rgba(74,222,128,0.4)",
+const LABELS = ["/api", "SQLi", "/auth", "IDOR", "SSRF", "/admin", "graphql", "/upload", "XSS", "/token", "/v2", "JWT"];
+const C = {
+  root: [167, 139, 250], ep: [74, 222, 128], crit: [255, 93, 108], high: [231, 184, 75],
 };
 
 export function SurfaceGraph3D() {
@@ -19,98 +20,174 @@ export function SurfaceGraph3D() {
     const ctx = cv.getContext("2d")!;
     const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-    // ── build nodes on a fibonacci sphere ──
-    const N = 46;
-    const nodes: Node[] = [{ x: 0, y: 0, z: 0, kind: "root", label: "target", found: 0 }];
+    // ── clustered layout: root → hubs → satellites ──
+    const HUBS = 6;
+    const nodes: Node[] = [{ x: 0, y: 0, z: 0, kind: "root", label: "target", order: 0, hub: -1, foundAt: 0 }];
     const gold = Math.PI * (3 - Math.sqrt(5));
-    for (let i = 0; i < N; i++) {
-      const y = 1 - (i / (N - 1)) * 2;
-      const r = Math.sqrt(1 - y * y);
-      const th = gold * i;
-      const kind: Node["kind"] = i % 17 === 3 ? "crit" : i % 11 === 5 ? "high" : "ep";
-      nodes.push({ x: Math.cos(th) * r, y, z: Math.sin(th) * r, kind, label: i % 5 === 0 ? LABELS[(i / 5) % LABELS.length | 0] : undefined, found: 400 + i * 95 });
+    const hubIdx: number[] = [];
+    for (let h = 0; h < HUBS; h++) {
+      const y = 1 - (h / (HUBS - 1)) * 2 * 0.8;
+      const r = Math.sqrt(Math.max(0, 1 - y * y));
+      const th = gold * h * 2.2;
+      hubIdx.push(nodes.length);
+      nodes.push({ x: Math.cos(th) * r * 0.55, y: y * 0.55, z: Math.sin(th) * r * 0.55, kind: "ep", label: LABELS[h], order: (h + 1) / (HUBS + 1) * 0.5, hub: -1, foundAt: 0 });
     }
-    // edges: each node to root sometimes + nearest neighbours
-    const edges: [number, number][] = [];
-    for (let i = 1; i < nodes.length; i++) {
-      if (i % 3 === 0) edges.push([0, i]);
-      let best = -1, bd = 1e9;
-      for (let j = 1; j < nodes.length; j++) {
-        if (j === i) continue;
-        const d = (nodes[i].x - nodes[j].x) ** 2 + (nodes[i].y - nodes[j].y) ** 2 + (nodes[i].z - nodes[j].z) ** 2;
-        if (d < bd) { bd = d; best = j; }
+    let li = HUBS;
+    for (let h = 0; h < HUBS; h++) {
+      const hub = nodes[hubIdx[h]];
+      const sats = 6 + (h % 3);
+      for (let s = 0; s < sats; s++) {
+        const a = (s / sats) * Math.PI * 2 + h, sp = 0.42;
+        const nx = hub.x + Math.cos(a) * sp, ny = hub.y + Math.sin(a) * sp * 0.8, nz = hub.z + Math.sin(a * 1.3) * sp;
+        const mag = Math.hypot(nx, ny, nz) || 1;
+        const kind: Kind = (h * 7 + s) % 19 === 1 ? "crit" : (h * 5 + s) % 9 === 2 ? "high" : "ep";
+        nodes.push({ x: nx / mag, y: ny / mag, z: nz / mag, kind, label: s % 4 === 0 ? LABELS[(li) % LABELS.length] : undefined, order: 0.4 + Math.random() * 0.55, hub: hubIdx[h], foundAt: 0 });
+        li++;
       }
-      if (best > 0) edges.push([i, best]);
     }
+    // edges
+    const edges: [number, number][] = [];
+    for (const hi of hubIdx) edges.push([0, hi]);
+    nodes.forEach((n, i) => { if (n.hub >= 0) edges.push([n.hub, i]); });
+    // a few cross-chain links
+    for (let k = 0; k < 7; k++) edges.push([hubIdx[k % HUBS], hubIdx[(k + 2) % HUBS]]);
 
-    let rx = -0.3, ry = 0, auto = 0.0024, dragging = false, lx = 0, ly = 0, vel = 0.0024;
-    let W = 0, H = 0, RAD = 0, raf = 0;
+    const pulses: Pulse[] = [];
+
+    let rx = -0.25, ry = 0, vel = 0.0022, dragging = false, lx = 0, ly = 0;
+    let W = 0, H = 0, RAD = 0, raf = 0, hover = -1, pointer = { x: -1, y: -1 };
     const t0 = performance.now();
+    const CYCLE = 7000;
 
     const size = () => {
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       W = box.clientWidth; H = box.clientHeight;
       cv.width = W * dpr; cv.height = H * dpr; cv.style.width = W + "px"; cv.style.height = H + "px";
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      RAD = Math.min(W, H) * 0.42;
+      RAD = Math.min(W, H) * 0.4;
     };
     size();
     const ro = new ResizeObserver(size); ro.observe(box);
 
     const proj = (n: Node) => {
-      // rotate Y then X
       const cy = Math.cos(ry), sy = Math.sin(ry), cx = Math.cos(rx), sx = Math.sin(rx);
-      let x = n.x * cy - n.z * sy;
-      let z = n.x * sy + n.z * cy;
-      let y = n.y * cx - z * sx;
-      z = n.y * sx + z * cx;
-      const focal = 3.2, scale = focal / (focal + z);
-      return { sx2: W / 2 + x * scale * RAD, sy2: H / 2 + y * scale * RAD, scale, z };
+      let x = n.x * cy - n.z * sy, z = n.x * sy + n.z * cy;
+      let y = n.y * cx - z * sx; z = n.y * sx + z * cx;
+      const focal = 3.0, scale = focal / (focal + z);
+      return { X: W / 2 + x * scale * RAD, Y: H / 2 + y * scale * RAD, scale, z };
     };
+    const rgba = (c: number[], a: number) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+    const kcol = (k: Kind) => k === "root" ? C.root : k === "crit" ? C.crit : k === "high" ? C.high : C.ep;
 
     const frame = (t: number) => {
       const el = t - t0;
-      if (!dragging) ry += vel; else vel = vel * 0.9;
-      if (!dragging && !reduce) ry += 0; // auto handled by vel
+      const scanT = reduce ? 1 : (el % CYCLE) / CYCLE;           // sweep 0→1 looping
+      const cyc = Math.floor(el / CYCLE);
+      if (!dragging) { ry += vel; vel += (0.0022 - vel) * 0.02; }
+
       ctx.clearRect(0, 0, W, H);
       const P = nodes.map(proj);
-      // edges
-      for (const [a, b] of edges) {
-        const fa = el > nodes[a].found, fb = el > nodes[b].found;
-        ctx.strokeStyle = fa && fb ? COL.edgeHot : COL.edge;
-        ctx.lineWidth = fa && fb ? 1.1 : 0.7;
-        ctx.beginPath(); ctx.moveTo(P[a].sx2, P[a].sy2); ctx.lineTo(P[b].sx2, P[b].sy2); ctx.stroke();
+      // neighbours of hovered
+      const nbr = new Set<number>();
+      if (hover >= 0) { nbr.add(hover); for (const [a, b] of edges) { if (a === hover) nbr.add(b); if (b === hover) nbr.add(a); } }
+
+      // discovery + pulse spawning
+      nodes.forEach((n, i) => {
+        const found = n.kind === "root" || scanT > n.order;
+        if (found && n.foundAt === 0) { n.foundAt = el; }
+        if (!found && n.foundAt !== 0 && scanT < 0.05) n.foundAt = 0; // reset on new cycle
+      });
+      if (!reduce && Math.random() < 0.08) {
+        const e = (Math.random() * edges.length) | 0;
+        pulses.push({ e, t: 0, spd: 0.012 + Math.random() * 0.02 });
       }
-      // nodes back-to-front
+
+      // ── edges ──
+      for (const [a, b] of edges) {
+        const fa = nodes[a].foundAt > 0, fb = nodes[b].foundAt > 0;
+        const dim = hover >= 0 && !(nbr.has(a) && nbr.has(b));
+        const depth = (P[a].scale + P[b].scale) / 2;
+        const on = fa && fb;
+        ctx.strokeStyle = on ? rgba(C.ep, (dim ? 0.06 : 0.28) * depth) : rgba([120, 110, 160], (dim ? 0.03 : 0.1) * depth);
+        ctx.lineWidth = (on ? 1.1 : 0.6) * depth;
+        ctx.beginPath(); ctx.moveTo(P[a].X, P[a].Y); ctx.lineTo(P[b].X, P[b].Y); ctx.stroke();
+      }
+
+      // ── data pulses along edges ──
+      for (let i = pulses.length - 1; i >= 0; i--) {
+        const pu = pulses[i]; pu.t += pu.spd;
+        if (pu.t >= 1) { pulses.splice(i, 1); continue; }
+        const [a, b] = edges[pu.e];
+        if (nodes[a].foundAt === 0 || nodes[b].foundAt === 0) { pulses.splice(i, 1); continue; }
+        const X = P[a].X + (P[b].X - P[a].X) * pu.t, Y = P[a].Y + (P[b].Y - P[a].Y) * pu.t;
+        ctx.beginPath(); ctx.fillStyle = rgba(C.ep, 0.9); ctx.shadowColor = rgba(C.ep, 0.9); ctx.shadowBlur = 8;
+        ctx.arc(X, Y, 1.8, 0, 7); ctx.fill(); ctx.shadowBlur = 0;
+      }
+
+      // ── scan wavefront ring ──
+      if (!reduce) {
+        ctx.beginPath(); ctx.strokeStyle = rgba(C.root, 0.12 * (1 - scanT));
+        ctx.lineWidth = 1; ctx.arc(W / 2, H / 2, scanT * RAD * 1.5, 0, 7); ctx.stroke();
+      }
+
+      // ── nodes, back to front ──
       const order = nodes.map((_, i) => i).sort((i, j) => P[j].z - P[i].z);
       for (const i of order) {
         const n = nodes[i], p = P[i];
-        const found = el > n.found || n.kind === "root";
-        const base = n.kind === "root" ? COL.root : !found ? COL.faint : n.kind === "crit" ? COL.crit : n.kind === "high" ? COL.high : COL.ep;
-        const r = (n.kind === "root" ? 5.5 : 3.1) * p.scale;
-        if (found && n.kind !== "root") { // glow
-          ctx.globalAlpha = 0.16; ctx.fillStyle = base;
-          ctx.beginPath(); ctx.arc(p.sx2, p.sy2, r * 3, 0, 7); ctx.fill();
-          ctx.globalAlpha = 1;
+        const found = n.foundAt > 0;
+        const col = found || n.kind === "root" ? kcol(n.kind) : [120, 126, 140];
+        const depth = 0.35 + p.scale * 0.65;                        // depth fog
+        const dim = hover >= 0 && !nbr.has(i);
+        const alpha = (dim ? 0.25 : 1) * depth;
+        const pulse = found ? Math.max(0, 1 - (el - n.foundAt) / 500) : 0; // pop on discover
+        const r = (n.kind === "root" ? 5.5 : n.kind === "crit" || n.kind === "high" ? 3.6 : 2.9) * p.scale * (1 + pulse * 0.8);
+
+        if ((found && n.kind !== "ep") || n.kind === "root" || hover === i) {
+          ctx.shadowColor = rgba(col, 0.9 * alpha); ctx.shadowBlur = (n.kind === "root" ? 18 : 12) * p.scale;
         }
-        ctx.beginPath(); ctx.fillStyle = base; ctx.arc(p.sx2, p.sy2, r, 0, 7); ctx.fill();
-        if (n.kind === "root") { ctx.strokeStyle = COL.root; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.arc(p.sx2, p.sy2, r + 6 * p.scale, 0, 7); ctx.globalAlpha = 0.5; ctx.stroke(); ctx.globalAlpha = 1; }
-        if (n.label && found && p.scale > 0.82) {
-          ctx.font = "10px ui-monospace, monospace"; ctx.fillStyle = "rgba(236,238,242,0.7)";
-          ctx.fillText(n.label, p.sx2 + r + 4, p.sy2 + 3);
+        ctx.beginPath(); ctx.fillStyle = rgba(col, alpha); ctx.arc(p.X, p.Y, r, 0, 7); ctx.fill();
+        ctx.shadowBlur = 0;
+
+        if (n.kind === "root") {
+          ctx.strokeStyle = rgba(C.root, 0.5 * alpha); ctx.lineWidth = 1.2;
+          ctx.beginPath(); ctx.arc(p.X, p.Y, r + 7 * p.scale, 0, 7); ctx.stroke();
+        }
+        // labels: only hovered+neighbours, or crit/high facing front
+        const showLabel = n.label && (nbr.has(i) || (hover < 0 && (n.kind === "crit" || n.kind === "high" || n.kind === "root") && p.scale > 0.92));
+        if (showLabel) {
+          ctx.font = "10px ui-monospace, monospace"; ctx.fillStyle = rgba([236, 238, 242], 0.8 * (dim ? 0.3 : 1));
+          ctx.fillText(n.label!, p.X + r + 5, p.Y + 3);
         }
       }
+
+      // hover hit-test (screen space, nearest within 18px, prefer front)
+      if (pointer.x >= 0) {
+        let best = -1, bd = 18 * 18;
+        for (const i of order) { const p = P[i]; const d = (p.X - pointer.x) ** 2 + (p.Y - pointer.y) ** 2; if (d < bd) { bd = d; best = i; } }
+        hover = best;
+      } else hover = -1;
+
       raf = requestAnimationFrame(frame);
     };
     raf = requestAnimationFrame(frame);
 
-    // drag to orbit
     const down = (e: PointerEvent) => { dragging = true; lx = e.clientX; ly = e.clientY; cv.setPointerCapture(e.pointerId); };
-    const move = (e: PointerEvent) => { if (!dragging) return; ry += (e.clientX - lx) * 0.006; rx += (e.clientY - ly) * 0.006; rx = Math.max(-1.2, Math.min(1.2, rx)); vel = (e.clientX - lx) * 0.006; lx = e.clientX; ly = e.clientY; };
-    const up = () => { dragging = false; if (Math.abs(vel) < 0.0008) vel = 0.0024; };
-    cv.addEventListener("pointerdown", down); window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
+    const move = (e: PointerEvent) => {
+      const rct = cv.getBoundingClientRect(); pointer = { x: e.clientX - rct.left, y: e.clientY - rct.top };
+      if (!dragging) return;
+      ry += (e.clientX - lx) * 0.006; rx += (e.clientY - ly) * 0.006; rx = Math.max(-1.2, Math.min(1.2, rx));
+      vel = (e.clientX - lx) * 0.006; lx = e.clientX; ly = e.clientY;
+    };
+    const up = () => { dragging = false; };
+    const out = () => { pointer = { x: -1, y: -1 }; };
+    cv.addEventListener("pointerdown", down); window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up); cv.addEventListener("pointerleave", out);
 
-    return () => { cancelAnimationFrame(raf); ro.disconnect(); cv.removeEventListener("pointerdown", down); window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
+    return () => {
+      cancelAnimationFrame(raf); ro.disconnect();
+      cv.removeEventListener("pointerdown", down); window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up); cv.removeEventListener("pointerleave", out);
+    };
   }, []);
 
   return (
@@ -119,7 +196,7 @@ export function SurfaceGraph3D() {
       <div className="hud pointer-events-none absolute left-4 top-4 text-[10px] uppercase tracking-[0.14em] text-faint">
         surface map · <span style={{ color: "var(--validated)" }}>live</span>
       </div>
-      <div className="hud pointer-events-none absolute bottom-4 right-4 text-[10px] uppercase tracking-[0.12em] text-faint">drag to orbit</div>
+      <div className="hud pointer-events-none absolute bottom-4 right-4 text-[10px] uppercase tracking-[0.12em] text-faint">drag to orbit · hover a node</div>
     </div>
   );
 }

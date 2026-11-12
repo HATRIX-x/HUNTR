@@ -75,11 +75,16 @@ export default function Preview() {
               The whole attack surface — <span className="text-brand">one living graph.</span>
             </h2>
             <p className="mt-6 max-w-[48ch] text-lg leading-relaxed text-fg/75">
-              Every host, endpoint, and parameter becomes a node. Edges are the exploit chains HUNTR reasons
-              about. Nodes light up as the hunt confirms them — critical in <span style={{ color: "var(--critical)" }}>red</span>,
-              high in <span style={{ color: "var(--high)" }}>amber</span>, validated in <span style={{ color: "var(--validated)" }}>green</span>.
+              Every host, endpoint, and parameter is a node; every edge is a path HUNTR can chain. It&apos;s how
+              a low-severity bug turns into a critical one — the engine reasons across the whole surface instead
+              of testing endpoints in isolation, so it finds the routes a scanner walks right past.
             </p>
-            <p className="mt-5 hud text-[11px] uppercase tracking-[0.14em] text-faint">drag the graph to orbit it →</p>
+            <div className="mt-6 flex flex-wrap items-center gap-3 hud text-[11px] uppercase tracking-[0.12em] text-muted">
+              <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: "var(--critical)" }} />critical</span>
+              <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: "var(--high)" }} />high</span>
+              <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: "var(--validated)" }} />validated</span>
+              <span className="text-faint">· drag to orbit →</span>
+            </div>
           </div>
         </div>
       </section>
