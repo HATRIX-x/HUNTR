@@ -12,6 +12,32 @@ from ..deps import current_user
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
 
+# A small set of obviously-weak passwords to reject outright (defense in depth;
+# the frontend strength meter is the first line, this is the enforced floor).
+_COMMON_PASSWORDS = {
+    "password", "password1", "password123", "12345678", "123456789", "1234567890",
+    "qwerty123", "qwertyuiop", "11111111", "00000000", "letmein1", "iloveyou",
+    "admin123", "welcome1", "changeme", "passw0rd", "huntr123",
+}
+
+
+def _check_password(pw: str):
+    """Enforce a real password policy server-side. Raises HTTP 400 on violation."""
+    if len(pw) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters.")
+    if len(pw) > 200:
+        raise HTTPException(400, "Password is too long (200 characters max).")
+    if pw.lower() in _COMMON_PASSWORDS:
+        raise HTTPException(400, "That password is too common — choose something harder to guess.")
+    classes = sum([
+        any(c.islower() for c in pw),
+        any(c.isupper() for c in pw),
+        any(c.isdigit() for c in pw),
+        any(not c.isalnum() for c in pw),
+    ])
+    if classes < 2:
+        raise HTTPException(400, "Use a mix of at least two of: lowercase, uppercase, numbers, symbols.")
+
 
 class SignupIn(BaseModel):
     email: EmailStr
@@ -32,6 +58,7 @@ class AuthOut(BaseModel):
 
 @router.post("/signup", response_model=AuthOut)
 def signup(body: SignupIn, db: Session = Depends(get_db)):
+    _check_password(body.password)
     if db.query(User).filter(User.email == body.email).first():
         raise HTTPException(409, "Email already registered")
     user = User(
