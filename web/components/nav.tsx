@@ -14,7 +14,7 @@ const links = [
 export function Wordmark({ className = "" }: { className?: string }) {
   return (
     <Link href="/" className={`flex items-center gap-2 ${className}`} aria-label="HUNTR home">
-      <BrandMark className="h-6 w-6" />
+      <BrandMark className="h-8 w-8" />
       <span className="display text-xl tracking-tightest text-fg">HUNTR</span>
     </Link>
   );
