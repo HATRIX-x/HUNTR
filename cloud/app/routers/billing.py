@@ -90,7 +90,19 @@ def create_checkout(body: CheckoutIn, user: User = Depends(current_user)):
     req = urllib.request.Request(
         f"{CREEM_API_URL}/v1/checkouts",
         data=payload,
-        headers={"x-api-key": CREEM_API_KEY, "Content-Type": "application/json"},
+        headers={
+            "x-api-key": CREEM_API_KEY,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            # Creem's API sits behind Cloudflare, which blocks the default
+            # "Python-urllib/x.y" agent with a 403 "error code: 1010" before the
+            # request reaches Creem. Send a normal browser-style UA so the
+            # legitimate server-to-server call is allowed through.
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+            ),
+        },
         method="POST",
     )
     try:
