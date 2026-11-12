@@ -21,10 +21,30 @@ API (JSON):
   POST /api/hypothesize {target,stack}               → ranked leads
   POST /api/recall      {text,stack}                 → analogous past hunts
 """
-import sys, os, re, json, subprocess, tempfile
+import sys, os, re, json, signal, subprocess, tempfile, threading, time
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
+
+# Self-load the hunting-LLM config so the server's tool subprocesses (scope-parse, hunt-run, …) always
+# get the CLI-mode / model settings, regardless of how the server was launched (nohup from a non-login
+# shell won't source ~/.zshrc). Existing env wins; file only fills what's unset.
+def _load_hunt_env():
+    for p in (Path.home() / ".claude" / "tools" / "huntr-llm.env",):
+        try:
+            for line in p.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                line = line[len("export "):] if line.startswith("export ") else line
+                k, _, v = line.partition("=")
+                k = k.strip(); v = v.strip().strip('"').strip("'")
+                v = v.replace("$HOME", str(Path.home()))
+                if k and k not in os.environ:
+                    os.environ[k] = v
+        except Exception:
+            pass
+_load_hunt_env()
 
 ROOT = Path(os.environ.get("HUNTR_HOME", str(Path.home() / ".huntr")))
 TARGETS = ROOT / "targets"
@@ -34,6 +54,186 @@ TOOLS = LOCAL_TOOLS if LOCAL_TOOLS.exists() else Path.home() / ".claude" / "tool
 # UI/bridge live in the repo root, NOT in tools/ — look in both so either layout works
 ASSETS = [REPO, Path.home() / ".claude" / "tools", TOOLS]
 
+# ── BYO-key onboarding ───────────────────────────────────────────────────────────────────────
+# The product ships with NO credentials. Each customer supplies their OWN Anthropic API key, which is
+# verified live and stored 0600 here, then loaded into the environment so every hunt subprocess (and
+# the `claude -p` native path) authenticates — and is billed — as that customer. This is the only
+# sanctioned billing model for a sold product: Anthropic's Claude Code legal/compliance terms forbid
+# reselling or intermediating Claude usage on an end user's behalf and require each end user to
+# authenticate with their own API key. So: no owner key baked in, no subscription relay — their key.
+PRODUCT_KEY_FILE = ROOT / "anthropic.key"      # the raw key, chmod 0600
+PRODUCT_ACCT_FILE = ROOT / "account.json"      # non-secret metadata (masked tail, verified_at, model count)
+TERMS_FILE = ROOT / "terms_accepted.json"      # records which Terms/AUP version the operator accepted
+TERMS_VERSION = "2026-11-11"                    # bump to force re-acceptance when the Terms/AUP change
+
+
+def _mask_key(k):
+    k = (k or "").strip()
+    return (k[:10] + "…" + k[-4:]) if len(k) > 14 else "sk-ant-…"
+
+
+def _load_product_key():
+    """Load the onboarded key into the environment at boot so hunt subprocesses inherit it. An explicit
+    ANTHROPIC_API_KEY already in the environment (owner/dev override) always wins and is left untouched."""
+    try:
+        ROOT.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    if (os.environ.get("ANTHROPIC_API_KEY") or "").strip():
+        return
+    try:
+        k = PRODUCT_KEY_FILE.read_text().strip()
+    except Exception:
+        k = ""
+    if k:
+        os.environ["ANTHROPIC_API_KEY"] = k
+        os.environ.setdefault("HUNT_LLM_PROVIDER", "anthropic")
+
+
+def _verify_anthropic_key(key):
+    """Live-verify an Anthropic API key with a zero-cost GET /v1/models. Returns (ok, info|error, status).
+    A 429 means the key authenticated (a bad key is 401) but is throttled — still valid, so treated as ok."""
+    key = (key or "").strip()
+    if not key:
+        return False, "no key provided", 0
+    if not key.startswith("sk-ant-") or len(key) < 20:
+        return False, "that doesn't look like an Anthropic API key (it should start with sk-ant-…)", 0
+    import urllib.request as _ur, urllib.error as _ue
+    req = _ur.Request("https://api.anthropic.com/v1/models",
+                      headers={"x-api-key": key, "anthropic-version": "2023-06-01"})
+    try:
+        with _ur.urlopen(req, timeout=20) as r:
+            data = json.loads(r.read().decode())
+        models = [m.get("id") for m in (data.get("data") or []) if isinstance(m, dict)]
+        return True, {"models": len(models), "sample": models[:3]}, 200
+    except _ue.HTTPError as e:
+        try:
+            msg = json.loads(e.read().decode()).get("error", {}).get("message", "")
+        except Exception:
+            msg = ""
+        if e.code == 401:
+            return False, "that key was rejected (401) — it's invalid, revoked, or mistyped", 401
+        if e.code == 403:
+            return False, "that key is valid but lacks permission (403) — enable it for the Messages API in the Console", 403
+        if e.code == 429:
+            return True, {"models": None, "throttled": True}, 429
+        return False, (msg or ("verification failed (HTTP %d)" % e.code)), e.code
+    except Exception as e:
+        return False, ("couldn't reach api.anthropic.com: " + str(e)[:150]), 0
+
+
+_load_product_key()
+
+_HL = None
+def _parse_session_blob(blob):
+    """One-box auth: run a pasted blob (cookie / token / header / Netscape file / copied cURL) through
+    huntrlib.parse_session_blob → {cookie, session_token, auth_header}. Cached import."""
+    global _HL
+    if _HL is None:
+        try:
+            import importlib.util as _il
+            _s = _il.spec_from_file_location("huntrlib", str(TOOLS / "huntrlib.py"))
+            _HL = _il.module_from_spec(_s); _s.loader.exec_module(_HL)
+        except Exception:
+            _HL = False
+    if not _HL:
+        return {"cookie": "", "session_token": "", "auth_header": ""}
+    try:
+        return _HL.parse_session_blob(blob)
+    except Exception:
+        return {"cookie": "", "session_token": "", "auth_header": ""}
+# The dashboard is now the only interface (no terminal path left) — every UI-launched hunt always
+# runs the full-agentic pipeline (Phases 1-8). hunt-run.py's own HUNT_AGENTIC_PHASES env var stays
+# the on/off switch for reversibility; this is just what the UI always sets it to.
+AGENTIC_PHASES = "recon_surface,auth_spa,intel,plan,verify,chain_econ,active_hunt,deep_questions,zero_day"
+
+
+def _relaunch_resume(tgt, hd, cost_cap_override=None):
+    """Re-launch hunt-run.py --resume on an exited (not SIGSTOP'd) paused/done/stopped/error hunt,
+    reusing its saved launch.json options. Shared by the /api/hunt/control resume action and the
+    rate-limit auto-resume watcher below, so both paths relaunch identically. Returns (ok, info)
+    where info is "" on success or an error string on failure."""
+    try:
+        opts = json.loads((hd / "launch.json").read_text())
+    except Exception:
+        opts = {"mode": "grey", "scope_types": ["web", "api"], "budget_sec": 86400}
+    if cost_cap_override is not None:
+        try:
+            opts["cost_cap_usd"] = float(cost_cap_override or 0)
+            (hd / "launch.json").write_text(json.dumps(opts))
+        except (ValueError, TypeError):
+            pass
+    args = [sys.executable, str(TOOLS / "hunt-run.py"), "--target", tgt, "--resume",
+            "--program", opts.get("program", ""), "--mode", opts.get("mode", "grey"),
+            "--scope-types", ",".join(opts.get("scope_types") or ["web", "api"]),
+            "--budget-sec", str(int(opts.get("budget_sec") or 86400))]
+    if float(opts.get("cost_cap_usd") or 0) > 0:
+        args += ["--cost-cap-usd", str(float(opts["cost_cap_usd"]))]
+    if opts.get("stealth"): args.append("--stealth")
+    env = dict(os.environ); env["HUNT_DIR"] = str(hd)
+    if opts.get("stealth"):     env["HUNT_STEALTH"] = "1"
+    if opts.get("single_host"): env["HUNT_SINGLE"] = "1"
+    if opts.get("llm_light"):   env["HUNT_LLM"] = "haiku"
+    env["HUNT_AGENTIC_PHASES"] = AGENTIC_PHASES
+    try:
+        lf = open(hd / "run.log", "a")
+        subprocess.Popen(args, stdout=lf, stderr=lf, env=env, start_new_session=True)
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
+def _rate_limit_auto_resume_loop():
+    """Background watcher (operator directive, step 2 of the UI-driven migration: "a user should
+    never have to notice a hunt was cut short and manually re-trigger it"). hunt-run.py's own
+    process exits once it pauses for a rate-limit (see RateLimitPause in main()) — it is not
+    SIGSTOP'd like a creds/cdp pause — so resuming it needs a fresh relaunch, not a signal. Every
+    30s, scan every workspace's run.json for status=="paused", paused_reason=="rate-limit"/
+    "cost-cap", and a parsed rate_limit_reset timestamp (set by hunt-run.py's _run_phase_agent) that
+    has passed, then auto-relaunch with --resume exactly as the dashboard's own Resume button would.
+    A missing/unparseable reset time (the CLI's notice didn't include one) is left for the operator's
+    manual Resume click — there is nothing to wait for automatically."""
+    while True:
+        try:
+            for hd in TARGETS.glob("*/.hunt"):
+                rf = hd / "run.json"
+                try:
+                    d = json.loads(rf.read_text())
+                except Exception:
+                    continue
+                if d.get("status") != "paused" or d.get("paused_reason") != "rate-limit":
+                    continue
+                reset_ts = d.get("rate_limit_reset")
+                if not reset_ts or time.time() < float(reset_ts):
+                    continue
+                pidf = hd / "run.pid"
+                try:
+                    pid = int(pidf.read_text().strip())
+                    # fixed 2026-11-06: bare os.kill(pid,0) is the same PID-reuse risk already
+                    # hardened everywhere a signal is actually SENT (is_process() checks the PID is
+                    # alive AND is actually hunt-run.py, not just that the number is in use) — this
+                    # one only gates a decision not to relaunch, never signals, so the risk was a
+                    # false-negative (a stale/recycled PID could wrongly look "still alive" and skip
+                    # auto-resume, leaving a genuinely rate-limited hunt stuck past its reset time
+                    # until the operator noticed), not a mis-signal, but the same discipline applies.
+                    if is_process(pid, "hunt-run.py"):
+                        continue   # still alive — not our relaunch to make
+                except Exception:
+                    pass
+                tgt = d.get("target") or hd.parent.name
+                ok, _ = _relaunch_resume(tgt, hd)
+                if ok:
+                    try:
+                        d["status"] = "running"; d.pop("paused_reason", None)
+                        d.setdefault("logs", []).append(
+                            {"t": "ok", "v": "▷ hunt auto-resumed — rate limit window passed"})
+                        rf.write_text(json.dumps(d))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        time.sleep(30)
+
 
 def asset(name):
     for d in ASSETS:
@@ -42,16 +242,91 @@ def asset(name):
             return p
     return None
 PORT = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else 8899
+START_TS = time.time()  # process start, for /api/health uptime
+
+# In-process claim on a workspace currently being started — closes the race window between the
+# run.pid liveness check and the new hunt-run.py subprocess actually writing its own run.pid. A
+# rapid double-click/client-retry on /api/hunt/start for the SAME target can otherwise land both
+# requests inside that gap and fork two hunt-run.py processes racing on one run.json. ThreadingHTTPServer
+# runs each request on its own thread, so this must be a real lock, not a plain dict.
+_START_LOCK = threading.Lock()
+_STARTING = set()
 
 
 def safe(t):
-    return re.sub(r"[^a-z0-9._-]+", "_", (t or "default").lower()) or "default"
+    s = re.sub(r"[^a-z0-9._-]+", "_", (t or "default").lower()).strip("_") or "default"
+    # Bound the workspace dir name: a pasted program page (thousands of chars) as the "target" made
+    # mkdir() raise "File name too long" and crashed the start request (UI then shows "server not
+    # running"). Cap length and append a short hash of the full input so distinct long inputs stay unique.
+    #
+    # NOTE: a short, non-truncated slug has no hash tag, so two DIFFERENT short target strings that
+    # happen to collapse to the identical slug (the regex folds any run of non [a-z0-9._-] chars to
+    # one "_" — e.g. "a.com;b.com" and "a.com,b.com" both become "a.com_b.com") would collide into
+    # the same workspace. Deliberately NOT hashing every slug to close this: ~/.huntr/targets/<slug>
+    # is a stable, human-addressable id that every existing hunt workspace (and bookmarked /api calls)
+    # depends on — always-hashing would orphan every workspace created before this comment. The
+    # collision needs two genuinely different target strings differing ONLY in characters the regex
+    # treats as equivalent, which is rare; tracked as a known, low-severity gap rather than "fixed"
+    # destructively. See [[raw-page-as-target-bug]] memory.
+    if len(s) > 80:
+        # If this already IS an existing on-disk workspace slug, reuse it as-is instead of
+        # re-hashing. /api/targets hands the dir-encoded slug (d.name) back to the UI as
+        # "target" for resume/poll calls, and a long original scope produces a slug >80 chars
+        # itself — re-running safe() on that already-hashed slug would hash the SLUG TEXT
+        # (not the original scope), landing on a different hash and silently routing every
+        # poll/resume to a brand-new EMPTY workspace while the real findings sit untouched
+        # under the original hash. See [[otto-resume-rehash-bug]] memory.
+        if (TARGETS / s).exists():
+            return s
+        import hashlib
+        s = s[:72] + "_" + hashlib.sha1((t or "").encode("utf-8", "ignore")).hexdigest()[:8]
+    return s
 
 
 def hunt_dir(target):
     d = TARGETS / safe(target) / ".hunt"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _write_secret_json(path, obj):
+    """SECURITY FIX (2026-11-06, full-codebase audit): identities.json (live session tokens/
+    cookies) was written via plain Path.write_text() at several call sites — default umask leaves
+    it readable by any other local account on a multi-user box. /api/hunt/creds's own creds.json
+    write already used os.open(...,0o600) explicitly; apply the same explicit mode everywhere else
+    a credential file gets written."""
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, json.dumps(obj, indent=2).encode())
+    finally:
+        os.close(fd)
+
+
+def is_process(pid, marker):
+    """Is `pid` alive AND actually the process we think it is (its cmdline contains `marker`, e.g.
+    'hunt-run.py' or 'hunt-watch.py')? A PID is reused by the OS once the original process exits, so
+    a bare liveness check (os.kill(pid, 0)) on a stale PID file can match a completely unrelated
+    process. That's a false positive when just checking "is a hunt already running" (annoying — the
+    operator is told a hunt is live when none is) but a real safety problem anywhere this gates a
+    SIGNAL: /api/hunt/control blindly os.killpg()'d (SIGTERM for stop, SIGSTOP for pause) whatever
+    process group a stale run.pid pointed at, and /api/hunt/watch's stop blindly os.kill()'d whatever
+    watch.pid pointed at — either could hit an unrelated process (another of the operator's own
+    processes, a daemon, anything) if the PID had been recycled. Every signal site must go through
+    this first and refuse (not silently proceed) when it returns False."""
+    try:
+        os.kill(pid, 0)
+    except Exception:
+        return False
+    try:  # Linux: confirm the PID is actually OUR process, not a reused/unrelated one
+        # A zombie (state 'Z') has already exited — its cmdline still reads as our process
+        # because the kernel hasn't reclaimed the entry yet, but it is NOT running. Treat as dead.
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        if stat.split(")")[1].split()[0].strip() == "Z":
+            return False
+        cmd = Path(f"/proc/{pid}/cmdline").read_bytes()
+        return marker.encode() in cmd
+    except Exception:
+        return True   # no /proc (non-Linux) — fall back to liveness-only
 
 
 def run(tool, args, target=None, stdin=None, timeout=120):
@@ -83,6 +358,101 @@ curl -s '127.0.0.1:%d/api/next?target=acme'</code></pre>
 <p style=color:#948CB6;font-size:13px>Bound to 127.0.0.1 only. Nothing bypasses scope-guard.</p>
 """ % (PORT, PORT, PORT)
 
+_PROOF_404 = """<!doctype html><meta charset=utf8><title>Not found</title>
+<body style="background:#0A0A0D;color:#9CA2AD;font-family:system-ui;max-width:520px;margin:120px auto;text-align:center">
+<p>That finding doesn't exist, or the hunt has no evidence saved yet.</p></body>"""
+
+_SEV_LABEL = {"c": "Critical", "h": "High", "m": "Medium", "l": "Low", "i": "Info"}
+_SEV_COLOR = {"c": "#F43F5E", "h": "#FB923C", "m": "#FACC15", "l": "#38BDF8", "i": "#64748B"}
+
+
+def _html_escape(s):
+    return (str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def _proof_trust_badge(f):
+    # mirrors huntr-ui.html's trustTier() exactly, so a shared link reads the same confidence
+    # tier the dashboard itself would show — one trust vocabulary, not two.
+    proven = f.get("_det") is True or (f.get("proof") or {}).get("proven") is True
+    if proven:
+        return ("PROVEN", "#34D399", "Confirmed by a deterministic oracle — not an LLM judgment call.")
+    if f.get("adversarial_checked") and f.get("verdict") == "confirmed":
+        return ("RE-VERIFIED", "#A594F9", "Survived an independent second judge pass before being trusted.")
+    if f.get("adversarial_checked") and f.get("verdict") != "confirmed":
+        return ("DISPUTED", "#FB923C", "An adversarial re-check disagreed and this was downgraded.")
+    if f.get("verdict") == "confirmed":
+        return ("LLM-CONFIRMED", "#5B616C", "Confirmed by one judge pass — not independently re-checked.")
+    return (None, None, None)
+
+
+def _render_proof_page(f, target, fi, program):
+    sev = (f.get("sev") or "i").lower()
+    sev_label = _SEV_LABEL.get(sev, sev)
+    sev_color = _SEV_COLOR.get(sev, "#64748B")
+    badge, badge_color, badge_title = _proof_trust_badge(f)
+    title = _html_escape(f.get("title") or "(untitled finding)")
+    endpoint = _html_escape(f.get("endpoint") or "")
+    detail = _html_escape(f.get("detail") or "")
+    vuln_detail = _html_escape(f.get("vuln_detail") or "")
+    impact = _html_escape(f.get("impact_text") or f.get("reco") or "")
+    poc = _html_escape(f.get("poc") or "")
+    report = _html_escape(f.get("report") or "")
+    proof_evidence = _html_escape((f.get("proof") or {}).get("evidence") or "")
+    sections = []
+    if detail:
+        sections.append(("What it is", detail, False))
+    if vuln_detail:
+        sections.append(("Vulnerability", vuln_detail, False))
+    if impact:
+        sections.append(("Impact", impact, False))
+    if proof_evidence:
+        sections.append(("Deterministic proof", proof_evidence, True))
+    if poc:
+        sections.append(("Proof of concept" + (" — verified" if f.get("poc_verified") else ""), poc, True))
+    if report:
+        sections.append(("Full report", report, True))
+    body = "".join(
+        '<div class="sec"><div class="lbl">%s</div><%s>%s</%s></div>' % (
+            _html_escape(lbl), ("pre" if is_pre else "p"), txt, ("pre" if is_pre else "p"))
+        for lbl, txt, is_pre in sections)
+    badge_html = (
+        '<span class="badge" style="color:%s;border-color:%s44;background:%s1a" title="%s">%s</span>'
+        % (badge_color, badge_color, badge_color, _html_escape(badge_title), _html_escape(badge))
+    ) if badge else ""
+    wm_program = (" · " + _html_escape(program)) if program else ""
+    ep_html = ('<div class="ep">%s</div>' % endpoint) if endpoint else ""
+    tpl = """<!doctype html><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>{title}</title>
+<style>
+:root{{color-scheme:dark}}
+body{{background:#0A0A0D;color:#ECEDF0;font-family:-apple-system,system-ui,sans-serif;max-width:760px;margin:0 auto;padding:40px 20px 80px;line-height:1.6}}
+.wm{{font-size:11px;letter-spacing:2px;color:#5B616C;font-weight:700;margin-bottom:28px}}
+.wm b{{color:#8B7CF6}}
+.hd{{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:8px}}
+.sevpill{{font-size:10px;font-weight:700;letter-spacing:.5px;padding:4px 10px;border-radius:6px;flex-shrink:0;margin-top:3px}}
+.badge{{font-size:9.5px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;padding:4px 9px;border-radius:6px;border:1px solid;margin-top:3px}}
+h1{{font-size:20px;margin:0 0 6px;flex:1;min-width:240px}}
+.ep{{font-family:ui-monospace,monospace;font-size:12.5px;color:#9CA2AD;word-break:break-all;border-bottom:1px solid rgba(255,255,255,.08);padding-bottom:20px;margin-bottom:24px}}
+.sec{{padding:16px 0;border-top:1px solid rgba(255,255,255,.07)}}
+.sec:first-of-type{{border-top:none;padding-top:0}}
+.lbl{{font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:#5B616C;margin-bottom:8px}}
+.sec p{{margin:0;font-size:14px;color:#ECEDF0;white-space:pre-wrap}}
+.sec pre{{margin:0;font-family:ui-monospace,monospace;font-size:12.5px;color:#ECEDF0;white-space:pre-wrap;word-break:break-word;background:#111318;border:1px solid rgba(255,255,255,.07);border-radius:8px;padding:14px}}
+.foot{{margin-top:40px;padding-top:16px;border-top:1px solid rgba(255,255,255,.07);font-size:11.5px;color:#5B616C}}
+</style>
+<div class="wm">HUNTR<b>.</b> &nbsp;shared finding #{fi}{wm_program}</div>
+<div class="hd">
+  <span class="sevpill" style="color:{sev_color};background:{sev_color}1f">{sev_label}</span>
+  <h1>{title}</h1>
+  {badge_html}
+</div>
+{ep_html}
+{body}
+<div class="foot">Generated by HUNTR — a deterministic oracle or an independent adversarial re-check is the only way a finding here earned PROVEN or RE-VERIFIED; everything else is one judge's read and should be treated accordingly.</div>
+"""
+    return tpl.format(title=title, fi=fi, wm_program=wm_program, sev_color=sev_color,
+                      sev_label=_html_escape(sev_label), badge_html=badge_html, ep_html=ep_html, body=body)
+
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
@@ -94,6 +464,9 @@ class H(BaseHTTPRequestHandler):
             body = body.encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
+        if ctype.startswith("text/html"):
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            self.send_header("Pragma", "no-cache")
         origin = self.headers.get("Origin", "")
         if origin.startswith("http://127.0.0.1") or origin.startswith("http://localhost"):
             self.send_header("Access-Control-Allow-Origin", origin)
@@ -104,21 +477,230 @@ class H(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self._send(b"", 204)
 
+    def _start_hunt_locked(self, t, hd, b):
+        """Actually launch hunt-run.py for `t` in workspace `hd`. Called only after the
+        idempotency check + in-process start-lock in do_POST's /api/hunt/start handler have
+        already confirmed no other live hunt (or concurrent start) owns this workspace."""
+        # credentials go to a 0600 file (never argv — keeps tokens/cookies out of `ps`). Created
+        # with the restrictive mode from the moment the file exists (os.open + O_EXCL-free low-level
+        # open with mode=0o600), not write-then-chmod — the old write_text()-then-chmod() sequence
+        # had a real (if brief) window where the secrets file existed at the default (group/world
+        # readable) umask before the chmod narrowed it.
+        st = (b.get("session_token") or "").strip()
+        t2 = (b.get("token2") or "").strip()
+        ck = (b.get("cookie") or "").strip()      # cookie-session auth (web apps that don't use bearer)
+        # ONE-BOX convenience: the operator can paste ANYTHING (cookie, bearer/JWT, a header line, a
+        # Netscape cookie file, or a copied cURL) into a single `session` field — parse it and fill
+        # whatever wasn't typed into the explicit fields.
+        _ahb = ""
+        _blob = (b.get("session") or "").strip()
+        if _blob:
+            _p = _parse_session_blob(_blob)
+            st = st or (_p.get("session_token") or "")
+            ck = ck or (_p.get("cookie") or "")
+            _ahb = _p.get("auth_header") or ""
+        # If the operator pasted a whole Netscape cookie file (curl/Firefox export), convert it to a
+        # real `name=value; name=value` header. Drop analytics/tracking noise so only session cookies
+        # go to the scanners. A bare header is passed through unchanged.
+        if ck and ("# Netscape HTTP Cookie File" in ck or "\t" in ck):
+            _NOISE = ("_ga", "_gid", "_gat", "_gcl_au", "_fbp", "_fbc", "_uetsid", "_uetvid",
+                      "utm_", "snitcher_device_id", "homesubdomain", "_hjsession", "ajs_",
+                      "amplitude", "mp_", "__hssc", "__hssrc", "__hstc", "hubspotutk")
+            pairs = []
+            for ln in ck.replace("\\t", "\t").splitlines():
+                ln = ln.strip()
+                if not ln or ln.startswith("#"):
+                    continue
+                parts = ln.split("\t")
+                if len(parts) >= 7:
+                    name, val = parts[5].strip(), parts[6].strip()
+                else:  # maybe already "name=value; ..." mixed in
+                    continue
+                if not name or name.lower().startswith(_NOISE) or any(name.lower().startswith(n) for n in _NOISE):
+                    continue
+                pairs.append(f"{name}={val}")
+            if pairs:
+                ck = "; ".join(pairs)
+        ua = (b.get("ua") or "").strip()          # program-required UA suffix (e.g. yeswehack)
+        cf = hd / "creds.json"
+        try:
+            ah = (b.get("auth_header") or "").strip() or _ahb   # custom auth header(s), e.g. X-FilesAPI-Auth: <tok>
+            cdp = int(b.get("cdp_port") or 0)
+            creds = {k: v for k, v in (("session_token", st), ("token2", t2), ("cookie", ck), ("auth_header", ah), ("ua", ua)) if v}
+            if cdp:
+                creds["cdp_port"] = cdp
+            if creds:
+                fd = os.open(cf, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                try:
+                    os.write(fd, json.dumps(creds).encode())
+                finally:
+                    os.close(fd)
+            elif cf.exists():
+                cf.unlink()
+        except Exception:
+            pass
+        # out-of-scope list → scope.deny (deny wins in scope-guard, so the hunt sticks to scope)
+        deny = b.get("scope_deny") or []
+        if isinstance(deny, list) and deny:
+            try:
+                lines = {d.strip() for d in deny if isinstance(d, str) and d.strip()
+                         and "all " not in d.lower()}   # drop vague "all domains not listed" phrasing
+                if lines:
+                    (hd / "scope.deny").write_text("\n".join(sorted(lines)) + "\n")
+            except Exception:
+                pass
+        # persist the parsed program summary (rewards/rules/focus/caps/poc/ai/out-of-scope) so the
+        # sweep, triage, and report generation can honor it — and the operator can see it later.
+        pm = b.get("program_meta")
+        rr = b.get("reward_ranges")   # per-severity [min,max] payout ranges from the new-hunt page
+        if (isinstance(pm, dict) and pm) or (isinstance(rr, dict) and rr):
+            pm = dict(pm) if isinstance(pm, dict) else {}
+            if isinstance(rr, dict) and rr:
+                pm["reward_ranges"] = rr
+            try: (hd / "program.json").write_text(json.dumps(pm, indent=2))
+            except Exception: pass
+        # program's request-rate cap (e.g. 2 req/s) → rules.json, which scope-guard throttles to
+        try:
+            rps = b.get("rate_rps")
+            if rps and float(rps) > 0:
+                (hd / "rules.json").write_text(json.dumps({"rate_rps": float(rps)}))
+        except Exception:
+            pass
+        # persist launch opts so a rate-limit-paused hunt can be resumed with the same settings
+        try:
+            budget_sec = int(b.get("budget_sec") or 86400)
+        except (ValueError, TypeError):
+            budget_sec = 86400
+        try:
+            cost_cap_usd = float(b.get("cost_cap_usd") or 0)
+        except (ValueError, TypeError):
+            cost_cap_usd = 0
+        opts = {"program": b.get("program", ""), "mode": b.get("mode", "grey"),
+                "scope_types": b.get("scope_types") or ["web", "api"],
+                "stealth": bool(b.get("stealth")), "single_host": bool(b.get("single_host")),
+                "llm_light": bool(b.get("llm_light")), "budget_sec": budget_sec,
+                "cost_cap_usd": cost_cap_usd}
+        try: (hd / "launch.json").write_text(json.dumps(opts))
+        except Exception: pass
+        args = [sys.executable, str(TOOLS / "hunt-run.py"), "--target", t,
+                "--program", opts["program"], "--mode", opts["mode"],
+                "--scope-types", ",".join(opts["scope_types"]),
+                "--budget-sec", str(opts["budget_sec"])]
+        if opts["cost_cap_usd"] > 0:
+            args += ["--cost-cap-usd", str(opts["cost_cap_usd"])]
+        if opts["stealth"]:
+            args.append("--stealth")
+        env = dict(os.environ); env["HUNT_DIR"] = str(hd)
+        if opts["stealth"]:      env["HUNT_STEALTH"] = "1"   # throttle loud scanners (WAF-safe)
+        if opts["single_host"]:  env["HUNT_SINGLE"] = "1"    # strict exact-host scope (no subdomain creep)
+        if opts["llm_light"]:    env["HUNT_LLM"] = "haiku"   # Haiku-only — minimise rate limits (no paid API key)
+        # The UI is now the only interface — always launch the full-agentic pipeline (Phases 1-8),
+        # not the legacy scripted one. HUNT_AGENTIC_PHASES stays the on/off switch in hunt-run.py
+        # itself (unset it there to revert); this just changes what the dashboard always passes.
+        env["HUNT_AGENTIC_PHASES"] = AGENTIC_PHASES
+        try:
+            lf = open(hd / "run.log", "a")
+            subprocess.Popen(args, stdout=lf, stderr=lf, env=env, start_new_session=True)
+            return self._send({"ok": True, "target": t})
+        except Exception as e:
+            return self._send({"ok": False, "error": str(e)[:200]}, 500)
+
     MAX_BODY = 1024 * 1024  # 1MB limit
 
     def _body(self):
-        n = int(self.headers.get("Content-Length", 0) or 0)
-        if n > self.MAX_BODY:
-            return {"error": "request too large"}
+        # A non-numeric Content-Length used to crash the handler thread with a
+        # ValueError before any response; treat anything unparseable as 0.
         try:
-            return json.loads(self.rfile.read(n) or b"{}")
+            n = int(self.headers.get("Content-Length", 0) or 0)
+        except (TypeError, ValueError):
+            n = 0
+        if n < 0:
+            n = 0
+        if n > self.MAX_BODY:
+            # Drain (bounded) what the client is still sending so we can reply
+            # with a clean 413 instead of closing mid-write — an unread body
+            # resets the socket, which the dashboard renders as "server down".
+            remaining = min(n, self.MAX_BODY * 8)
+            while remaining > 0:
+                chunk = self.rfile.read(min(remaining, 65536))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+            return {"__too_large__": True}
+        try:
+            d = json.loads(self.rfile.read(n) or b"{}")
         except Exception:
             return {}
+        # Every POST handler treats the body as a JSON object (b.get(...)). A
+        # JSON array/number/string/null is valid JSON but has no .get, which
+        # previously crashed do_POST on the first access. Always hand back a dict.
+        return d if isinstance(d, dict) else {}
 
     def do_GET(self):
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         t = q.get("target")
+        if u.path == "/api/health":  # liveness + observability for the UI and uptime checks
+            active = 0
+            try:
+                for pidf in (TARGETS.glob("*/.hunt/run.pid") if TARGETS.exists() else []):
+                    try:
+                        os.kill(int(pidf.read_text().strip()), 0); active += 1
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            return self._send({"ok": True, "port": PORT,
+                               "uptime_sec": round(time.time() - START_TS, 1),
+                               "active_hunts": active})
+        if u.path == "/proof":  # GET ?target=&fi= — standalone, shareable proof page for ONE finding
+            fi_raw = q.get("fi", "")
+            hd = hunt_dir(q.get("target", "")); rf = hd / "run.json"
+            try:
+                fi = int(fi_raw)
+                d = json.loads(rf.read_text())
+                f = d["findings"][fi]
+            except Exception:
+                return self._send(_PROOF_404, 404, "text/html")
+            return self._send(_render_proof_page(f, q.get("target", ""), fi, d.get("program", "")), 200, "text/html")
+        if u.path == "/api/hunt/finding-zip":  # GET ?target=&fi= — download the evidence bundle zip for one finding
+            fi_raw = q.get("fi", "")
+            hd = hunt_dir(q.get("target", "")); rf = hd / "run.json"
+            try:
+                fi = int(fi_raw)
+                d = json.loads(rf.read_text())
+                f = d["findings"][fi]
+            except Exception:
+                return self._send({"ok": False, "error": "no such finding"}, 404)
+            bundle = f.get("evidence_bundle")
+            zpath = Path(bundle) if bundle else (hd / "evidence" / ("F" + str(fi)) / ("bundle-F" + str(fi) + ".zip"))
+            if not zpath.exists():
+                # no bundle captured yet (e.g. report/exploit never ran, or ran before this feature) —
+                # build one on the spot from whatever evidence the finding already has, best-effort.
+                try:
+                    ftmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+                    ftmp.write(json.dumps(f)); ftmp.close()
+                    args = ["--id", "F" + str(fi), "--finding-file", ftmp.name, "--json"]
+                    r = run("evidence-bundle.py", args, q.get("target", ""), timeout=120)
+                    os.unlink(ftmp.name)
+                    bd = json.loads((r.get("out") or "").strip().splitlines()[-1])
+                    if bd.get("ok"):
+                        zpath = Path(bd["bundle"])
+                except Exception:
+                    pass
+            if not zpath.exists():
+                return self._send({"ok": False, "error": "no evidence bundle available for this finding"}, 404)
+            try:
+                body = zpath.read_bytes()
+            except Exception as e:
+                return self._send({"ok": False, "error": str(e)[:200]}, 500)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", 'attachment; filename="F' + str(fi) + '-evidence.zip"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if u.path == "/":
             ui = asset("huntr-ui.html")
             if ui:
@@ -137,9 +719,14 @@ class H(BaseHTTPRequestHandler):
                         html = html.replace("<body>", "<body>" + live, 1)
                     else:
                         html = html + live   # last resort: after everything (never before doctype)
-                tag = '<script src="/huntr-bridge.js"></script>'
-                if asset("huntr-bridge.js") and tag not in html:
-                    html = html.replace("</body>", tag + "\n</body>", 1) if "</body>" in html else html + tag
+                # NOTE: huntr-bridge.js is legacy — it injected the old workbench's Send/Diff/mobile/
+                # earnings panels and an HTTP|Browser toggle that target DOM the rewritten UI no longer
+                # has. The new UI talks to /api/* directly, so the bridge is NOT injected. Set
+                # HUNTR_BRIDGE=1 to re-enable it for the old UI.
+                if os.environ.get("HUNTR_BRIDGE") == "1":
+                    tag = '<script src="/huntr-bridge.js"></script>'
+                    if asset("huntr-bridge.js") and tag not in html:
+                        html = html.replace("</body>", tag + "\n</body>", 1) if "</body>" in html else html + tag
                 return self._send(html, ctype="text/html; charset=utf-8")
             return self._send(INDEX, ctype="text/html; charset=utf-8")
         if u.path == "/huntr-bridge.js":
@@ -160,10 +747,27 @@ class H(BaseHTTPRequestHandler):
                             try:
                                 r = json.loads(rf.read_text())
                                 rec["status"] = r.get("status")          # running/paused/done/error/stopped
+                                # Zombie guard: a run whose process died without a clean exit stays "running"
+                                # forever, which locks the dashboard's Pause/Stop (they signal a dead pid) and
+                                # blocks New-hunt. If the pid is dead AND the file is stale (>90s), report stalled.
+                                if rec["status"] in ("running", "active"):
+                                    _st = (time.time() - (r.get("updated") or 0)) > 90
+                                    _alive = False
+                                    try:
+                                        _p = int((hd / "run.pid").read_text().strip()); os.kill(_p, 0); _alive = True
+                                    except Exception:
+                                        _alive = False
+                                    if _st and not _alive:
+                                        rec["status"] = "stalled"
                                 rec["pct"] = r.get("pct", 0)
                                 rec["stage"] = r.get("stage", "")
                                 rec["nfind"] = len(r.get("findings", []))
                                 rec["updated"] = r.get("updated", 0)
+                                # return the ORIGINAL scope so UI can pass it back on resume
+                                # (d.name is the safe-encoded dir key, not the raw scope)
+                                raw_scope = r.get("scope") or r.get("raw_scope") or r.get("target")
+                                if raw_scope and raw_scope != d.name:
+                                    rec["raw_scope"] = raw_scope
                             except Exception:
                                 pass
                         out.append(rec)
@@ -173,13 +777,198 @@ class H(BaseHTTPRequestHandler):
         if u.path == "/api/status":
             return self._send(run("hunt-status.py", [], t))
         if u.path == "/api/hunt/status":  # GET ?target=<t> — live state of a dashboard-driven hunt
-            rf = hunt_dir(q.get("target", "")) / "run.json"
+            _hd = hunt_dir(q.get("target", ""))
+            rf = _hd / "run.json"
             if rf.exists():
                 try:
-                    return self._send(json.loads(rf.read_text()))
+                    d = json.loads(rf.read_text())
+                    # Zombie detection: a run whose process died without a clean exit leaves status stuck on
+                    # "running"/"active", so the dashboard spins forever on the empty "surface still being
+                    # tested" state. If run.pid is dead AND the file hasn't advanced in >90s, report "stalled"
+                    # (terminal) so the UI stops waiting and offers Resume.
+                    if d.get("status") in ("running", "active"):
+                        _stale = (time.time() - (d.get("updated") or 0)) > 90
+                        _pid_alive = False
+                        try:
+                            _p = int((_hd / "run.pid").read_text().strip())
+                            os.kill(_p, 0); _pid_alive = True
+                        except Exception:
+                            _pid_alive = False
+                        if _stale and not _pid_alive:
+                            d["status"] = "stalled"
+                            d["paused_reason"] = "process exited without finishing — click Resume to continue"
+                    # slim payload: keep only what the dashboard renders (avoids 56KB+ on every 2s tick)
+                    slim = {
+                        "status": d.get("status"), "stage": d.get("stage"), "pct": d.get("pct"),
+                        "updated": d.get("updated"), "started": d.get("started"),
+                        "paused_reason": d.get("paused_reason"),
+                        # per-phase outcome (ok|empty|rate_limited|skipped) so the pipeline spine can
+                        # show a ran-but-produced-nothing phase as amber "needs rerun", not green done.
+                        "phase_outcomes": d.get("phase_outcomes", {}),
+                        "findings": d.get("findings", []),
+                        "leads": (d.get("leads") or [])[-30:],
+                        "logs": (d.get("logs") or [])[-200:],
+                        "hosts": d.get("hosts", []),
+                        "chains": d.get("chains", []),  # small list — the graph view's chain nodes and the
+                                                         # combo banner both need this on every live poll
+                        "economics": d.get("economics", {}),  # pipeline_ev + per-severity reward_ranges + ranked top
+                        # the endpoints LIST is capped to 200 for payload size, but that cap must never
+                        # leak into a headline STATISTIC — the UI's attack-surface summary card used to
+                        # read len(this list) for "Endpoints" (and derive "Hosts" from it too), so any
+                        # hunt with >200 endpoints always showed exactly "200", looking hardcoded. stats
+                        # carries the real, uncapped counts hunt-run.py already maintains.
+                        "endpoints": [e if isinstance(e, str) else e.get("url", "") for e in (d.get("endpoints") or [])][:200],
+                        "stats": d.get("stats", {}),
+                        "tested": {k: v for k, v in list((d.get("tested") or {}).items())[:100]},
+                        "nuclei_count": d.get("nuclei_count"), "gau_count": d.get("gau_count"),
+                        "js_secrets": len(d.get("js_secrets") or []),
+                        "supervisor_log": (d.get("supervisor_log") or [])[-40:],
+                        "cost_usd": d.get("cost_usd", 0), "llm_calls": d.get("llm_calls", 0),
+                        "llm_input_tokens": d.get("llm_input_tokens", 0),
+                        "llm_output_tokens": d.get("llm_output_tokens", 0),
+                        "target": d.get("target"), "program": d.get("program"),
+                        "session_alert": d.get("session_alert"),
+                        "circuit_open": d.get("circuit_open"),
+                        "llm_alert": d.get("llm_alert"),
+                        # 5.x-generation persona-refusal → 4.x-fallback events (hunt-run.py's
+                        # _run_claude_cli_fallback) — lets the operator see how often the newer,
+                        # cheaper/stronger primary model is actually flagging under this CLI auth.
+                        "llm_refusals": (d.get("llm_refusals") or [])[-30:],
+                    }
+                    # full=1 sends everything (used by report generator)
+                    if q.get("full") == "1":
+                        return self._send(d)
+                    return self._send(slim)
                 except Exception:
                     return self._send({"status": "none"})
             return self._send({"status": "none"})
+        if u.path == "/api/hunt/watch":  # GET ?target=<t> — monitor status
+            wj = hunt_dir(q.get("target", "")) / "watch.json"
+            pidf = hunt_dir(q.get("target", "")) / "watch.pid"
+            alive = False
+            try:
+                alive = (os.kill(int(pidf.read_text().strip()), 0) is None)
+            except Exception:
+                alive = False
+            try:
+                d = json.loads(wj.read_text()); d["alive"] = alive
+                return self._send({"ok": True, **d})
+            except Exception:
+                return self._send({"ok": True, "status": "off", "alive": alive})
+        if u.path == "/api/hunt/zeroday":  # GET ?target=<t> — novel target-specific hypotheses
+            if not q.get("target", "").strip():  # blank target used to resolve to the stale "default" dir and run the long tool
+                return self._send({"ok": False, "error": "no target"}, 400)
+            rf = hunt_dir(q.get("target", "")) / "run.json"
+            if not rf.exists():
+                return self._send({"ok": False, "error": "no hunt"}, 404)
+            r = run("agent-zeroday.py", [], q.get("target", ""), stdin=json.dumps({"target": q.get("target", "")}), timeout=150)
+            try:
+                return self._send(json.loads((r.get("out") or "").strip().splitlines()[-1]))
+            except Exception:
+                return self._send({"ok": False, "error": (r.get("err") or "zeroday failed")[:200]}, 500)
+        if u.path == "/api/hunt/plan":  # GET ?target=<t> — graph-driven attack plan (ranked)
+            if not q.get("target", "").strip():
+                return self._send({"ok": False, "error": "no target"}, 400)
+            rf = hunt_dir(q.get("target", "")) / "run.json"
+            if not rf.exists():
+                return self._send({"ok": False, "error": "no hunt"}, 404)
+            r = run("hunt-planner.py", [], q.get("target", ""), stdin=json.dumps({"target": q.get("target", "")}), timeout=150)
+            try:
+                return self._send(json.loads((r.get("out") or "").strip().splitlines()[-1]))
+            except Exception:
+                return self._send({"ok": False, "error": (r.get("err") or "planner failed")[:200]}, 500)
+        if u.path == "/api/hunt/kgraph":  # GET ?target=<t>[&force=1] — cached knowledge graph (communities/god-nodes)
+            if not q.get("target", "").strip():
+                return self._send({"ok": False, "error": "no target"}, 400)
+            rf = hunt_dir(q.get("target", "")) / "run.json"
+            if not rf.exists():
+                return self._send({"ok": False, "error": "no hunt"}, 404)
+            args = ["--run", str(rf), "--json"] + (["--force"] if q.get("force") == "1" else [])
+            r = run("hunt-graph.py", args, timeout=120)
+            try:
+                return self._send(json.loads((r.get("out") or "").strip().splitlines()[-1]))
+            except Exception:
+                return self._send({"ok": False, "error": (r.get("err") or "graph build failed")[:200]}, 500)
+        if u.path == "/api/hunt/graphdata":  # GET ?target= — the built graphify knowledge graph, read
+            # straight off disk (0-token, no graphify module needed, unlike /api/hunt/kgraph which shells
+            # hunt-graph.py). Feeds the dashboard's 3D constellation the REAL semantic graph — entities,
+            # relationships, communities and exploit-chain edges — instead of a cosmetic host→endpoint tree.
+            hd = hunt_dir(q.get("target", ""))
+            gj = hd / "graphify-out" / "graph.json"
+            if not gj.exists():
+                return self._send({"ok": True, "built": False})
+            try:
+                g = json.loads(gj.read_text())
+            except Exception as e:
+                return self._send({"ok": False, "error": str(e)[:120]}, 500)
+            nodes = [{"id": n.get("id"), "label": n.get("label") or n.get("id"),
+                      "community": n.get("community", 0), "community_name": n.get("community_name", ""),
+                      "origin": n.get("_origin", "")} for n in (g.get("nodes") or [])[:400] if n.get("id")]
+            links = [{"source": e.get("source"), "target": e.get("target"),
+                      "relation": e.get("relation", ""), "confidence": e.get("confidence", "")}
+                     for e in (g.get("links") or [])[:800] if e.get("source") and e.get("target")]
+            hyper = [{"id": h.get("id"), "label": h.get("label", ""), "nodes": (h.get("nodes") or [])[:40]}
+                     for h in (g.get("hyperedges") or [])[:30]]
+            return self._send({"ok": True, "built": True, "nodes": nodes, "links": links, "hyperedges": hyper,
+                               "counts": {"nodes": len(g.get("nodes") or []), "links": len(g.get("links") or [])}})
+        if u.path == "/api/hunt/scope":  # GET ?target= — current scope.allow / scope.deny
+            hd = hunt_dir(q.get("target", ""))
+            def _rdscope(fn):
+                p = hd / fn
+                return [l.strip() for l in p.read_text().splitlines() if l.strip() and not l.startswith("#")] if p.exists() else []
+            return self._send({"ok": True, "allow": _rdscope("scope.allow"), "deny": _rdscope("scope.deny")})
+        if u.path == "/api/hunt/brain":  # GET ?target= — cross-hunt learned technique priority (hunt-brain.py)
+            hd = hunt_dir(q.get("target", "")); rf = hd / "run.json"
+            if not rf.exists():
+                return self._send({"ok": False, "error": "no hunt"}, 404)
+            try:
+                d = json.loads(rf.read_text())
+            except Exception:
+                d = {}
+            # same lightweight stack heuristic hunt-run.py's _stack() uses — kept inline rather than
+            # importing the whole engine module just for this one GET.
+            p = ((d.get("program") or "") + " " + (d.get("target") or "")).lower()
+            stack = ["fintech"] if any(k in p for k in ("bank", "pay", "fin", "wallet", "card", "trading", "ledger", "crypto")) else []
+            stack += ["saas", "api"]
+            if any("graphql" in (e if isinstance(e, str) else e.get("url", "")).lower() for e in (d.get("endpoints") or [])):
+                stack.append("graphql")
+            stack = ",".join(dict.fromkeys(stack))
+            r = run("hunt-brain.py", ["--get-priorities", "--stack", stack])
+            try:
+                return self._send({"ok": True, "stack": stack, "priority": json.loads(r["out"])})
+            except Exception:
+                return self._send({"ok": False, "error": (r.get("err") or "brain lookup failed")[:200]}, 500)
+        if u.path == "/api/hunt/probe":  # GET ?target=&url=&method= — live scope-guarded request/response (Burp-style)
+            url = q.get("url", "")
+            if not url:
+                return self._send({"ok": False, "error": "no url"}, 400)
+            r = run("exec-http.py", ["--url", url, "--method", q.get("method", "GET")], q.get("target", ""), timeout=40)
+            out_s = r.get("out", "") or r.get("err", "")
+            m = re.search(r"\(([^)]*evidence[^)]*)\)", out_s)
+            req = resp = ""
+            if m:
+                ed = Path(m.group(1).strip())
+                try: req = (ed / "request.txt").read_text()[:4000]
+                except Exception: pass
+                try: resp = (ed / "response.txt").read_text()[:9000]
+                except Exception: pass
+            return self._send({"ok": "⛔" not in out_s, "request": req, "response": resp, "summary": out_s[:300]})
+        if u.path == "/api/hunt/diff":  # GET ?target= — what changed since the saved baseline snapshot
+            hd = hunt_dir(q.get("target", "")); rf = hd / "run.json"; sf = hd / "snapshot.json"
+            if not rf.exists():
+                return self._send({"ok": False, "error": "no hunt"}, 404)
+            cur = json.loads(rf.read_text())
+            cur_eps = set(e if isinstance(e, str) else e.get("url", "") for e in (cur.get("endpoints") or []))
+            cur_finds = [(f.get("title", ""), f.get("endpoint", "")) for f in (cur.get("findings") or []) if f.get("verdict") != "false_positive"]
+            if not sf.exists():
+                return self._send({"ok": True, "baseline": False, "new_endpoints": [], "new_findings": [], "gone_endpoints": []})
+            snap = json.loads(sf.read_text())
+            s_eps = set(snap.get("endpoints") or [])
+            s_finds = set(tuple(x) for x in (snap.get("findings") or []))
+            return self._send({"ok": True, "baseline": True, "baseline_ts": snap.get("ts"),
+                               "new_endpoints": sorted(cur_eps - s_eps)[:150],
+                               "gone_endpoints": sorted(s_eps - cur_eps)[:60],
+                               "new_findings": [{"title": tt, "endpoint": ee} for (tt, ee) in cur_finds if (tt, ee) not in s_finds]})
         if u.path == "/api/log-doctor":  # GET ?apply=1 — the self-healing agent: diagnose + fix engine problems
             a = ["--json"] + ([] if q.get("apply") else ["--dry"])
             r = run("log-doctor.py", a, timeout=90)
@@ -203,6 +992,35 @@ class H(BaseHTTPRequestHandler):
                 return self._send(st)
             except Exception as e:
                 return self._send({"linked": False, "mode": None, "error": str(e)[:200]})
+        if u.path == "/api/account":  # BYO-key onboarding status — never returns the key itself
+            envk = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
+            try:
+                filek = PRODUCT_KEY_FILE.read_text().strip()
+            except Exception:
+                filek = ""
+            try:
+                meta = json.loads(PRODUCT_ACCT_FILE.read_text())
+            except Exception:
+                meta = {}
+            key = filek or envk
+            return self._send({
+                "configured": bool(key),
+                "masked": _mask_key(key) if key else "",
+                "source": ("stored" if filek else ("env" if envk else None)),
+                "verified_at": meta.get("verified_at", 0),
+                "models": meta.get("models"),
+            })
+        if u.path == "/api/terms":  # has the operator accepted the current Terms of Service + Acceptable Use?
+            try:
+                rec = json.loads(TERMS_FILE.read_text())
+            except Exception:
+                rec = {}
+            return self._send({
+                "accepted": rec.get("version") == TERMS_VERSION,
+                "accepted_version": rec.get("version"),
+                "required_version": TERMS_VERSION,
+                "accepted_at": rec.get("accepted_at", 0),
+            })
         if u.path == "/api/earnings":  # the bounty-business ledger summary
             r = run("earnings.py", ["--json"])
             try:
@@ -232,7 +1050,6 @@ class H(BaseHTTPRequestHandler):
                                    "by_program": {}, "by_platform": {}, "by_month": {},
                                    "by_severity": {}, "recent": []})
         if u.path == "/api/earnings/export":  # stream the CSV for download
-            import tempfile
             with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
                 tmp = f.name
             year = q.get("year")
@@ -334,75 +1151,109 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         u = urlparse(self.path)
         b = self._body()
+        if b.get("__too_large__"):
+            return self._send({"ok": False, "error": "request too large"}, 413)
         t = b.get("target")
-        if u.path == "/api/scope/parse":  # POST {text} — AI-organize a pasted program page into a clean scope
+        if u.path == "/api/scope/parse":  # POST {text} — deterministic scope extract + optional LLM enrich
             text = b.get("text") or ""
             if not text.strip():
                 return self._send({"ok": False, "error": "no text"}, 400)
-            r = run("scope-parse.py", ["--json"], stdin=text, timeout=100)
+            # scope_ingest extracts the asset list deterministically (reliable, instant)
+            # and enriches rewards/rules/etc with the LLM only when creds exist. The live
+            # as-you-type preview sends {enrich:false} for an instant deterministic parse;
+            # the explicit "AI enrich" button omits it (enrich on).
+            _enrich = b.get("enrich", True)
+            _args = ["--json"] if _enrich else ["--json", "--no-enrich"]
+            # enrich=True now runs up to 2 sequential Haiku 5.5 calls (scope classification, then
+            # metadata) — classification alone measured ~49s on a large real program page.
+            r = run("scope_ingest.py", _args, stdin=text, timeout=(170 if _enrich else 15))
             try:
                 parsed = json.loads((r.get("out") or "").strip().splitlines()[-1])
             except Exception:
                 parsed = {"in_scope": [], "out_of_scope": [], "error": "parse failed"}
             return self._send({"ok": True, "scope": parsed})
         if u.path == "/api/hunt/start":  # POST {target, program?, mode?, scope_types?, session_token?, token2?, cookie?, ua?, stealth?, single_host?, budget_sec?, scope_deny?} — start a REAL hunt
-            if not t:
+            if not isinstance(t, str) or not t.strip():
+                # Whitespace-only used to collapse via safe() to the shared
+                # "default" workspace and silently start a real hunt there.
                 return self._send({"ok": False, "error": "no target"}, 400)
-            hd = hunt_dir(t)
-            # credentials go to a 0600 file (never argv — keeps tokens/cookies out of `ps`)
-            st = (b.get("session_token") or "").strip()
-            t2 = (b.get("token2") or "").strip()
-            ck = (b.get("cookie") or "").strip()      # cookie-session auth (web apps that don't use bearer)
-            ua = (b.get("ua") or "").strip()          # program-required UA suffix (e.g. yeswehack)
-            cf = hd / "creds.json"
-            try:
-                creds = {k: v for k, v in (("session_token", st), ("token2", t2), ("cookie", ck), ("ua", ua)) if v}
-                if creds:
-                    cf.write_text(json.dumps(creds))
-                    try: os.chmod(cf, 0o600)
-                    except Exception: pass
-                elif cf.exists():
-                    cf.unlink()
-            except Exception:
-                pass
-            # out-of-scope list → scope.deny (deny wins in scope-guard, so the hunt sticks to scope)
-            deny = b.get("scope_deny") or []
-            if isinstance(deny, list) and deny:
+            # If a whole program page was pasted, extract the real scope here instead of handing
+            # the page text to hunt-run.py --target (which whitespace-splits it into hundreds of
+            # junk "assets"). Prefer the client's already-Haiku-classified scope_obj (the live
+            # preview's auto-enrich already did the slow, accurate in/out/ambiguous classification —
+            # see scope_ingest._classify_scope_llm; re-deriving here with enrich=False would silently
+            # REGRESS to the naive position-based split and could send 0 targets to a hunt that the
+            # preview correctly found 6 for). Only falls back to the fast deterministic-only ingest
+            # when the client has no classified scope yet (so Start never blocks on an LLM call).
+            _scope_obj = b.get("scope_obj") if isinstance(b.get("scope_obj"), dict) else None
+            _page_shaped = ("\n" in t) or (len(t) > 120) or (len(t.split()) > 6)
+            if _scope_obj and _scope_obj.get("targets"):
+                t = ",".join(_scope_obj["targets"])
+            elif _page_shaped:
                 try:
-                    lines = {d.strip() for d in deny if isinstance(d, str) and d.strip()
-                             and "all " not in d.lower()}   # drop vague "all domains not listed" phrasing
-                    if lines:
-                        (hd / "scope.deny").write_text("\n".join(sorted(lines)) + "\n")
+                    import importlib.util as _ilu
+                    _spec = _ilu.spec_from_file_location("scope_ingest", str(TOOLS / "scope_ingest.py"))
+                    _si = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_si)
+                    _scope_obj = _si.ingest(t, enrich=False)
+                    if _scope_obj.get("targets"):
+                        t = ",".join(_scope_obj["targets"])  # clean asset list, not the page
+                    else:
+                        _scope_obj = None
                 except Exception:
-                    pass
-            # persist launch opts so a rate-limit-paused hunt can be resumed with the same settings
+                    _scope_obj = None
+                # CRITICAL: page-shaped input that STILL has no targets after extraction must NEVER
+                # fall through with the original prose as `t` — that is exactly the historical bug
+                # (whitespace-split into hundreds of junk "assets"; a real incident: a full HackerOne
+                # program page became the literal --target of a live hunt-run.py, producing bogus
+                # "hosts" from English words in the page text and false-positive findings). Refuse
+                # instead of guessing — the operator needs to wait for /api/scope/parse (Haiku
+                # classification) to finish and resend with scope_obj, or fix the scope text.
+                if not _scope_obj:
+                    return self._send({"ok": False, "error":
+                        "couldn't find any in-scope targets in the pasted text — wait for scope "
+                        "classification to finish (the live preview), or paste a clean host/wildcard "
+                        "list instead of the raw page"}, 400)
+            hd = hunt_dir(t)
+            # Idempotent start: if a live hunt already owns this target, adopt it instead of
+            # forking a duplicate hunt-run.py that races on the same run.json/run.pid (double-click,
+            # client retry, a second tab). Checked BEFORE any file writes below — this used to run
+            # AFTER scope.allow/scope.deny/program.json were (re)written, so a duplicate Start click
+            # on an already-running hunt would silently rewrite its live scope files out from under
+            # it mid-run. A bare `os.kill(pid, 0)` also used to be the whole check: a PID is reused
+            # by the OS after the original process exits, so a stale run.pid from a crashed hunt
+            # could point at an unrelated live process and this would falsely report
+            # "already_running": true — the operator believes a hunt is running; nothing is.
             try:
-                budget_sec = int(b.get("budget_sec") or 1200)
-            except (ValueError, TypeError):
-                budget_sec = 1200
-            opts = {"program": b.get("program", ""), "mode": b.get("mode", "grey"),
-                    "scope_types": b.get("scope_types") or ["web", "api"],
-                    "stealth": bool(b.get("stealth")), "single_host": bool(b.get("single_host")),
-                    "llm_light": bool(b.get("llm_light")), "budget_sec": budget_sec}
-            try: (hd / "launch.json").write_text(json.dumps(opts))
-            except Exception: pass
-            args = [sys.executable, str(TOOLS / "hunt-run.py"), "--target", t,
-                    "--program", opts["program"], "--mode", opts["mode"],
-                    "--scope-types", ",".join(opts["scope_types"]),
-                    "--budget-sec", str(opts["budget_sec"])]
-            if opts["stealth"]:
-                args.append("--stealth")
-            env = dict(os.environ); env["HUNT_DIR"] = str(hd)
-            if opts["stealth"]:      env["HUNT_STEALTH"] = "1"   # throttle loud scanners (WAF-safe)
-            if opts["single_host"]:  env["HUNT_SINGLE"] = "1"    # strict exact-host scope (no subdomain creep)
-            if opts["llm_light"]:    env["HUNT_LLM"] = "haiku"   # Haiku-only — minimise rate limits (no paid API key)
+                _pid = int((hd / "run.pid").read_text().strip())
+            except Exception:
+                _pid = None
+            if _pid is not None and is_process(_pid, "hunt-run.py"):
+                return self._send({"ok": True, "target": t, "already_running": True})
+            # Close the window between this check and the new process actually writing its own
+            # run.pid (the gap a rapid double-click/retry races in): hold a short-lived in-process
+            # claim on this workspace so a second concurrent /api/hunt/start for the SAME target
+            # waits on this one's outcome instead of forking a second hunt-run.py.
+            with _START_LOCK:
+                if str(hd) in _STARTING:
+                    return self._send({"ok": True, "target": t, "already_running": True})
+                _STARTING.add(str(hd))
             try:
-                lf = open(hd / "run.log", "a")
-                subprocess.Popen(args, stdout=lf, stderr=lf, env=env, start_new_session=True)
-                return self._send({"ok": True, "target": t})
-            except Exception as e:
-                return self._send({"ok": False, "error": str(e)[:200]}, 500)
+                if _scope_obj:  # persist the canonical scope the hunt will read
+                    try:
+                        hd.mkdir(parents=True, exist_ok=True)
+                        if _scope_obj.get("allow"):
+                            (hd / "scope.allow").write_text("\n".join(_scope_obj["allow"]) + "\n")
+                        if _scope_obj.get("deny"):
+                            (hd / "scope.deny").write_text("\n".join(_scope_obj["deny"]) + "\n")
+                        (hd / "program.json").write_text(json.dumps(_scope_obj, indent=2))
+                    except Exception:
+                        pass
+                return self._start_hunt_locked(t, hd, b)
+            finally:
+                with _START_LOCK:
+                    _STARTING.discard(str(hd))
         if u.path == "/api/hunt/control":  # POST {target, action: stop|pause|resume}
+            import signal
             tgt = t; act = (b.get("action") or "").strip()
             hd = hunt_dir(tgt); pidf = hd / "run.pid"
             try:
@@ -412,39 +1263,74 @@ class H(BaseHTTPRequestHandler):
             def _alive(p):
                 try: os.kill(p, 0); return True
                 except Exception: return False
-            # resume of a RATE-LIMIT-PAUSED hunt: the process exited, so re-launch it with --resume
+            # resume of a paused/done/stopped hunt: the process exited, re-launch it with --resume
             rf = hd / "run.json"
             cur_status = ""
             try: cur_status = json.loads(rf.read_text()).get("status", "")
             except Exception: pass
-            if act == "resume" and (pid is None or not _alive(pid) or cur_status == "paused"):
+            # A "paused" hunt was SIGSTOP'd, not exited — if the process is still genuinely alive,
+            # wake THAT SAME process with SIGCONT instead of relaunching a second one, which would
+            # leave the first permanently stopped and orphaned forever (it would never receive the
+            # resume and never get cleaned up). Only fall through to a fresh relaunch below if the
+            # process has somehow also died while "paused" (e.g. crashed, or the box rebooted).
+            if act == "resume" and cur_status == "paused" and pid is not None and _alive(pid) and is_process(pid, "hunt-run.py"):
                 try:
-                    opts = json.loads((hd / "launch.json").read_text())
-                except Exception:
-                    opts = {"mode": "grey", "scope_types": ["web", "api"], "budget_sec": 1200}
-                args = [sys.executable, str(TOOLS / "hunt-run.py"), "--target", tgt, "--resume",
-                        "--program", opts.get("program", ""), "--mode", opts.get("mode", "grey"),
-                        "--scope-types", ",".join(opts.get("scope_types") or ["web", "api"]),
-                        "--budget-sec", str(int(opts.get("budget_sec") or 1200))]
-                if opts.get("stealth"): args.append("--stealth")
-                env = dict(os.environ); env["HUNT_DIR"] = str(hd)
-                if opts.get("stealth"):     env["HUNT_STEALTH"] = "1"
-                if opts.get("single_host"): env["HUNT_SINGLE"] = "1"
-                if opts.get("llm_light"):   env["HUNT_LLM"] = "haiku"
-                try:
-                    lf = open(hd / "run.log", "a")
-                    subprocess.Popen(args, stdout=lf, stderr=lf, env=env, start_new_session=True)
-                    return self._send({"ok": True, "action": "resume", "relaunched": True})
+                    os.killpg(os.getpgid(pid), signal.SIGCONT)
                 except Exception as e:
-                    return self._send({"ok": False, "error": str(e)[:200]}, 500)
+                    return self._send({"ok": False, "error": str(e)[:120]}, 500)
+                try:
+                    d = json.loads(rf.read_text())
+                    d["status"] = "running"; d.pop("paused_reason", None)
+                    d.setdefault("logs", []).append({"t": "ok", "v": "▷ hunt resumed by operator"})
+                    rf.write_text(json.dumps(d))
+                except Exception:
+                    pass
+                return self._send({"ok": True, "action": "resume", "resumed_in_place": True})
+            if act == "resume" and (pid is None or not _alive(pid) or cur_status in ("paused", "done", "stopped", "error")):
+                cost_cap_override = b.get("cost_cap_usd")   # resuming from a cost-cap pause can raise the cap
+                ok, info = _relaunch_resume(tgt, hd, cost_cap_override)
+                if ok:
+                    return self._send({"ok": True, "action": "resume", "relaunched": True})
+                return self._send({"ok": False, "error": info[:200]}, 500)
             if pid is None:
                 return self._send({"ok": False, "error": "no running hunt"}, 404)
-            import signal
             sig = {"stop": signal.SIGTERM, "pause": signal.SIGSTOP, "resume": signal.SIGCONT}.get(act)
             if not sig:
                 return self._send({"ok": False, "error": "bad action"}, 400)
+            # A stale run.pid (left behind by a hunt that already crashed/finished) can be recycled
+            # by the OS for an unrelated process. Signaling blind — os.killpg() on whatever process
+            # group that PID now belongs to — would SIGSTOP/SIGTERM something that isn't this hunt at
+            # all. Refuse rather than risk it; see is_process().
+            if not is_process(pid, "hunt-run.py"):
+                return self._send({"ok": False, "error":
+                    "no running hunt (the recorded process is gone or no longer this hunt) — stale "
+                    "run.pid, nothing was signaled"}, 404)
             try:
-                os.killpg(os.getpgid(pid), sig)
+                pgid = os.getpgid(pid)
+                if act == "stop":
+                    # A stopped (SIGSTOP'd / paused) process cannot handle SIGTERM until resumed —
+                    # the signal queues silently and the process stays alive in state T, permanently
+                    # blocking delete with "hunt is running — stop it first". Fix: wake it with
+                    # SIGCONT first, then SIGTERM. If still alive after 1s, escalate to SIGKILL.
+                    try:
+                        os.killpg(pgid, signal.SIGCONT)  # resume if paused
+                    except Exception:
+                        pass
+                    import time as _ht
+                    _ht.sleep(0.05)  # give it a moment to wake
+                    os.killpg(pgid, signal.SIGTERM)
+                    # background SIGKILL escalation — fire and forget so we don't block the request
+                    def _ensure_dead(p, g):
+                        _ht.sleep(1.5)
+                        if is_process(p, "hunt-run.py"):
+                            try:
+                                os.killpg(g, signal.SIGKILL)
+                            except Exception:
+                                pass
+                    import threading as _thr
+                    _thr.Thread(target=_ensure_dead, args=(pid, pgid), daemon=True).start()
+                else:
+                    os.killpg(pgid, sig)
             except Exception as e:
                 return self._send({"ok": False, "error": str(e)[:120]}, 500)
             if act == "stop":
@@ -455,7 +1341,253 @@ class H(BaseHTTPRequestHandler):
                     rf.write_text(json.dumps(d))
                 except Exception:
                     pass
+            elif act == "pause":
+                # SIGSTOP above genuinely freezes the process (confirmed live: `ps` shows STAT=T
+                # immediately after) — but nothing ever told run.json, so the dashboard kept polling
+                # and showing "running" forever with no visible change, looking exactly like pause
+                # did nothing at all even though the process was truly suspended the whole time.
+                try:
+                    rf = hd / "run.json"; d = json.loads(rf.read_text())
+                    d["status"] = "paused"; d["paused_reason"] = "paused by operator"
+                    d.setdefault("logs", []).append({"t": "warn", "v": "⏸ hunt paused by operator"})
+                    rf.write_text(json.dumps(d))
+                except Exception:
+                    pass
             return self._send({"ok": True, "action": act})
+        if u.path == "/api/hunt/triage":  # POST {target, fi, verdict: confirmed|false_positive} — operator manual triage
+            fi = b.get("fi"); verdict = (b.get("verdict") or "").strip()
+            if not t or fi is None or verdict not in ("confirmed", "false_positive", "likely"):
+                return self._send({"ok": False, "error": "bad params"}, 400)
+            hd = hunt_dir(t); rf = hd / "run.json"
+            try:
+                d = json.loads(rf.read_text())
+                fi = int(fi)
+                if 0 <= fi < len(d.get("findings", [])):
+                    d["findings"][fi]["verdict"] = verdict
+                    if verdict == "false_positive":
+                        d["findings"][fi]["judge_disputed"] = True
+                    tmp = rf.with_suffix(".json.tmp")
+                    tmp.write_text(json.dumps(d)); tmp.replace(rf)
+                    return self._send({"ok": True, "fi": fi, "verdict": verdict})
+                return self._send({"ok": False, "error": "finding index out of range"}, 400)
+            except Exception as e:
+                return self._send({"ok": False, "error": str(e)[:200]}, 500)
+        if u.path == "/api/hunt/reverify":  # POST {target, fi} — re-run the AI judge on ONE finding
+            fi = b.get("fi")
+            if not t or fi is None:
+                return self._send({"ok": False, "error": "need target + fi"}, 400)
+            hd = hunt_dir(t); rf = hd / "run.json"
+            if not rf.exists():
+                return self._send({"ok": False, "error": "no run.json"}, 404)
+            r = run("verify-one.py", ["--run", str(rf), "--fi", int(fi), "--json"], t, timeout=180)
+            try:
+                res = json.loads((r.get("out") or "").strip().splitlines()[-1])
+                return self._send(res)
+            except Exception:
+                return self._send({"ok": False, "error": (r.get("err") or "verify failed")[:200]}, 500)
+        if u.path == "/api/hunt/chat":  # POST {target, message, history?} — conversational assistant
+            msg = (b.get("message") or "").strip()
+            if not t or not msg:
+                return self._send({"ok": False, "error": "need target + message"}, 400)
+            hd = hunt_dir(t); rf = hd / "run.json"
+            ctx = {"target": t}
+            try:
+                d = json.loads(rf.read_text())
+                tested = d.get("tested") or {}
+                eps = [e if isinstance(e, str) else e.get("url", "") for e in (d.get("endpoints") or [])]
+                untested = [e for e in eps if e not in tested][:40]
+                ctx = {
+                    "target": d.get("target", t),
+                    "status": d.get("status", ""),
+                    "stage": d.get("stage", ""),
+                    "findings": [{"i": i, "title": f.get("title"), "sev": f.get("sev"),
+                                  "verdict": f.get("verdict"), "endpoint": f.get("endpoint"),
+                                  "cls": f.get("cls"), "detail": (f.get("detail") or "")[:360]}
+                                 for i, f in enumerate(d.get("findings", []))],
+                    # ground "what's untested / how thorough" answers in the real ledger, not a guess
+                    "coverage_pct": round(100.0 * len(tested) / len(eps), 1) if eps else None,
+                    "endpoints_total": len(eps), "endpoints_tested": len(tested),
+                    "untested_endpoints_sample": untested,
+                }
+            except Exception:
+                pass
+            payload = json.dumps({"context": ctx, "message": msg, "history": b.get("history", []),
+                                   "session_cookie": b.get("session_cookie", "")})
+            r = run("hunt-agent.py", [], t, stdin=payload, timeout=200)
+            try:
+                return self._send(json.loads((r.get("out") or "").strip().splitlines()[-1]))
+            except Exception:
+                return self._send({"ok": False, "error": (r.get("err") or "agent failed")[:200]}, 500)
+        if u.path == "/api/hunt/scope":  # POST {target, allow[], deny[]} — edit scope (blast radius)
+            if not t:
+                return self._send({"ok": False, "error": "no target"}, 400)
+            hd = hunt_dir(t)
+            try:
+                allow = [str(x).strip() for x in (b.get("allow") or []) if str(x).strip()]
+                deny = [str(x).strip() for x in (b.get("deny") or []) if str(x).strip()]
+                (hd / "scope.allow").write_text("# in-scope host globs\n" + "\n".join(allow) + "\n")
+                (hd / "scope.deny").write_text("# out-of-scope host globs (deny wins)\n" + "\n".join(deny) + "\n")
+                return self._send({"ok": True, "allow": allow, "deny": deny})
+            except Exception as e:
+                return self._send({"ok": False, "error": str(e)[:150]}, 500)
+        if u.path == "/api/hunt/watch":  # POST {target, action:start|stop, interval?, auto_hunt?} — continuous monitoring
+            action = (b.get("action") or "start").strip()
+            if not t:
+                return self._send({"ok": False, "error": "no target"}, 400)
+            hd = hunt_dir(t); pidf = hd / "watch.pid"
+            if action == "stop":
+                try:
+                    pid = int(pidf.read_text().strip())
+                    # same PID-reuse risk as /api/hunt/control's stop/pause — don't signal a recycled
+                    # PID that's no longer this hunt-watch.py. See is_process().
+                    if is_process(pid, "hunt-watch.py"):
+                        os.kill(pid, 15)
+                    pidf.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                wj = hd / "watch.json"
+                try:
+                    import json as _j
+                    d = _j.loads(wj.read_text()); d["status"] = "stopped"; wj.write_text(_j.dumps(d))
+                except Exception:
+                    pass
+                return self._send({"ok": True, "status": "stopped"})
+            # start
+            a = ["--target", t, "--interval", str(int(b.get("interval", 3600) or 3600))]
+            if b.get("auto_hunt"):
+                a.append("--auto-hunt")
+            try:
+                env = dict(os.environ); env["HUNT_DIR"] = str(hd)
+                lf = open(hd / "watch.log", "a")
+                subprocess.Popen([sys.executable, str(TOOLS / "hunt-watch.py")] + a, stdout=lf, stderr=lf,
+                                 env=env, start_new_session=True)
+                return self._send({"ok": True, "status": "watching", "interval": int(b.get("interval", 3600) or 3600)})
+            except Exception as e:
+                return self._send({"ok": False, "error": str(e)[:150]}, 500)
+        if u.path == "/api/hunt/snapshot":  # POST {target} — save current surface as the diff baseline
+            if not t:
+                return self._send({"ok": False, "error": "no target"}, 400)
+            hd = hunt_dir(t); rf = hd / "run.json"
+            if not rf.exists():
+                return self._send({"ok": False, "error": "no hunt"}, 404)
+            cur = json.loads(rf.read_text())
+            snap = {"ts": int(time.time()),
+                    "endpoints": [e if isinstance(e, str) else e.get("url", "") for e in (cur.get("endpoints") or [])],
+                    "findings": [[f.get("title", ""), f.get("endpoint", "")] for f in (cur.get("findings") or []) if f.get("verdict") != "false_positive"]}
+            (hd / "snapshot.json").write_text(json.dumps(snap))
+            return self._send({"ok": True, "ts": snap["ts"], "endpoints": len(snap["endpoints"]), "findings": len(snap["findings"])})
+        # ── specialized agents: report / exploit / authtest / chain / recon ──
+        if u.path == "/api/hunt/auth":  # POST {target, creds?, signup?, login_url?} — auto-authenticate
+            if not t:
+                return self._send({"ok": False, "error": "no target"}, 400)
+            r = run("agent-auth.py", [], t, stdin=json.dumps({k: v for k, v in b.items() if k != "target"} | {"target": t}), timeout=200)
+            try:
+                return self._send(json.loads((r.get("out") or "").strip().splitlines()[-1]))
+            except Exception:
+                return self._send({"ok": False, "error": (r.get("err") or "auth failed")[:200]}, 500)
+        if u.path == "/api/hunt/bypass":  # POST {target, url, status, method?} — doors-not-walls bypass
+            if not b.get("url"):
+                return self._send({"ok": False, "error": "need url"}, 400)
+            r = run("agent-bypass.py", [], t, stdin=json.dumps({k: v for k, v in b.items() if k != "target"}), timeout=180)
+            try:
+                return self._send(json.loads((r.get("out") or "").strip().splitlines()[-1]))
+            except Exception:
+                return self._send({"ok": False, "error": (r.get("err") or "bypass failed")[:200]}, 500)
+        if u.path == "/api/hunt/postexploit":  # POST {target, fi} — escalate impact on a proven finding
+            fi = b.get("fi")
+            if not t or fi is None:
+                return self._send({"ok": False, "error": "need target + fi"}, 400)
+            hd = hunt_dir(t); rf = hd / "run.json"
+            try:
+                dd = json.loads(rf.read_text()); fnd = dd["findings"][int(fi)]
+            except Exception:
+                return self._send({"ok": False, "error": "bad finding"}, 400)
+            r = run("agent-postexploit.py", [], t, stdin=json.dumps({"finding": fnd,
+                    "session_cookie": b.get("session_cookie", "")}), timeout=240)
+            try:
+                res = json.loads((r.get("out") or "").strip().splitlines()[-1])
+                # persist impact onto the finding
+                if res.get("ok") and res.get("impact_proven"):
+                    dd["findings"][int(fi)]["impact_proven"] = True
+                    dd["findings"][int(fi)]["impact_level"] = res.get("impact_level", "")
+                    dd["findings"][int(fi)]["impact_evidence"] = res.get("evidence", "")
+                    tmp = rf.with_suffix(".json.tmp"); tmp.write_text(json.dumps(dd)); tmp.replace(rf)
+                return self._send(res)
+            except Exception:
+                return self._send({"ok": False, "error": (r.get("err") or "postexploit failed")[:200]}, 500)
+        _AGENTS = {
+            "/api/hunt/report":   ("agent-report.py",   240),
+            "/api/hunt/exploit":  ("agent-exploit.py",  300),
+            "/api/hunt/authtest": ("agent-authtest.py", 360),
+            "/api/hunt/chain":    ("agent-chain.py",    300),
+            "/api/hunt/recon":    ("agent-recon.py",    300),
+            "/api/hunt/scenario": ("agent-scenario.py", 300),
+        }
+        if u.path in _AGENTS:
+            if not t:
+                return self._send({"ok": False, "error": "no target"}, 400)
+            if not (hunt_dir(t) / "run.json").exists():
+                return self._send({"ok": False, "error": "no run.json for target"}, 404)
+            tool, to = _AGENTS[u.path]
+            agent_in = {k: v for k, v in b.items() if k != "target"}
+            r = run(tool, [], t, stdin=json.dumps(agent_in), timeout=to)
+            try:
+                return self._send(json.loads((r.get("out") or "").strip().splitlines()[-1]))
+            except Exception:
+                return self._send({"ok": False, "error": (r.get("err") or (tool + " failed"))[:200]}, 500)
+        if u.path == "/api/hunt/delete":  # POST {target} — delete a hunt workspace
+            if not t:
+                return self._send({"ok": False, "error": "no target"}, 400)
+            hd = hunt_dir(t)
+            # refuse to delete if hunt is actively running
+            pidf = hd / "run.pid"
+            try:
+                pid = int(pidf.read_text().strip())
+                # A bare os.kill(pid, 0) liveness check used to be the whole test — same PID-reuse
+                # risk as pause/stop/watch-stop (see is_process()): a stale run.pid left behind by a
+                # hunt that already finished/crashed can be recycled by the OS for a totally
+                # unrelated process, which would permanently block delete with "hunt is running —
+                # stop it first" even though no hunt is running at all. Verify it's actually still
+                # hunt-run.py before refusing.
+                if is_process(pid, "hunt-run.py"):
+                    # Check run.json status — if it says stopped/done/error the hunt already
+                    # finished but the process is still around (common when paused then stopped:
+                    # SIGTERM queues on a SIGSTOP'd process and is never handled). Try to kill it
+                    # before refusing. SIGCONT wakes a stopped process so it can receive SIGTERM.
+                    rf_check = hd / "run.json"
+                    run_status = ""
+                    try:
+                        run_status = json.loads(rf_check.read_text()).get("status", "")
+                    except Exception:
+                        pass
+                    if run_status in ("stopped", "done", "error", "paused"):
+                        # Status says it shouldn't be running — forcibly terminate it
+                        try:
+                            pgid = os.getpgid(pid)
+                            os.killpg(pgid, signal.SIGCONT)
+                            import time as _dt; _dt.sleep(0.05)
+                            os.killpg(pgid, signal.SIGTERM)
+                            _dt.sleep(1.0)
+                            if is_process(pid, "hunt-run.py"):
+                                os.killpg(pgid, signal.SIGKILL)
+                            _dt.sleep(0.3)
+                        except Exception:
+                            pass
+                        # If still alive after SIGKILL, we can't delete safely
+                        if is_process(pid, "hunt-run.py"):
+                            return self._send({"ok": False, "error": "hunt is running — stop it first"}, 409)
+                        # else: process is dead now, fall through to delete
+                    else:
+                        return self._send({"ok": False, "error": "hunt is running — stop it first"}, 409)
+            except Exception:
+                pass
+            import shutil
+            target_dir = TARGETS / safe(t)
+            if target_dir.exists():
+                shutil.rmtree(target_dir)
+                return self._send({"ok": True, "deleted": t})
+            return self._send({"ok": False, "error": "target not found"}, 404)
+
         if u.path == "/api/outcome":  # POST a finding outcome → fleet learning loop
             import time as _t
             rec = {k: b.get(k) for k in ("target", "program", "stack", "cls", "sev", "title", "endpoint", "outcome", "bounty", "dup", "ev", "chain")}
@@ -788,16 +1920,14 @@ class H(BaseHTTPRequestHandler):
                 return self._send(json.loads(r["out"]))
             except Exception:
                 return self._send({"ok": False, "error": r.get("err", "")[:500]})
-        if u.path == "/api/evidence":  # POST {id, finding?, capture?, screenshot?}
+        if u.path == "/api/evidence":  # POST {id, finding?}
             args = ["--id", b.get("id", ""), "--json"]
-            if b.get("capture"): args += ["--capture", b["capture"]]
-            if b.get("screenshot"): args += ["--screenshot", b["screenshot"]]
             ftmp = None
             if b.get("finding"):
                 ftmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
                 ftmp.write(json.dumps(b["finding"])); ftmp.close()
                 args += ["--finding-file", ftmp.name]
-            r = run("evidence-bundle.py", args, b.get("target"), timeout=90)
+            r = run("evidence-bundle.py", args, b.get("target"), timeout=120)
             if ftmp: os.unlink(ftmp.name)
             try:
                 return self._send(json.loads(r["out"]))
@@ -955,10 +2085,16 @@ class H(BaseHTTPRequestHandler):
             data_b64 = b.get("data_b64","")
             if not data_b64:
                 return self._send({"error": "no data"}, 400)
-            import base64
+            import base64, binascii
             ext = ".ipa" if fname.lower().endswith(".ipa") else ".apk"
+            try:
+                raw = base64.b64decode(data_b64, validate=True)
+            except (binascii.Error, ValueError):
+                # Unwrapped decode used to raise and reset the connection with no
+                # response — the UI then just saw a generic failure.
+                return self._send({"error": "data_b64 is not valid base64"}, 400)
             with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tf:
-                tf.write(base64.b64decode(data_b64)); tmp = tf.name
+                tf.write(raw); tmp = tf.name
             args = ["--ipa" if ext==".ipa" else "--apk", tmp, "--json"]
             if b.get("deep"): args.append("--deep")
             r = run("mobile-extract.py", args, timeout=300)
@@ -998,6 +2134,48 @@ class H(BaseHTTPRequestHandler):
                 return self._send(json.loads(r["out"]))
             except Exception:
                 return self._send({"prob": None, "raw": r.get("out", "") + r.get("err", "")})
+        if u.path == "/api/terms":  # POST {accept:true} → record acceptance of the current Terms + AUP
+            if not b.get("accept"):
+                return self._send({"ok": False, "error": "acceptance required"}, 400)
+            rec = {"version": TERMS_VERSION, "accepted_at": int(time.time())}
+            try:
+                TERMS_FILE.write_text(json.dumps(rec))
+            except Exception as e:
+                return self._send({"ok": False, "error": str(e)[:150]}, 500)
+            return self._send({"ok": True, **rec})
+        if u.path == "/api/account/key":  # POST {key} → verify live + store, or {delete:true} → remove
+            if b.get("delete"):
+                for p in (PRODUCT_KEY_FILE, PRODUCT_ACCT_FILE):
+                    try:
+                        p.unlink()
+                    except Exception:
+                        pass
+                os.environ.pop("ANTHROPIC_API_KEY", None)
+                return self._send({"ok": True, "configured": False})
+            key = (b.get("key") or "").strip()
+            ok, info, status = _verify_anthropic_key(key)
+            if not ok:
+                return self._send({"ok": False, "error": info, "status": status}, 400)
+            # verified — persist 0600 and apply to THIS process + every hunt it launches from now on
+            try:
+                fd = os.open(str(PRODUCT_KEY_FILE), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                try:
+                    os.write(fd, key.encode())
+                finally:
+                    os.close(fd)
+            except Exception as e:
+                return self._send({"ok": False, "error": "verified, but couldn't save it: " + str(e)[:150]}, 500)
+            os.environ["ANTHROPIC_API_KEY"] = key
+            os.environ["HUNT_LLM_PROVIDER"] = "anthropic"
+            meta = {"verified_at": int(time.time()), "masked": _mask_key(key),
+                    "models": (info.get("models") if isinstance(info, dict) else None)}
+            try:
+                _write_secret_json(PRODUCT_ACCT_FILE, meta)
+            except Exception:
+                pass
+            return self._send({"ok": True, "configured": True, "masked": meta["masked"],
+                               "models": meta["models"], "verified_at": meta["verified_at"],
+                               "throttled": bool(isinstance(info, dict) and info.get("throttled"))})
         if u.path == "/api/identity":
             hd = hunt_dir(t)
             p = hd / "identities.json"
@@ -1010,10 +2188,153 @@ class H(BaseHTTPRequestHandler):
             if b.get("authorization"):
                 rec["authorization"] = b["authorization"]
             if b.get("cookie"):
-                rec["cookie"] = b["cookie"]
+                # key fixed 2026-11-06 — "cookieHeader" is what every reader of this file actually
+                # checks (hunt-run.py's _lead_session_headers/_session, agent_core.py's
+                # set_identity, evidence-bundle.py with no fallback); "cookie" was the same
+                # mismatch already fixed at /api/hunt/creds the same day, reintroduced here.
+                rec["cookieHeader"] = b["cookie"]
             ids[name] = rec
-            p.write_text(json.dumps(ids, indent=2))
+            _write_secret_json(p, ids)
             return self._send({"ok": True, "identities": list(ids.keys())})
+        if u.path == "/api/hunt/creds":
+            # Hot-swap creds on an ALREADY-RUNNING hunt. hunt-run.py's _creds() re-reads
+            # creds.json from disk on every single use, so a running process picks this up
+            # on its very next authenticated request — no restart needed. Previously creds
+            # could only be set once, at /api/hunt/start; there was no way to hand the engine
+            # a fresh token/cookie mid-hunt after the old one expired or was rotated.
+            hd = hunt_dir(t)
+            cf = hd / "creds.json"
+            try:
+                cur = json.loads(cf.read_text()) if cf.exists() else {}
+            except Exception:
+                cur = {}
+            # one-box: a pasted `session` blob fills whatever explicit field wasn't typed
+            _blob = (b.get("session") or "").strip()
+            if _blob:
+                _p = _parse_session_blob(_blob)
+                for _k in ("cookie", "session_token", "auth_header"):
+                    if _p.get(_k) and not (b.get(_k) or "").strip():
+                        b[_k] = _p[_k]
+            for k in ("session_token", "token2", "cookie", "auth_header", "ua"):
+                v = (b.get(k) or "").strip()
+                if v:
+                    cur[k] = v
+            cdp_mid = int(b.get("cdp_port") or 0)
+            if cdp_mid:
+                cur["cdp_port"] = cdp_mid
+            try:
+                fd = os.open(cf, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                try:
+                    os.write(fd, json.dumps(cur).encode())
+                finally:
+                    os.close(fd)
+            except Exception:
+                pass
+            # mirror into identities.json["session"] too, so chat-driven agent tools (chain,
+            # authtest, exec-http, ...) that read identities.json rather than creds.json also
+            # see the swap instead of silently keeping the stale/dead credential.
+            try:
+                idp = hd / "identities.json"
+                ids = json.loads(idp.read_text()) if idp.exists() else {}
+                rec = ids.setdefault("session", {})
+                if cur.get("session_token"):
+                    rec["authorization"] = cur["session_token"]
+                if cur.get("cookie"):
+                    # canonical key every OTHER reader of identities.json's "session" entry uses
+                    # (hunt-run.py's _lead_session_headers/_session, agent_core.py, hunt-agent.py,
+                    # evidence-bundle.py) is "cookieHeader", not "cookie" — writing "cookie" here
+                    # created a second, stale-forever field that only exec-http.py's own
+                    # `idn.get("cookie") or idn.get("cookieHeader")` fallback happened to paper
+                    # over. Every other consumer (notably evidence-bundle.py, which has no such
+                    # fallback) kept reading the OLD cookie out of "cookieHeader" after a hot-swap,
+                    # so a freshly submitted report's repro.sh could embed a dead session even
+                    # though live hunting had already moved on to the new one. Write the key
+                    # everything actually reads, and drop the old mismatched one if present.
+                    rec["cookieHeader"] = cur["cookie"]
+                    rec.pop("cookie", None)
+                if cur.get("auth_header"):
+                    hdrs = rec.setdefault("headers", {})
+                    for ln in str(cur["auth_header"]).replace("\\n", "\n").splitlines():
+                        if ":" in ln:
+                            k2, v2 = ln.split(":", 1)
+                            if k2.strip():
+                                hdrs[k2.strip()] = v2.strip()
+                _write_secret_json(idp, ids)
+            except Exception:
+                pass
+            # the operator just supplied fresh creds — clear any stale-session alert so the
+            # dashboard banner drops immediately instead of waiting for the next health probe.
+            # If the hunt actually SELF-PAUSED over this (see hunt-run.py's _pause_for_creds —
+            # grey/white-box with no session, or a dead session detected mid-hunt), also wake it
+            # right now: same SIGCONT the operator's own Resume button sends, so providing fresh
+            # creds here is the ONE action needed — no separate Resume click required.
+            resumed = False
+            try:
+                rf = hd / "run.json"
+                if rf.exists():
+                    rd = json.loads(rf.read_text())
+                    changed = False
+                    if rd.pop("session_alert", None) is not None:
+                        changed = True
+                    if rd.pop("creds_alert", None) is not None:
+                        changed = True
+                    was_paused_for_creds = (rd.get("status") == "paused"
+                                            and rd.get("paused_reason") in ("creds-required", "cdp-required"))
+                    if was_paused_for_creds:
+                        try:
+                            pid = int((hd / "run.pid").read_text().strip())
+                            if is_process(pid, "hunt-run.py"):
+                                import signal as _sig
+                                os.killpg(os.getpgid(pid), _sig.SIGCONT)
+                                resumed = True
+                                # engine clears status/paused_reason itself on waking (same place
+                                # it set them) — don't race it by also writing those fields here.
+                        except Exception:
+                            pass
+                    if changed and not resumed:
+                        tmp = rf.with_suffix(".json.tmp")
+                        tmp.write_text(json.dumps(rd))
+                        tmp.replace(rf)
+            except Exception:
+                pass
+            return self._send({"ok": True, "auto_resumed": resumed})
+        if u.path == "/api/hunt/creds/test":
+            # Verify a candidate cred actually does something, BEFORE (or after) committing it —
+            # fires the same request anon vs with-creds through scope-guard and diffs them, plus
+            # decodes a JWT's exp claim if the token/cookie looks like one. See creds-test.py.
+            hd = hunt_dir(t)
+            probe = (b.get("url") or "").strip()
+            if not probe:
+                host = (t or "").split(",")[0].strip()
+                if "://" in host:
+                    host = urlparse(host).hostname or host
+                else:
+                    host = host.split("/")[0]
+                probe = f"https://{host}/" if host else ""
+            if not probe:
+                return self._send({"ok": False, "error": "no target/url to probe"})
+            # one-box: a pasted `session` blob fills the explicit fields for the probe
+            _blob = (b.get("session") or "").strip()
+            if _blob:
+                _p = _parse_session_blob(_blob)
+                for _k in ("cookie", "session_token", "auth_header"):
+                    if _p.get(_k) and not (b.get(_k) or "").strip():
+                        b[_k] = _p[_k]
+            args = ["--url", probe, "--json"]
+            if (b.get("session_token") or "").strip():
+                args += ["--authorization", b["session_token"].strip()]
+            if (b.get("cookie") or "").strip():
+                args += ["--cookie", b["cookie"].strip()]
+            for ln in str(b.get("auth_header") or "").replace("\\n", "\n").splitlines():
+                if ":" in ln.strip():
+                    args += ["--auth-header", ln.strip()]
+            if (b.get("ua") or "").strip():
+                args += ["--ua", b["ua"].strip()]
+            r = run("creds-test.py", args, t, timeout=40)
+            try:
+                return self._send(json.loads(r["out"]))
+            except Exception:
+                return self._send({"ok": False, "error": (r.get("err") or "")[:500] or "no output"})
         # ── Cloud config / sync ─────────────────────────────────────────
         if u.path == "/api/cloud/config":  # POST {agent_token?, cloud_url?}
             args = []
@@ -1052,11 +2373,256 @@ class H(BaseHTTPRequestHandler):
         if u.path == "/api/cloud/status":  # POST {}
             r = run("sync.py", ["--status"])
             return self._send({"ok": True, "output": r.get("out","")})
+
+        if u.path == "/api/ai-write-report":  # POST {target, fi} — Haiku writes a polished report
+            fi = b.get("fi")
+            if not t or fi is None:
+                return self._send({"ok": False, "error": "need target + fi"}, 400)
+            hd = hunt_dir(t)
+            rf = hd / "run.json"
+            if not rf.exists():
+                return self._send({"ok": False, "error": "no hunt data"}, 400)
+            try:
+                import importlib.util as _ilu2
+                _spec2 = _ilu2.spec_from_file_location("llm_auth", str(TOOLS / "llm_auth.py"))
+                _la = _ilu2.module_from_spec(_spec2); _spec2.loader.exec_module(_la)
+                hdrs, mode = _la.llm_headers()
+            except Exception as e:
+                return self._send({"ok": False, "error": f"llm_auth: {e}"}, 500)
+            if not hdrs:
+                return self._send({"ok": False, "error": "no Claude credentials"}, 401)
+            import urllib.request as _ur2
+            d = json.loads(rf.read_text())
+            findings = d.get("findings") or []
+            if fi >= len(findings):
+                return self._send({"ok": False, "error": "fi out of range"}, 400)
+            f = findings[fi]
+            scope = d.get("scope") or t
+            program = d.get("program") or scope
+            prompt = f"""You are an expert bug bounty report writer. Write a professional, submission-ready bug bounty report for HackerOne/YesWeHack/Intigriti.
+
+Finding data:
+- Title: {f.get('title','')}
+- Class: {f.get('cls','')}
+- Severity: {f.get('sev','')} (label: {f.get('label','')})
+- CVSS: {f.get('cvss','unscored')}
+- Endpoint: {f.get('endpoint','')}
+- Evidence / raw detail: {(f.get('detail') or '')[:1500]}
+- Existing steps: {(f.get('steps') or 'none')[:800]}
+- Remediation hint: {(f.get('remediation') or 'none')[:400]}
+- Program: {program}
+- Scope: {scope}
+
+Write the following sections ONLY (no preamble, no meta-commentary):
+
+## Summary
+[1-3 sentences: what is the vulnerability, where is it, what can an attacker do]
+
+## Vulnerability Details
+[Technical root cause: HTTP method, parameter, header, logic flaw, etc.]
+
+## Steps to Reproduce
+[Numbered steps with exact curl/request. Use the evidence above.]
+
+## Impact
+[Concrete business impact: what data can be accessed, what actions can be performed, what systems are affected]
+
+## Remediation
+[Developer-friendly fix with specific guidance]
+
+Be specific, technical, and concise. Do not add any text outside these 5 sections."""
+            payload = json.dumps({
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 2048,
+                "messages": [{"role": "user", "content": prompt}]
+            }).encode()
+            hdrs2 = dict(hdrs)
+            hdrs2["content-type"] = "application/json"
+            try:
+                req = _ur2.Request("https://api.anthropic.com/v1/messages",
+                                   data=payload, headers=hdrs2, method="POST")
+                with _ur2.urlopen(req, timeout=60) as resp:
+                    rj = json.loads(resp.read())
+                ai_text = (rj.get("content") or [{}])[0].get("text", "")
+            except Exception as e:
+                return self._send({"ok": False, "error": f"Claude API: {e}"}, 502)
+            # parse sections from AI response
+            def _sec(text, header):
+                import re
+                m = re.search(r'##\s+' + header + r'\s*\n(.*?)(?=\n##\s+|\Z)', text, re.S | re.I)
+                return m.group(1).strip() if m else ""
+            f["reco"] = _sec(ai_text, "Summary") or f.get("reco","")
+            if _sec(ai_text, "Steps to Reproduce"):
+                f["steps"] = _sec(ai_text, "Steps to Reproduce")
+            if _sec(ai_text, "Impact"):
+                f["impact_text"] = _sec(ai_text, "Impact")
+            if _sec(ai_text, "Remediation"):
+                f["remediation"] = _sec(ai_text, "Remediation")
+            if _sec(ai_text, "Vulnerability Details"):
+                f["vuln_detail"] = _sec(ai_text, "Vulnerability Details")
+            f["ai_report"] = ai_text
+            f["ai_report_ts"] = int(time.time())
+            tmp = rf.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(d)); tmp.replace(rf)
+            return self._send({"ok": True, "ai_report": ai_text, "fi": fi})
+
+        if u.path == "/api/graphify-build":  # POST {target} — build force-directed surface graph
+            if not t:
+                return self._send({"ok": False, "error": "no target"}, 400)
+            hd = hunt_dir(t)
+            run_json = hd / "run.json"
+            if not run_json.exists():
+                return self._send({"ok": False, "error": "no hunt data yet"}, 400)
+            out_dir = hd / "graphify-out"
+            out_dir.mkdir(exist_ok=True)
+            def _build_graph():
+                try:
+                    from urllib.parse import urlparse
+                    d = json.loads(run_json.read_text())
+                    endpoints = [e if isinstance(e, str) else e.get("url", "") for e in (d.get("endpoints") or [])]
+                    findings = d.get("findings") or []
+                    # map endpoint → finding severity
+                    finding_map = {}
+                    for fi, f in enumerate(findings):
+                        ep = f.get("endpoint", "")
+                        if ep and f.get("sev"):
+                            finding_map[ep] = (f.get("sev", ""), f.get("title", ""), fi)
+                    nodes, edges, seen = [], [], set()
+                    node_ids = {}  # key → node id
+                    counter = [0]
+                    def _nid(key):
+                        if key not in node_ids:
+                            node_ids[key] = f"n{counter[0]}"; counter[0] += 1
+                        return node_ids[key]
+                    def _add_node(key, label, group, size, title=""):
+                        nid = _nid(key)
+                        if not any(n["id"] == nid for n in nodes):
+                            nodes.append({"id": nid, "label": label, "group": group,
+                                          "size": size, "title": title or label})
+                        return nid
+                    def _add_edge(fr, to):
+                        eid = f"{fr}->{to}"
+                        if eid not in seen:
+                            seen.add(eid)
+                            edges.append({"from": fr, "to": to})
+                    for ep in endpoints[:400]:
+                        if not ep: continue
+                        try:
+                            p = urlparse(ep)
+                            host = p.netloc or ep
+                            segs = [s for s in (p.path or "/").split("/") if s]
+                        except Exception:
+                            host = ep; segs = []
+                        # host node
+                        h_nid = _add_node(f"host:{host}", host, "host", 28)
+                        # path-prefix cluster (first 1-2 segments)
+                        if segs:
+                            prefix = "/" + segs[0]
+                            pfx_key = f"pfx:{host}:{prefix}"
+                            p_nid = _add_node(pfx_key, prefix, "prefix", 14)
+                            _add_edge(h_nid, p_nid)
+                            # endpoint node under prefix
+                            full_path = "/" + "/".join(segs)
+                            sev, f_title, fi = finding_map.get(ep, ("", "", -1))
+                            label = ("/" + "/".join(segs[1:])) if len(segs) > 1 else prefix
+                            title = f"{ep}\n{'⚠ ' + f_title if f_title else ''}"
+                            e_nid = _add_node(f"ep:{ep}", label[:35], sev or "endpoint", 7 if not sev else 13, title)
+                            _add_edge(p_nid, e_nid)
+                        else:
+                            e_nid = _add_node(f"ep:{ep}", "/", "endpoint", 7, ep)
+                            _add_edge(h_nid, e_nid)
+                    # also add finding nodes not in endpoint list
+                    for fi, f in enumerate(findings):
+                        ep = f.get("endpoint", "")
+                        sev = f.get("sev", "")
+                        title = f.get("title", "Finding")
+                        if not ep:
+                            f_nid = _add_node(f"find:{fi}", title[:30], sev or "m", 13, title)
+                    graph_data = json.dumps({"nodes": nodes, "edges": edges})
+                    html = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Surface Graph — {t}</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.9/dist/vis-network.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.9/dist/dist/vis-network.min.css">
+<style>
+*{{box-sizing:border-box}}
+body{{margin:0;background:#0a0a0f;color:#e0e0e0;font-family:monospace;overflow:hidden}}
+#graph{{width:100vw;height:100vh}}
+#legend{{position:fixed;bottom:14px;left:14px;background:rgba(15,15,25,0.92);border:1px solid #222;border-radius:8px;padding:10px 14px;font-size:11px;line-height:2;z-index:9}}
+#stats{{position:fixed;top:14px;right:14px;background:rgba(15,15,25,0.92);border:1px solid #222;border-radius:8px;padding:8px 12px;font-size:11px;z-index:9;color:#aaa}}
+</style></head><body>
+<div id="graph"></div>
+<div id="legend">
+  <span style="color:#4fc3f7">◆ Host</span> &nbsp;
+  <span style="color:#607d8b">● Path group</span> &nbsp;
+  <span style="color:#546e7a">· Endpoint</span><br>
+  <span style="color:#ef5350">● Critical</span> &nbsp;
+  <span style="color:#ff7043">● High</span> &nbsp;
+  <span style="color:#ffa726">● Medium</span> &nbsp;
+  <span style="color:#66bb6a">● Low</span>
+</div>
+<div id="stats" id="stats">Loading…</div>
+<script>
+var raw={graph_data};
+var COLORS={{host:'#4fc3f7',prefix:'#607d8b',endpoint:'#546e7a',c:'#ef5350',h:'#ff7043',m:'#ffa726',l:'#66bb6a',i:'#42a5f5'}};
+var SHAPES={{host:'diamond',prefix:'square',endpoint:'dot',c:'dot',h:'dot',m:'dot',l:'dot',i:'dot'}};
+var nodes=new vis.DataSet(raw.nodes.map(function(n){{
+  var c=COLORS[n.group]||COLORS.endpoint;
+  var s=SHAPES[n.group]||'dot';
+  var bold=n.group==='host';
+  return Object.assign({{}},n,{{
+    color:{{background:c,border:n.group==='host'?'#81d4fa':'transparent',highlight:{{background:c,border:'#fff'}},hover:{{background:c,border:'#fff'}}}},
+    shape:s,
+    font:{{color: bold?'#e0e0e0':'#888', size: bold?13:10, bold:bold}},
+    borderWidth: n.group==='host'?2:0,
+    shadow: n.group==='host'?{{enabled:true,color:'rgba(79,195,247,0.4)',size:12}}:false
+  }});
+}}));
+var edges=new vis.DataSet(raw.edges.map(function(e){{
+  return Object.assign({{}},e,{{color:{{color:'#2a2a3a',highlight:'#4fc3f7',hover:'#607d8b'}},width:1,smooth:{{type:'continuous'}}}});
+}}));
+var options={{
+  physics:{{
+    enabled:true,
+    stabilization:{{enabled:true,iterations:300,fit:true}},
+    barnesHut:{{
+      gravitationalConstant:-12000,
+      centralGravity:0.1,
+      springLength:180,
+      springConstant:0.03,
+      damping:0.25,
+      avoidOverlap:0.5
+    }}
+  }},
+  interaction:{{hover:true,tooltipDelay:150,navigationButtons:true,keyboard:{{enabled:true}},zoomView:true}},
+  nodes:{{scaling:{{min:6,max:30}}}},
+  edges:{{arrows:{{to:{{enabled:false}}}}}},
+  layout:{{improvedLayout:false}}
+}};
+var network=new vis.Network(document.getElementById('graph'),{{nodes:nodes,edges:edges}},options);
+network.on('stabilizationProgress',function(p){{document.getElementById('stats').textContent='Stabilizing… '+Math.round(p.iterations/p.total*100)+'%';}});
+network.on('stabilizationIterationsDone',function(){{
+  network.setOptions({{physics:{{barnesHut:{{gravitationalConstant:-6000,springLength:120}}}}}});
+  document.getElementById('stats').textContent='Nodes: '+raw.nodes.length+' · Edges: '+raw.edges.length;
+}});
+network.on('click',function(p){{
+  if(p.nodes.length){{
+    var n=nodes.get(p.nodes[0]);
+    document.getElementById('stats').textContent=n.title||n.label;
+  }}
+}});
+</script></body></html>"""
+                    (out_dir / "graph.html").write_text(html)
+                except Exception as ex:
+                    (out_dir / "graph.error.txt").write_text(str(ex))
+            threading.Thread(target=_build_graph, daemon=True).start()
+            return self._send({"ok": True, "building": True,
+                               "poll": f"/api/surface-graph?target={t}"})
         return self._send({"error": "unknown route"}, 404)
 
 
 def main():
     TARGETS.mkdir(parents=True, exist_ok=True)
+    threading.Thread(target=_rate_limit_auto_resume_loop, daemon=True).start()
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), H)
     print(f"[huntr-server] engine bridge on http://127.0.0.1:{PORT}  (targets: {TARGETS})")
     print("[huntr-server] loopback only · scope-guard still gates every request · Ctrl-C to stop")

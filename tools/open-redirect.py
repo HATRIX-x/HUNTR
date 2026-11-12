@@ -155,11 +155,19 @@ def main():
         else:
             data = None
         status, loc, resp_body = send_no_follow(target, method, headers, data)
-        if is_redirect(status) and redirect_to_attacker(loc):
+        # BUG FIX (2026-10-19): the javascript:/data: payloads never contain "attacker"/"attacker.com"
+        # (they're `javascript:alert(1)` / `data:text/html,...`), so the original single gate
+        # `redirect_to_attacker(loc)` could NEVER be true for them — this branch was structurally
+        # unreachable dead code. A dangerous-scheme payload reflected VERBATIM into an actual 3xx
+        # Location header (not just anywhere in the body) is its own real signal, independent of
+        # whether "attacker.com" is involved — recognize it as its own qualifying condition.
+        dangerous_scheme = payload.startswith(("javascript:", "data:", "vbscript:"))
+        scheme_reflected = dangerous_scheme and bool(loc) and payload in loc
+        if is_redirect(status) and (redirect_to_attacker(loc) or scheme_reflected):
             # confirmed open redirect
             sev = "medium"
             note = f"Open redirect confirmed: {param}={payload[:50]} → Location: {loc}"
-            if "javascript" in payload or "data:" in payload:
+            if scheme_reflected:
                 sev = "medium"
                 note = f"XSS-via-redirect: {label} payload accepted in Location header"
             findings.append({

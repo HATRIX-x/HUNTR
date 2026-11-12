@@ -55,8 +55,11 @@ for poc in pocs if isinstance(pocs, list) else []:
     itype = (poc.get("type") or "").upper()          # e.g. "V" verified, "R" reflected, "G" grep
     param = poc.get("param") or poc.get("inject_type") or ""
     data = poc.get("data") or poc.get("poc") or poc.get("evidence") or ""
-    # only report real injection PoCs (verified/reflected), not informational grep hits
-    if itype in ("V", "R") or poc.get("severity", "").lower() in ("high", "medium", "critical"):
+    # only report real injection PoCs (verified/reflected), not informational grep hits ("G") —
+    # the old `or poc.get("severity") in (...)` let a "G" (grep) hit back in anyway whenever
+    # dalfox happened to label it medium/high/critical, which directly contradicted this comment's
+    # own stated intent. itype already carries the real signal; drop the severity fallback.
+    if itype in ("V", "R"):
         key = (param, itype)
         if key in seen:
             continue

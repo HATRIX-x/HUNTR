@@ -29,7 +29,13 @@ if not URL or "?" not in URL or "=" not in URL.split("?", 1)[1]:
     out({"findings": [], "tested": False, "error": "no query parameters to test"})
 
 def fetch(u):
-    req = urllib.request.Request(u, headers={"User-Agent": "Mozilla/5.0 HUNTR"})
+    import os as _os
+    _ah={}
+    try:
+        _ah=json.loads(_os.environ.get("HUNT_AUTH_HEADERS","") or "{}") or {}
+    except Exception: _ah={}
+    _hh={"User-Agent": "Mozilla/5.0 HUNTR"}; _hh.update(_ah)
+    req = urllib.request.Request(u, headers=_hh)
     if TOKEN:
         req.add_header("Authorization", TOKEN if TOKEN.lower().startswith("bearer") else "Bearer " + TOKEN)
     try:
@@ -42,6 +48,10 @@ try:
     parts = urllib.parse.urlparse(URL)
     qs = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
     findings = []
+    # Baseline check — PROD must NOT already be present in the clean response.
+    # Without this, any page that happens to contain 9359 (as an ID, count, or CSS value)
+    # would be flagged as SSTI even when no expression evaluation occurred.
+    baseline = fetch(urllib.parse.urlunparse(parts))
     for i, (k, _v) in enumerate(qs):
         for payload, engine in PAYLOADS:
             nq = qs[:]; nq[i] = (k, payload)
@@ -49,8 +59,11 @@ try:
             body = fetch(u2)
             if not body:
                 continue
-            # evaluated iff the product appears AND the raw payload does not (it was consumed)
-            if PROD in body and payload not in body:
+            # Confirmed ONLY when:
+            #   1. The evaluated product (9359) appears in the injected response
+            #   2. The raw payload was NOT reflected literally (it was consumed by the engine)
+            #   3. The product was NOT already in the clean baseline (not a coincidental number)
+            if PROD in body and payload not in body and PROD not in baseline:
                 findings.append({"severity": "c", "param": k, "payload": payload, "engine": engine,
                                  "detail": "Parameter '%s' evaluated template expression %s → %s (reflected). Engine: %s. SSTI commonly escalates to RCE." % (k, payload, PROD, engine),
                                  "url": URL})

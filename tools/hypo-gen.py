@@ -1,31 +1,34 @@
 #!/usr/bin/env python3
 """
 hypo-gen — hypothesis generator. Given the endpoints already mapped and the
-findings so far, ask Claude for the highest-ROI attack hypotheses NOT yet tested,
-each with a concrete HUNTR command to run next.
+findings so far, ask the configured LLM for the highest-ROI attack hypotheses
+NOT yet tested, each with a concrete HUNTR command to run next.
 
-Reads ANTHROPIC_API_KEY from env (or --api-key). Zero deps beyond urllib.
+Reads HUNT_LLM_API_KEY from env (or --api-key). Uses llm_client for provider abstraction.
+Zero deps beyond stdlib.
 
 Usage:
   hypo-gen.py --endpoints-file eps.json --findings-file finds.json \
-              [--program acme] [--model claude-opus-4-8] [--max 5] [--json]
+              [--program acme] [--model nvidia/nemotron-3-ultra-550b-a55b] [--max 5] [--json]
 
   eps.json    : ["https://api.acme.com/v1/orders", ...]  (or {"endpoints":[...]})
   finds.json  : [ {finding}, ... ]                       (or {"findings":[...]})
 
 Output: {ok, hypotheses:[{title, attack_class, target_endpoint, why_likely,
-         test_command, estimated_severity}]}
+          test_command, estimated_severity}]}
 """
-import sys, os, json, time, ssl
+import sys, os, json, time
 from pathlib import Path
-from urllib.request import Request, urlopen
 
-MODELS = {"strong": "claude-opus-4-8", "mid": "claude-sonnet-4-6",
-          "cheap": "claude-haiku-4-5-20251001"}
+# Use the unified LLM client
+sys.path.insert(0, os.path.dirname(__file__))
+import llm_client
 
 
 def arg(n, d=None):
     return sys.argv[sys.argv.index(n) + 1] if n in sys.argv else d
+
+
 def flag(n):
     return n in sys.argv
 
@@ -40,33 +43,6 @@ def load_list(path, key):
     if isinstance(obj, dict):
         return obj.get(key, [])
     return obj if isinstance(obj, list) else []
-
-
-def call_claude(model, system, user, api_key, max_tokens=2000):
-    if not api_key:
-        return None, "no ANTHROPIC_API_KEY set (export it or pass --api-key)"
-    payload = json.dumps({
-        "model": model, "max_tokens": max_tokens,
-        "system": system,
-        "messages": [{"role": "user", "content": user}],
-    }).encode()
-    req = Request("https://api.anthropic.com/v1/messages", data=payload, headers={
-        "content-type": "application/json",
-        "x-api-key": api_key,
-        "anthropic-version": "2023-06-01",
-    }, method="POST")
-    try:
-        with urlopen(req, timeout=90, context=ssl.create_default_context()) as r:
-            data = json.loads(r.read())
-        parts = [b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"]
-        return "".join(parts).strip(), None
-    except Exception as ex:
-        detail = ""
-        try:
-            detail = ex.read().decode("utf-8", "ignore")[:300]
-        except Exception:
-            pass
-        return None, f"{type(ex).__name__}: {ex} {detail}".strip()
 
 
 def extract_json(text):
@@ -106,10 +82,9 @@ def main():
     eps = load_list(arg("--endpoints-file"), "endpoints")
     finds = load_list(arg("--findings-file"), "findings")
     program = arg("--program", "target")
-    model = arg("--model", MODELS["strong"])
-    model = MODELS.get(model, model)
+    model = arg("--model")
     max_n = int(arg("--max", "5"))
-    api_key = arg("--api-key") or os.environ.get("ANTHROPIC_API_KEY")
+    api_key = arg("--api-key")
 
     if not eps and not finds:
         print(__doc__)
@@ -122,9 +97,9 @@ def main():
         "want": f"the {max_n} highest-ROI untested hypotheses",
     }, indent=2)
 
-    print(f"[hypo-gen] model={model} endpoints={len(eps)} findings={len(finds)}",
+    print(f"[hypo-gen] model={model or llm_client.get_provider_config()['model']} endpoints={len(eps)} findings={len(finds)}",
           file=sys.stderr)
-    text, err = call_claude(model, SYSTEM, user, api_key, max_tokens=2500)
+    text, err = llm_client.call_llm(SYSTEM, user, model=model, api_key=api_key, max_tokens=2500)
 
     if err:
         out = {"ok": False, "error": err, "hypotheses": []}
@@ -133,27 +108,39 @@ def main():
 
     hyps = extract_json(text) or []
     if isinstance(hyps, dict):
-        hyps = hyps.get("hypotheses", [])
-    hyps = hyps[:max_n]
+        hyps = hyps.get("hypotheses", hyps)
 
-    result = {"ok": True, "ts": time.strftime("%Y-%m-%d %H:%M"),
-              "program": program, "model": model,
-              "count": len(hyps), "hypotheses": hyps}
+    # Rank by the learned expected value of each hypothesis's attack class, so the
+    # highest-ROI (historically-paid) classes surface first instead of raw LLM
+    # order. Degrades to the LLM order if no history / the helper is unavailable.
+    try:
+        import outcome_priors
+        stacks = (arg("--stack") or "").split(",") if arg("--stack") else None
+        pr = outcome_priors.priors(stacks)
+        for h in hyps:
+            a = pr.get(outcome_priors.norm_cls(h.get("attack_class", "")))
+            h["ev_prior"] = round(a["ev"], 1) if a else 0.0
+        hyps.sort(key=lambda h: -h.get("ev_prior", 0.0))
+    except Exception as e:
+        print(f"[hypo-gen] prior ranking skipped: {e}", file=sys.stderr)
+
+    result = {"ok": True, "ts": time.strftime("%Y-%m-%d %H:%M"), "model": model or "auto",
+              "hypotheses": hyps[:max_n]}
 
     if flag("--json"):
         print(json.dumps(result))
         sys.exit(0)
 
-    print(f"\n== hypotheses · {program} ({len(hyps)}) ==")
-    for i, h in enumerate(hyps, 1):
-        print(f"\n  {i}. [{str(h.get('estimated_severity','?')).upper()}] "
-              f"{h.get('title','')}")
-        print(f"     class:  {h.get('attack_class','')}")
-        print(f"     target: {h.get('target_endpoint','')}")
-        print(f"     why:    {str(h.get('why_likely',''))[:120]}")
-        print(f"     run:    {h.get('test_command','')}")
+    for i, h in enumerate(hyps[:max_n], 1):
+        print(f"\n  {i}. [{h.get('estimated_severity','?').upper()}] {h.get('title','')}")
+        print(f"     class: {h.get('attack_class','?')}  endpoint: {h.get('target_endpoint','?')}  EV≈${h.get('ev_prior',0)}")
+        print(f"     why: {h.get('why_likely','')[:120]}")
+        print(f"     cmd: {h.get('test_command','')}")
+    if not hyps:
+        print("  no new hypotheses.")
     sys.exit(0)
 
 
 if __name__ == "__main__":
+    import time
     main()

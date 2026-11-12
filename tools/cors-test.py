@@ -72,6 +72,10 @@ def send_cors(url, origin, token=None, extra_headers=None, timeout=10):
             if ":" in h:
                 k, v = h.split(":", 1)
                 headers[k.strip()] = v.strip()
+    try:  # program auth header(s) e.g. X-FilesAPI-Auth
+        import os as _os
+        for _k,_v in (json.loads(_os.environ.get("HUNT_AUTH_HEADERS","") or "{}") or {}).items(): headers.setdefault(_k,_v)
+    except Exception: pass
 
     import urllib.request
     opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
