@@ -13,7 +13,7 @@ export const metadata: Metadata = {
   metadataBase: new URL("https://huntr.run"),
   title: {
     default: "HUNTR — Autonomous AI Bug Bounty Operator",
-    template: "%s — HUNTR",
+    template: "HUNTR · %s",
   },
   description:
     "An autonomous AI operator for bug bounty: maps the attack surface, tests it, validates findings, drafts the report. You review and submit — not scanner noise.",
