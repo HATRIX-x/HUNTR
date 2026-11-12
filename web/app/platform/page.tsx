@@ -4,7 +4,7 @@ import { Reveal } from "@/components/reveal";
 import { Waitlist } from "@/components/waitlist";
 import { JsonLd } from "@/components/jsonld";
 import { InteractiveHunt } from "@/components/interactive-hunt";
-import { Radar } from "@/components/radar";
+import { SurfaceGraph3D } from "@/components/surface-graph-3d";
 import { HudStrip } from "@/components/hud-strip";
 
 export const metadata: Metadata = {
@@ -99,9 +99,17 @@ export default function Platform() {
                 HUNTR sweeps the whole attack surface — every host, endpoint, and parameter across web, API, auth and
                 logic — lighting up what&apos;s real and dropping the noise.
               </p>
+              <div className="mt-6 flex flex-wrap items-center gap-3 hud text-[11px] uppercase tracking-[0.12em] text-muted">
+                <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: "var(--critical)" }} />critical</span>
+                <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: "var(--high)" }} />high</span>
+                <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: "var(--validated)" }} />validated</span>
+                <span className="text-faint">· drag to orbit →</span>
+              </div>
             </Reveal>
             <Reveal delay={150} className="w-full">
-              <Radar />
+              <div className="rounded-2xl border border-brand/20 bg-bg/40 p-3 shadow-[0_40px_120px_-50px_rgba(167,139,250,0.4)]">
+                <SurfaceGraph3D />
+              </div>
             </Reveal>
           </div>
         </div>
