@@ -3,6 +3,7 @@ import Link from "next/link";
 import { Reveal } from "@/components/reveal";
 import { JsonLd } from "@/components/jsonld";
 import { ARTICLES } from "@/components/research-data";
+import { HudStrip } from "@/components/hud-strip";
 
 export const metadata: Metadata = {
   title: "Research — Field notes on autonomous security testing",
@@ -20,6 +21,7 @@ export const metadata: Metadata = {
 export default function Research() {
   return (
     <main>
+      <HudStrip rail="field notes" />
       <JsonLd
         data={{
           "@context": "https://schema.org",

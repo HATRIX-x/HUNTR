@@ -7,6 +7,7 @@ import { Waitlist } from "@/components/waitlist";
 import { JsonLd } from "@/components/jsonld";
 import { InteractiveHunt } from "@/components/interactive-hunt";
 import { SurfaceGraph3D } from "@/components/surface-graph-3d";
+import { HudStrip } from "@/components/hud-strip";
 
 const faqs = [
   { q: "What is HUNTR?", a: "HUNTR is an autonomous AI operator for bug bounty. You point it at a target you're authorized to test and it maps the attack surface, tests it, validates what it finds, and drafts the report. You review and submit." },
@@ -37,20 +38,7 @@ export default function Home() {
         }}
       />
 
-      {/* HUD telemetry strip */}
-      <div className="hud scanline border-b border-line bg-surface2/50">
-        <div className="site-wrap flex flex-wrap items-center gap-x-6 gap-y-1 py-2 text-[10.5px] uppercase tracking-[0.14em] text-muted">
-          <span className="flex items-center gap-2 text-fg">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full" style={{ background: "var(--validated)" }} />
-            operator online
-          </span>
-          <span>58 classes</span>
-          <span>11 agents</span>
-          <span>0 auto-submits</span>
-          <span className="text-brand">scope-locked</span>
-          <span className="ml-auto hidden sm:inline">authorized targets only</span>
-        </div>
-      </div>
+      <HudStrip />
 
       {/* HERO */}
       <section className="relative border-b border-line">

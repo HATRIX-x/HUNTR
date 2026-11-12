@@ -3,8 +3,9 @@ import Link from "next/link";
 import { Reveal } from "@/components/reveal";
 import { Waitlist } from "@/components/waitlist";
 import { JsonLd } from "@/components/jsonld";
-import { FireControl } from "@/components/fire-control";
+import { InteractiveHunt } from "@/components/interactive-hunt";
 import { Radar } from "@/components/radar";
+import { HudStrip } from "@/components/hud-strip";
 
 export const metadata: Metadata = {
   title: "How it works — The autonomous bug bounty pipeline",
@@ -37,6 +38,8 @@ export default function Platform() {
     <main>
       <JsonLd data={{ "@context": "https://schema.org", "@type": "HowTo", name: "How HUNTR hunts a target", step: steps.map((s) => ({ "@type": "HowToStep", name: s.tag, text: s.body })) }} />
 
+      <HudStrip rail="pipeline · end to end" />
+
       {/* HERO */}
       <section className="border-b border-line">
         <div className="site-wrap pb-16 pt-14 sm:pb-20 sm:pt-20">
@@ -56,7 +59,7 @@ export default function Platform() {
               </Reveal>
             </div>
             <Reveal delay={200} className="w-full">
-              <FireControl />
+              <InteractiveHunt />
             </Reveal>
           </div>
         </div>

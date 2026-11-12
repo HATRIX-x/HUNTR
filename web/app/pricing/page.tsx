@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Reveal } from "@/components/reveal";
 import { MailLink } from "@/components/legal";
+import { HudStrip } from "@/components/hud-strip";
 
 export const metadata: Metadata = {
   title: "Pricing",
@@ -86,6 +87,7 @@ const faqs = [
 export default function Pricing() {
   return (
     <main>
+      <HudStrip rail="byo-key · flat pricing" />
       {/* HERO */}
       <section className="border-b border-line">
         <div className="site-wrap pb-16 pt-16 text-center sm:pb-20 sm:pt-24">

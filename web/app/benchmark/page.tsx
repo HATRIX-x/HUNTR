@@ -3,6 +3,7 @@ import { Reveal } from "@/components/reveal";
 import { Stat } from "@/components/stat";
 import { Waitlist } from "@/components/waitlist";
 import { AttackCoverage } from "@/components/attack-coverage";
+import { HudStrip } from "@/components/hud-strip";
 
 export const metadata: Metadata = {
   title: "Benchmark — Measured against ground truth",
@@ -31,6 +32,7 @@ const classes = ["sqli","xss","ssti","ssrf","idor","authz","bfla","cors","lfi","
 export default function Benchmark() {
   return (
     <main>
+      <HudStrip rail="measured, not claimed" />
       {/* HERO */}
       <section className="border-b border-line">
         <div className="site-wrap pb-16 pt-14 sm:pb-20 sm:pt-20">
