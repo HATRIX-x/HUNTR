@@ -27,8 +27,6 @@ const suites = [
   ["Control", "Deterministic", "A no-LLM path makes core coverage reproducible — run to run."],
 ];
 
-const classes = ["sqli","xss","ssti","ssrf","idor","authz","bfla","cors","lfi","nosqli","crlf","xpath","ldap","cmdi","oauth","graphql","deserialization","mass-assignment","prototype-pollution","host-header","web-cache-deception","file-upload","clickjack","csp","redirect"];
-
 export default function Benchmark() {
   return (
     <main>
@@ -97,11 +95,7 @@ export default function Benchmark() {
             ))}
           </div>
 
-          <Reveal className="mt-10 flex flex-wrap gap-2">
-            {classes.map((c) => (<span key={c} className="label border border-line px-3 py-2 text-muted">{c}</span>))}
-          </Reveal>
-
-          <Reveal className="mt-12 max-w-[72ch] border-l-4 border-brand bg-surface p-6 text-fg/75">
+          <Reveal className="mt-14 max-w-[72ch] border-l-4 border-brand bg-surface p-6 text-fg/75">
             <span className="font-semibold text-fg">Straight talk:</span> HUNTR is pre-launch. These numbers are what
             the engine does on a controlled benchmark with certain ground truth — capability, not customer logos.
             Real disclosed findings land here as they&apos;re published. We&apos;d rather show you a reproducible

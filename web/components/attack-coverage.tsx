@@ -62,25 +62,22 @@ export function AttackCoverage() {
           <b className="text-green">{lit}</b> / {TOTAL} classes
         </span>
       </div>
-      <div className="mt-4 flex flex-wrap gap-1.5">
+      <div className="mt-6 grid grid-cols-2 gap-x-6 gap-y-2.5 sm:grid-cols-3">
         {CLASSES.map((c) => (
-          <span
-            key={c}
-            className="ac-tag ac-on inline-flex items-center gap-1.5 rounded-md border border-line bg-surface2 px-2 py-1 font-mono text-[10.5px] text-muted"
-          >
-            <span className="ac-dot h-1.5 w-1.5 rounded-full bg-faint" />
-            {c}
+          <span key={c} className="ac-tag ac-on inline-flex items-center gap-2 font-mono text-[11.5px] text-muted">
+            <span className="ac-dot h-1 w-1 shrink-0 rounded-full bg-faint" />
+            <span className="whitespace-nowrap">{c}</span>
           </span>
         ))}
       </div>
-      <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-1 font-mono text-[10px] uppercase tracking-[0.1em] text-faint">
-        <span>hunted end-to-end — recon to validated report</span>
+      <div className="mt-7 border-t border-line pt-4 font-mono text-[10px] uppercase tracking-[0.12em] text-faint">
+        hunted end-to-end — recon to validated report
       </div>
       <style>{`
-        .ac-tag { transition: color .25s ease, border-color .25s ease; }
-        .ac-tag.ac-on { color: #C9CEDA; border-color: rgba(167,139,250,0.28); }
-        .ac-tag .ac-dot { transition: background .25s ease; }
-        .ac-tag.ac-on .ac-dot { background: #4ADE80; }
+        .ac-tag { transition: color .25s ease; }
+        .ac-tag.ac-on { color: #AEB4C0; }
+        .ac-tag .ac-dot { transition: background .25s ease, box-shadow .25s ease; }
+        .ac-tag.ac-on .ac-dot { background: #4ADE80; box-shadow: 0 0 6px rgba(74,222,128,0.5); }
       `}</style>
     </div>
   );
