@@ -21,12 +21,16 @@ test.describe('dashboard loads and renders', () => {
     expect(consoleErrors, `console errors on load:\n${consoleErrors.join('\n')}`).toEqual([]);
   });
 
-  test('credentials panel is shown by default (grey box), no toggle needed', async ({ page }) => {
+  test('credentials toggle shows for grey box and expands the panel', async ({ page }) => {
     await page.goto('/');
-    // no "Advanced options" toggle; creds show automatically for the default grey mode
-    await expect(page.locator('#adv-btn')).toHaveCount(0);
+    // Creds are collapsed behind a "Credentials & run options" toggle so the form
+    // isn't cluttered. For the default grey mode the toggle is shown; the panel
+    // opens on toggle and reveals the auth-token field.
+    await expect(page.locator('#adv-btn')).toBeVisible();
+    await expect(page.locator('#adv-panel')).toBeHidden();
+    await page.evaluate(() => (window as any).toggleAdv());
     await expect(page.locator('#adv-panel')).toBeVisible();
-    await expect(page.locator('#f-tok')).toBeVisible();   // auth token field
+    await expect(page.locator('#f-session')).toBeVisible();   // session / paste-anything field
   });
 });
 
@@ -78,23 +82,25 @@ test.describe('live scope preview (deterministic, as-you-type)', () => {
   });
 });
 
-test.describe('credentials panel is mode-gated (no "Advanced" toggle)', () => {
-  test('shown for Grey/White box, hidden for Black box', async ({ page }) => {
+test.describe('credentials toggle is mode-gated', () => {
+  test('toggle shown for Grey/White box, hidden for Black box', async ({ page }) => {
     await page.goto('/');
+    const toggle = page.locator('#adv-btn');
     const creds = page.locator('#adv-panel');
-    // no "Advanced options" toggle anymore
-    await expect(page.locator('#adv-btn')).toHaveCount(0);
-    // default mode is Grey box -> credentials visible
+    // default mode is Grey box -> the creds toggle is shown; open it to reveal the fields
+    await expect(toggle).toBeVisible();
+    await page.evaluate(() => (window as any).toggleAdv());
     await expect(creds).toBeVisible();
-    await expect(creds).toContainText('Auth token');
+    await expect(creds).toContainText('Session');
 
-    // switch to Black box (via the dropdown's own pick handler) -> credentials hidden
+    // switch to Black box (via the dropdown's own pick handler) -> toggle + creds hidden
     await page.evaluate(() => (window as any).ddPick('f-mode-dd', 'black', 'Black box'));
+    await expect(toggle).toBeHidden();
     await expect(creds).toBeHidden();
 
-    // switch to White box -> credentials visible again
+    // switch to White box -> the toggle is shown again
     await page.evaluate(() => (window as any).ddPick('f-mode-dd', 'white', 'White box'));
-    await expect(creds).toBeVisible();
+    await expect(toggle).toBeVisible();
   });
 });
 
