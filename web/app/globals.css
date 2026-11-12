@@ -173,3 +173,46 @@ body > nav, body > main, body > footer { position: relative; z-index: 1; }
 .legal-body ul { display: grid; gap: 0.5rem; padding-left: 1.1rem; list-style: disc; }
 .legal-body ul li::marker { color: var(--brand); }
 .legal-body h3 { color: #ECEEF2; font-weight: 600; font-size: 1.05rem; margin-top: 0.25rem; }
+
+/* ═══ PREVIEW: advanced operator-console system ═══════════════════════ */
+:root {
+  --critical: #ff5d6c;   /* red   */
+  --high:     #e7b84b;   /* amber */
+  --testing:  #4cc9e0;   /* cyan  */
+  --validated:#4ade80;   /* green */
+}
+/* reticle cursor — hide the native pointer only where the custom one runs */
+.reticle-scope, .reticle-scope * { cursor: none; }
+@media (hover: none) { .reticle-scope, .reticle-scope * { cursor: auto; } }
+.reticle {
+  position: fixed; left: 0; top: 0; z-index: 9999; pointer-events: none;
+  width: 34px; height: 34px; margin: -17px 0 0 -17px;
+  transform: translate3d(var(--rx,0), var(--ry,0), 0);
+  transition: width .18s ease, height .18s ease, margin .18s ease, opacity .2s ease;
+  mix-blend-mode: difference;
+}
+.reticle.hot { width: 54px; height: 54px; margin: -27px 0 0 -27px; }
+.reticle::before, .reticle::after { content:""; position:absolute; background: var(--brand); }
+.reticle::before { left:50%; top:0; width:1px; height:100%; transform:translateX(-50%); }
+.reticle::after  { top:50%; left:0; height:1px; width:100%; transform:translateY(-50%); }
+.reticle i { position:absolute; width:8px; height:8px; border:1.5px solid var(--brand); }
+.reticle i:nth-child(1){ left:0; top:0; border-right:0; border-bottom:0; }
+.reticle i:nth-child(2){ right:0; top:0; border-left:0; border-bottom:0; }
+.reticle i:nth-child(3){ left:0; bottom:0; border-right:0; border-top:0; }
+.reticle i:nth-child(4){ right:0; bottom:0; border-left:0; border-top:0; }
+.reticle b { position:absolute; left:50%; top:50%; width:3px; height:3px; margin:-1.5px; border-radius:50%; background: var(--validated); }
+@media (hover: none) { .reticle { display:none; } }
+
+/* HUD telemetry strip */
+.hud { font-family: var(--mono, ui-monospace, "SF Mono", Menlo, monospace); }
+.scanline { position:relative; overflow:hidden; }
+.scanline::after { content:""; position:absolute; inset:0; pointer-events:none;
+  background: repeating-linear-gradient(180deg, transparent 0 3px, rgba(167,139,250,0.035) 3px 4px); }
+
+/* status chips */
+.chip { font-family: var(--mono, ui-monospace, monospace); font-size:10px; letter-spacing:.08em;
+  text-transform:uppercase; padding:2px 6px; border:1px solid; border-radius:4px; }
+.chip.crit { color:var(--critical); border-color:color-mix(in srgb, var(--critical) 45%, transparent); }
+.chip.high { color:var(--high);     border-color:color-mix(in srgb, var(--high) 45%, transparent); }
+.chip.test { color:var(--testing);  border-color:color-mix(in srgb, var(--testing) 45%, transparent); }
+.chip.val  { color:var(--validated);border-color:color-mix(in srgb, var(--validated) 45%, transparent); }
