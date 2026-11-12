@@ -5,8 +5,8 @@ import { Stat } from "@/components/stat";
 import { ZeroDayStat } from "@/components/zeroday-stat";
 import { Waitlist } from "@/components/waitlist";
 import { JsonLd } from "@/components/jsonld";
-import { FireControl } from "@/components/fire-control";
-import { AttackFunnel } from "@/components/attack-funnel";
+import { InteractiveHunt } from "@/components/interactive-hunt";
+import { SurfaceGraph3D } from "@/components/surface-graph-3d";
 
 const faqs = [
   { q: "What is HUNTR?", a: "HUNTR is an autonomous AI operator for bug bounty. You point it at a target you're authorized to test and it maps the attack surface, tests it, validates what it finds, and drafts the report. You review and submit." },
@@ -36,6 +36,21 @@ export default function Home() {
           ],
         }}
       />
+
+      {/* HUD telemetry strip */}
+      <div className="hud scanline border-b border-line bg-surface2/50">
+        <div className="site-wrap flex flex-wrap items-center gap-x-6 gap-y-1 py-2 text-[10.5px] uppercase tracking-[0.14em] text-muted">
+          <span className="flex items-center gap-2 text-fg">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full" style={{ background: "var(--validated)" }} />
+            operator online
+          </span>
+          <span>58 classes</span>
+          <span>11 agents</span>
+          <span>0 auto-submits</span>
+          <span className="text-brand">scope-locked</span>
+          <span className="ml-auto hidden sm:inline">authorized targets only</span>
+        </div>
+      </div>
 
       {/* HERO */}
       <section className="relative border-b border-line">
@@ -74,7 +89,7 @@ export default function Home() {
             </div>
 
             <Reveal delay={200} className="w-full">
-              <FireControl />
+              <InteractiveHunt />
             </Reveal>
           </div>
         </div>
@@ -130,20 +145,32 @@ export default function Home() {
         </div>
       </section>
 
-      {/* FUNNEL */}
-      <section className="overflow-hidden border-b border-line">
-        <div className="site-wrap py-20 text-center sm:py-28">
-          <Reveal type="mask">
-            <span className="label text-muted">End to end</span>
-            <h2 className="display mx-auto mt-4 max-w-[18ch] text-[clamp(2rem,5vw,4rem)]">
-              Every finding, <span className="text-brand">traced to a single lock.</span>
-            </h2>
-            <p className="mx-auto mt-5 max-w-[54ch] text-lg text-fg/70">
-              Dozens of tests across the surface converge into one short list of validated, report-ready vulnerabilities.
-            </p>
+      {/* SURFACE GRAPH */}
+      <section className="scanline overflow-hidden border-b border-line">
+        <div className="site-wrap grid items-center gap-12 py-20 lg:grid-cols-[minmax(0,0.92fr)_1fr] lg:gap-16 sm:py-28">
+          <Reveal className="order-2 lg:order-1">
+            <div className="rounded-2xl border border-brand/20 bg-bg/40 p-3 shadow-[0_40px_120px_-50px_rgba(167,139,250,0.4)]">
+              <SurfaceGraph3D />
+            </div>
           </Reveal>
-          <div className="mt-6">
-            <AttackFunnel />
+          <div className="order-1 lg:order-2">
+            <Reveal type="mask">
+              <span className="label text-muted">Live surface map</span>
+              <h2 className="display mt-4 text-[clamp(2rem,5.5vw,4.5rem)] leading-[1.02]">
+                The whole surface — <span className="text-brand">one living graph.</span>
+              </h2>
+            </Reveal>
+            <Reveal as="p" delay={120} className="mt-6 max-w-[48ch] text-lg leading-relaxed text-fg/75">
+              Every host, endpoint, and parameter is a node; every edge is a path HUNTR can chain. It&apos;s how a
+              low-severity bug turns into a critical one — the engine reasons across the whole surface instead of
+              testing endpoints in isolation, so it finds the routes a scanner walks right past.
+            </Reveal>
+            <Reveal delay={200} className="mt-6 flex flex-wrap items-center gap-3 hud text-[11px] uppercase tracking-[0.12em] text-muted">
+              <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: "var(--critical)" }} />critical</span>
+              <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: "var(--high)" }} />high</span>
+              <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: "var(--validated)" }} />validated</span>
+              <span className="text-faint">· drag to orbit →</span>
+            </Reveal>
           </div>
         </div>
       </section>

@@ -20,8 +20,14 @@ export function SurfaceGraph3D() {
     const ctx = cv.getContext("2d")!;
     const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+    // ── starfield backdrop (parallax + twinkle) ──
+    const stars = Array.from({ length: 95 }, () => ({
+      x: Math.random(), y: Math.random(), r: Math.random() * 1.1 + 0.3,
+      ph: Math.random() * 6.28, sp: 0.5 + Math.random(), depth: 0.3 + Math.random() * 0.7,
+    }));
+
     // ── clustered layout: root → hubs → satellites ──
-    const HUBS = 6;
+    const HUBS = 7;
     const nodes: Node[] = [{ x: 0, y: 0, z: 0, kind: "root", label: "target", order: 0, hub: -1, foundAt: 0 }];
     const gold = Math.PI * (3 - Math.sqrt(5));
     const hubIdx: number[] = [];
@@ -35,7 +41,7 @@ export function SurfaceGraph3D() {
     let li = HUBS;
     for (let h = 0; h < HUBS; h++) {
       const hub = nodes[hubIdx[h]];
-      const sats = 6 + (h % 3);
+      const sats = 7 + (h % 3);
       for (let s = 0; s < sats; s++) {
         const a = (s / sats) * Math.PI * 2 + h, sp = 0.42;
         const nx = hub.x + Math.cos(a) * sp, ny = hub.y + Math.sin(a) * sp * 0.8, nz = hub.z + Math.sin(a * 1.3) * sp;
@@ -73,7 +79,7 @@ export function SurfaceGraph3D() {
       const cy = Math.cos(ry), sy = Math.sin(ry), cx = Math.cos(rx), sx = Math.sin(rx);
       let x = n.x * cy - n.z * sy, z = n.x * sy + n.z * cy;
       let y = n.y * cx - z * sx; z = n.y * sx + z * cx;
-      const focal = 3.0, scale = focal / (focal + z);
+      const focal = 3.0, scale = focal / Math.max(0.6, focal + z);
       return { X: W / 2 + x * scale * RAD, Y: H / 2 + y * scale * RAD, scale, z };
     };
     const rgba = (c: number[], a: number) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
@@ -86,6 +92,17 @@ export function SurfaceGraph3D() {
       if (!dragging) { ry += vel; vel += (0.0022 - vel) * 0.02; }
 
       ctx.clearRect(0, 0, W, H);
+
+      // starfield — subtle parallax with rotation + twinkle
+      const px = Math.sin(ry) * 14, py = Math.sin(rx) * 10;
+      for (const s of stars) {
+        const a = (0.1 + 0.09 * Math.sin(el / 900 * s.sp + s.ph)) * s.depth;
+        ctx.fillStyle = `rgba(188,180,220,${a})`;
+        ctx.beginPath();
+        ctx.arc(s.x * W + px * s.depth, s.y * H + py * s.depth, s.r, 0, 7);
+        ctx.fill();
+      }
+
       const P = nodes.map(proj);
       // neighbours of hovered
       const nbr = new Set<number>();
@@ -140,7 +157,7 @@ export function SurfaceGraph3D() {
         const dim = hover >= 0 && !nbr.has(i);
         const alpha = (dim ? 0.25 : 1) * depth;
         const pulse = found ? Math.max(0, 1 - (el - n.foundAt) / 500) : 0; // pop on discover
-        const r = (n.kind === "root" ? 5.5 : n.kind === "crit" || n.kind === "high" ? 3.6 : 2.9) * p.scale * (1 + pulse * 0.8);
+        const r = Math.max(0.3, (n.kind === "root" ? 5.5 : n.kind === "crit" || n.kind === "high" ? 3.6 : 2.9) * p.scale * (1 + pulse * 0.8));
 
         if ((found && n.kind !== "ep") || n.kind === "root" || hover === i) {
           ctx.shadowColor = rgba(col, 0.9 * alpha); ctx.shadowBlur = (n.kind === "root" ? 18 : 12) * p.scale;

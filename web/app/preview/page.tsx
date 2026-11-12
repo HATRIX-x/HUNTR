@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { ReticleCursor } from "@/components/reticle-cursor";
 import { InteractiveHunt } from "@/components/interactive-hunt";
 import { SurfaceGraph3D } from "@/components/surface-graph-3d";
 
@@ -17,9 +16,7 @@ const STATUS = [
 
 export default function Preview() {
   return (
-    <div className="reticle-scope">
-      <ReticleCursor />
-
+    <div>
       {/* HUD telemetry strip */}
       <div className="hud scanline border-b border-line bg-surface2/60">
         <div className="site-wrap flex flex-wrap items-center gap-x-6 gap-y-1 py-2 text-[10.5px] uppercase tracking-[0.14em] text-muted">

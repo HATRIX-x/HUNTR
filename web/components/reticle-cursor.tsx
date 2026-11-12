@@ -10,6 +10,7 @@ export function ReticleCursor() {
     if (window.matchMedia && window.matchMedia("(hover: none)").matches) return;
     const el = ref.current;
     if (!el) return;
+    document.body.classList.add("reticle-on"); // hides native cursor via CSS; removed on unmount
     let x = window.innerWidth / 2, y = window.innerHeight / 2, tx = x, ty = y, raf = 0;
     const loop = () => {
       x += (tx - x) * 0.25; y += (ty - y) * 0.25;
@@ -31,6 +32,7 @@ export function ReticleCursor() {
     raf = requestAnimationFrame(loop);
     return () => {
       cancelAnimationFrame(raf);
+      document.body.classList.remove("reticle-on");
       window.removeEventListener("pointermove", move);
       document.removeEventListener("pointerleave", leave);
       document.removeEventListener("pointerenter", enter);

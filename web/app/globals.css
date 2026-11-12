@@ -181,9 +181,10 @@ body > nav, body > main, body > footer { position: relative; z-index: 1; }
   --testing:  #4cc9e0;   /* cyan  */
   --validated:#4ade80;   /* green */
 }
-/* reticle cursor — hide the native pointer only where the custom one runs */
-.reticle-scope, .reticle-scope * { cursor: none; }
-@media (hover: none) { .reticle-scope, .reticle-scope * { cursor: auto; } }
+/* reticle cursor — the native pointer is hidden ONLY after the component mounts
+   and adds `reticle-on` to <body> (desktop/hover only). If JS never runs, the
+   class is absent and the native cursor stays — no cursorless page. */
+body.reticle-on, body.reticle-on * { cursor: none; }
 .reticle {
   position: fixed; left: 0; top: 0; z-index: 9999; pointer-events: none;
   width: 34px; height: 34px; margin: -17px 0 0 -17px;
