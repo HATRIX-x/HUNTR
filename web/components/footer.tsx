@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { SUPPORT_EMAIL } from "@/components/legal";
+import { BrandMark } from "@/components/brand-mark";
 
 const SOCIALS = [
   {
@@ -30,7 +31,8 @@ export function Footer() {
       <div className="site-wrap py-14">
         <div className="flex flex-col gap-10 md:flex-row md:items-end md:justify-between">
           <div>
-            <Link href="/" className="display text-4xl tracking-tightest text-fg sm:text-5xl">
+            <Link href="/" className="flex items-center gap-3 display text-4xl tracking-tightest text-fg sm:text-5xl">
+              <BrandMark className="h-9 w-9 sm:h-10 sm:w-10" />
               HUNTR<span className="text-brand">.</span>
             </Link>
             <p className="mt-4 max-w-sm text-sm text-muted">

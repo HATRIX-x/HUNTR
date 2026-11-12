@@ -2,6 +2,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
+import { BrandMark } from "@/components/brand-mark";
 
 const links = [
   { href: "/platform", label: "Platform" },
@@ -13,8 +14,8 @@ const links = [
 export function Wordmark({ className = "" }: { className?: string }) {
   return (
     <Link href="/" className={`flex items-center gap-2 ${className}`} aria-label="HUNTR home">
+      <BrandMark className="h-6 w-6" />
       <span className="display text-xl tracking-tightest text-fg">HUNTR</span>
-      <span className="mt-[2px] inline-block h-2 w-2 bg-brand" />
     </Link>
   );
 }
