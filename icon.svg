@@ -1,10 +1,48 @@
-<svg width="100" height="100" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <g stroke="#A78BFA" stroke-width="8.5" stroke-linecap="round">
-    <circle cx="50" cy="50" r="30" stroke-dasharray="35 12" stroke-dashoffset="17.5"/>
-    <line x1="50" y1="21" x2="50" y2="37"/>
-    <line x1="50" y1="79" x2="50" y2="63"/>
-    <line x1="21" y1="50" x2="37" y2="50"/>
-    <line x1="79" y1="50" x2="63" y2="50"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <pattern id="grid" width="21.33" height="21.33" patternUnits="userSpaceOnUse" x="0" y="0">
+      <path d="M21.33 0 L0 0 0 21.33" fill="none" stroke="#8C86A8" stroke-opacity="0.4" stroke-width="0.8"/>
+    </pattern>
+    <radialGradient id="bg" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#1D182E"/>
+      <stop offset="100%" stop-color="#151024"/>
+    </radialGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <clipPath id="circle">
+      <circle cx="256" cy="256" r="256"/>
+    </clipPath>
+  </defs>
+
+  <!-- Background -->
+  <g clip-path="url(#circle)">
+    <rect width="512" height="512" fill="url(#bg)"/>
+    <rect width="512" height="512" fill="url(#grid)"/>
   </g>
-  <circle cx="50" cy="50" r="9" fill="#4ADE80"/>
+
+  <!-- Reticle -->
+  <g fill="none" stroke="#A38DF2" stroke-width="13" filter="url(#glow)">
+    <!-- Ring arcs -->
+    <g stroke-linecap="butt">
+      <path d="M166 132.2 A153 153 0 0 1 346 132.2"/>
+      <path d="M379.8 166 A153 153 0 0 1 379.8 346"/>
+      <path d="M346 379.8 A153 153 0 0 1 166 379.8"/>
+      <path d="M132.2 346 A153 153 0 0 1 132.2 166"/>
+    </g>
+    <!-- Crosshair lines -->
+    <g stroke-linecap="round">
+      <line x1="256" y1="51" x2="256" y2="184"/>
+      <line x1="256" y1="328" x2="256" y2="461"/>
+      <line x1="51" y1="256" x2="184" y2="256"/>
+      <line x1="328" y1="256" x2="461" y2="256"/>
+    </g>
+  </g>
+
+  <!-- Center dot -->
+  <circle cx="256" cy="256" r="30" fill="#79DC89"/>
 </svg>
