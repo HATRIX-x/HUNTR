@@ -1,6 +1,7 @@
 """
 Auth routes — signup, login, me.
 """
+import json
 import ulid
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr
@@ -107,13 +108,55 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
 @router.get("/me")
 def me(user: User = Depends(current_user)):
     """Resolve the signed-in user from the Bearer session token."""
+    try:
+        profile = json.loads(user.profile) if getattr(user, "profile", None) else None
+    except Exception:
+        profile = None
     return {
         "user_id": user.id,
         "email": user.email,
         "plan": user.plan,
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "twofa_enabled": bool(getattr(user, "totp_enabled", False)),
+        "onboarded": bool(getattr(user, "onboarded", False)),
+        "profile": profile,
     }
+
+
+# ── onboarding profile ─────────────────────────────────────────────────────
+class ProfileIn(BaseModel):
+    role: str | None = None            # hunter | pentester | researcher | appsec | learning
+    experience: str | None = None      # new | mid | senior | pro
+    platforms: list[str] = []          # hackerone, bugcrowd, intigriti, private, own-assets
+    goal: str | None = None            # more-bounties, save-time, coverage, learning
+    referral: str | None = None        # x, friend, search, youtube, discord, other
+
+
+_ALLOWED = {
+    "role": {"hunter", "pentester", "researcher", "appsec", "learning"},
+    "experience": {"new", "mid", "senior", "pro"},
+    "platforms": {"hackerone", "bugcrowd", "intigriti", "private", "own-assets"},
+    "goal": {"more-bounties", "save-time", "coverage", "learning"},
+    "referral": {"x", "friend", "search", "youtube", "discord", "other"},
+}
+
+
+@router.post("/profile")
+def save_profile(body: ProfileIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Persist the onboarding answers and mark the account onboarded.
+    Values are whitelisted so the stored profile stays clean/analytics-ready."""
+    data = {
+        "role": body.role if body.role in _ALLOWED["role"] else None,
+        "experience": body.experience if body.experience in _ALLOWED["experience"] else None,
+        "platforms": [p for p in body.platforms if p in _ALLOWED["platforms"]][:5],
+        "goal": body.goal if body.goal in _ALLOWED["goal"] else None,
+        "referral": body.referral if body.referral in _ALLOWED["referral"] else None,
+    }
+    user.profile = json.dumps(data)
+    user.onboarded = True
+    db.add(user)
+    db.commit()
+    return {"ok": True, "onboarded": True, "profile": data}
 
 
 # ── 2FA (TOTP) ─────────────────────────────────────────────────────────────

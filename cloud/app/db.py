@@ -37,6 +37,9 @@ class User(Base):
     totp_secret     = Column(String, nullable=True)       # base32; set at setup
     totp_enabled    = Column(Boolean, default=False)      # True once confirmed
     backup_codes    = Column(Text, nullable=True)         # JSON array of sha256 hashes
+    # ── onboarding profile ──
+    onboarded       = Column(Boolean, default=False)      # True once the welcome flow is done
+    profile         = Column(Text, nullable=True)         # JSON: role, platforms, experience, referral, goal
 
     agents   = relationship("Agent",   back_populates="user", cascade="all, delete")
     findings = relationship("Finding", back_populates="user", cascade="all, delete")
@@ -129,6 +132,8 @@ def _migrate():
         ("totp_secret",  "VARCHAR",                 "VARCHAR"),
         ("totp_enabled", "BOOLEAN DEFAULT FALSE",   "INTEGER DEFAULT 0"),
         ("backup_codes", "TEXT",                    "TEXT"),
+        ("onboarded",    "BOOLEAN DEFAULT FALSE",   "INTEGER DEFAULT 0"),
+        ("profile",      "TEXT",                    "TEXT"),
     ]
     dialect = engine.dialect.name
     try:
