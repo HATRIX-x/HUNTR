@@ -7,7 +7,12 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
 from ..db import get_db, User
-from ..auth import hash_password, verify_password, create_session_token
+from ..auth import (
+    hash_password, verify_password, create_session_token,
+    create_2fa_token, decode_2fa_token,
+    new_totp_secret, totp_provisioning_uri, verify_totp,
+    gen_backup_codes, hash_backup_codes, consume_backup_code,
+)
 from ..deps import current_user
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
@@ -78,17 +83,25 @@ def signup(body: SignupIn, db: Session = Depends(get_db)):
     )
 
 
-@router.post("/login", response_model=AuthOut)
-def login(body: LoginIn, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == body.email).first()
-    if not user or not verify_password(body.password, user.password_hash):
-        raise HTTPException(401, "Invalid email or password")
+def _auth_out(user: User) -> AuthOut:
     return AuthOut(
         session_token = create_session_token(user.id),
         user_id       = user.id,
         email         = user.email,
         plan          = user.plan,
     )
+
+
+@router.post("/login")
+def login(body: LoginIn, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == body.email).first()
+    if not user or not verify_password(body.password, user.password_hash):
+        raise HTTPException(401, "Invalid email or password")
+    # If 2FA is enabled, don't hand out a session yet — issue a short-lived
+    # challenge token the client exchanges via /2fa/verify.
+    if getattr(user, "totp_enabled", False):
+        return {"twofa_required": True, "twofa_token": create_2fa_token(user.id)}
+    return _auth_out(user)
 
 
 @router.get("/me")
@@ -99,4 +112,80 @@ def me(user: User = Depends(current_user)):
         "email": user.email,
         "plan": user.plan,
         "created_at": user.created_at.isoformat() if user.created_at else None,
+        "twofa_enabled": bool(getattr(user, "totp_enabled", False)),
     }
+
+
+# ── 2FA (TOTP) ─────────────────────────────────────────────────────────────
+
+class TwoFAVerifyIn(BaseModel):
+    twofa_token: str
+    code: str
+
+
+class CodeIn(BaseModel):
+    code: str
+
+
+@router.post("/2fa/verify")
+def twofa_verify(body: TwoFAVerifyIn, db: Session = Depends(get_db)):
+    """Exchange a 2fa_pending token + TOTP (or backup) code for a full session."""
+    uid = decode_2fa_token(body.twofa_token)
+    if not uid:
+        raise HTTPException(401, "Your sign-in attempt expired — start again.")
+    user = db.query(User).filter(User.id == uid).first()
+    if not user or not user.totp_enabled:
+        raise HTTPException(401, "Invalid request.")
+    if verify_totp(user.totp_secret, body.code):
+        return _auth_out(user)
+    ok, remaining = consume_backup_code(body.code, user.backup_codes)
+    if ok:
+        user.backup_codes = remaining
+        db.commit()
+        return _auth_out(user)
+    raise HTTPException(401, "Invalid code. Try your authenticator app or a backup code.")
+
+
+@router.post("/2fa/setup")
+def twofa_setup(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Begin enrollment: generate (and store) a secret, return the QR URI. 2FA is
+    not active until /2fa/enable confirms a code."""
+    if user.totp_enabled:
+        raise HTTPException(409, "Two-factor authentication is already enabled.")
+    secret = new_totp_secret()
+    user.totp_secret = secret
+    db.commit()
+    return {"secret": secret, "otpauth_uri": totp_provisioning_uri(secret, user.email)}
+
+
+@router.post("/2fa/enable")
+def twofa_enable(body: CodeIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Confirm a code against the pending secret, turn 2FA on, return backup codes once."""
+    if user.totp_enabled:
+        raise HTTPException(409, "Two-factor authentication is already enabled.")
+    if not user.totp_secret:
+        raise HTTPException(400, "Start setup first.")
+    if not verify_totp(user.totp_secret, body.code):
+        raise HTTPException(401, "That code didn't match. Check your authenticator app and try again.")
+    codes = gen_backup_codes()
+    user.backup_codes = hash_backup_codes(codes)
+    user.totp_enabled = True
+    db.commit()
+    return {"enabled": True, "backup_codes": codes}
+
+
+@router.post("/2fa/disable")
+def twofa_disable(body: CodeIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Turn 2FA off after verifying a current code (or a backup code)."""
+    if not user.totp_enabled:
+        return {"enabled": False}
+    ok = verify_totp(user.totp_secret, body.code)
+    if not ok:
+        ok, remaining = consume_backup_code(body.code, user.backup_codes)
+    if not ok:
+        raise HTTPException(401, "Enter a valid code to turn off two-factor authentication.")
+    user.totp_enabled = False
+    user.totp_secret = None
+    user.backup_codes = None
+    db.commit()
+    return {"enabled": False}

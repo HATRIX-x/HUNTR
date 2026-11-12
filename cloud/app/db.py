@@ -33,6 +33,10 @@ class User(Base):
     plan            = Column(String, default="free")     # free | pro | team
     stripe_customer = Column(String, nullable=True)
     created_at      = Column(DateTime, server_default=func.now())
+    # ── 2FA (TOTP) ──
+    totp_secret     = Column(String, nullable=True)       # base32; set at setup
+    totp_enabled    = Column(Boolean, default=False)      # True once confirmed
+    backup_codes    = Column(Text, nullable=True)         # JSON array of sha256 hashes
 
     agents   = relationship("Agent",   back_populates="user", cascade="all, delete")
     findings = relationship("Finding", back_populates="user", cascade="all, delete")
@@ -117,5 +121,31 @@ def get_db():
         db.close()
 
 
+def _migrate():
+    """Idempotent column adds for features layered onto an existing users table
+    (create_all won't ALTER an existing table). Safe to run on every boot."""
+    # (name, postgres_decl, sqlite_decl)
+    adds = [
+        ("totp_secret",  "VARCHAR",                 "VARCHAR"),
+        ("totp_enabled", "BOOLEAN DEFAULT FALSE",   "INTEGER DEFAULT 0"),
+        ("backup_codes", "TEXT",                    "TEXT"),
+    ]
+    dialect = engine.dialect.name
+    try:
+        with engine.begin() as conn:
+            if dialect == "sqlite":
+                existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(users)")}
+                for name, _pg, sq in adds:
+                    if name not in existing:
+                        conn.exec_driver_sql(f"ALTER TABLE users ADD COLUMN {name} {sq}")
+            else:
+                for name, pg, _sq in adds:
+                    conn.exec_driver_sql(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {name} {pg}")
+    except Exception as e:
+        # never crash boot on a migration hiccup; log and continue
+        print(f"[db] migrate warning: {e}")
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
+    _migrate()
