@@ -42,6 +42,7 @@ def current_agent(token: str = Depends(_bearer), db: Session = Depends(get_db)) 
 
 
 def pro_required(user: User = Depends(current_user)) -> User:
-    if user.plan not in ("pro", "team"):
-        raise HTTPException(403, "Pro plan required")
+    # any non-free plan (founder | monthly | yearly | pro | team) is entitled
+    if user.plan == "free":
+        raise HTTPException(403, "A paid plan is required")
     return user

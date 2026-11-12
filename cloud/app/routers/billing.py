@@ -1,9 +1,33 @@
 """
-Billing routes — Stripe checkout + webhook.
-Plans: free | pro ($29/mo) | team ($79/mo)
+Billing — Creem checkout + webhook. Creem is the merchant of record (handles
+cards, tax, invoices). We never see card data.
+
+Flow:
+  1. POST /v1/billing/checkout {plan}  (auth) → creates a Creem checkout session,
+     returns {checkout_url}. The frontend redirects the user there.
+  2. Creem hosts payment, then redirects to success_url and fires webhooks.
+  3. POST /v1/billing/webhook  → verifies the creem-signature (HMAC-SHA256 of the
+     raw body with CREEM_WEBHOOK_SECRET) and activates/downgrades the plan.
+
+Plans map to Creem product_ids via env (create the products in the Creem
+dashboard as *Subscription* products, then paste their ids):
+  CREEM_PRODUCT_FOUNDER  (Founder, $29/mo)
+  CREEM_PRODUCT_MONTHLY  (Monthly, $49/mo)
+  CREEM_PRODUCT_YEARLY   (Yearly,  $490/yr)
+
+Env:
+  CREEM_API_KEY         — secret API key (test key for test-api, live key for api)
+  CREEM_API_URL         — https://api.creem.io (default) or https://test-api.creem.io
+  CREEM_WEBHOOK_SECRET  — from Creem → Developers → Webhooks
+  APP_URL               — https://huntr.run (where the user returns after paying)
+
+We reuse the existing generic columns to avoid a schema migration on the live DB:
+  User.stripe_customer      → Creem customer id
+  Subscription.stripe_sub_id → Creem subscription id
 """
-import os, json
+import os, json, hmac, hashlib, urllib.request, urllib.error
 from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Header
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -13,76 +37,75 @@ from ..deps import current_user
 
 router = APIRouter(prefix="/v1/billing", tags=["billing"])
 
-STRIPE_SECRET_KEY      = os.environ.get("STRIPE_SECRET_KEY", "")
-STRIPE_WEBHOOK_SECRET  = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
-APP_URL                = os.environ.get("APP_URL", "https://huntr.app")
+CREEM_API_URL        = os.environ.get("CREEM_API_URL", "https://api.creem.io").rstrip("/")
+CREEM_API_KEY        = os.environ.get("CREEM_API_KEY", "")
+CREEM_WEBHOOK_SECRET = os.environ.get("CREEM_WEBHOOK_SECRET", "")
+APP_URL              = os.environ.get("APP_URL", "https://huntr.run").rstrip("/")
 
-PRICE_IDS = {
-    "pro":  os.environ.get("STRIPE_PRICE_PRO",  ""),   # set in .env
-    "team": os.environ.get("STRIPE_PRICE_TEAM", ""),
+PRODUCT_IDS = {
+    "founder": os.environ.get("CREEM_PRODUCT_FOUNDER", ""),
+    "monthly": os.environ.get("CREEM_PRODUCT_MONTHLY", ""),
+    "yearly":  os.environ.get("CREEM_PRODUCT_YEARLY", ""),
 }
 
-
-def _stripe():
-    try:
-        import stripe as s
-        s.api_key = STRIPE_SECRET_KEY
-        return s
-    except ImportError:
-        raise HTTPException(500, "stripe package not installed — pip install stripe")
+# Events that grant access, and events that revoke it.
+ACTIVATE_EVENTS   = {"checkout.completed", "subscription.active",
+                     "subscription.paid", "subscription.trialing"}
+DEACTIVATE_EVENTS = {"subscription.canceled", "subscription.cancelled",
+                     "subscription.expired", "subscription.paused"}
 
 
-# ── checkout ────────────────────────────────────────────────────────────
+def _plan_for_product(product_id: str):
+    for plan, pid in PRODUCT_IDS.items():
+        if pid and pid == product_id:
+            return plan
+    return None
+
+
+# ── checkout ──────────────────────────────────────────────────────────────
 
 class CheckoutIn(BaseModel):
-    plan: str   # pro | team
+    plan: str   # founder | monthly | yearly
 
 
 @router.post("/checkout")
-def create_checkout(
-    body: CheckoutIn,
-    user: User = Depends(current_user),
-    db:   Session = Depends(get_db),
-):
-    if body.plan not in PRICE_IDS:
+def create_checkout(body: CheckoutIn, user: User = Depends(current_user)):
+    plan = (body.plan or "").lower()
+    if plan not in PRODUCT_IDS:
         raise HTTPException(400, f"Unknown plan '{body.plan}'")
-    price_id = PRICE_IDS[body.plan]
-    if not price_id:
-        raise HTTPException(500, f"STRIPE_PRICE_{body.plan.upper()} not configured")
+    product_id = PRODUCT_IDS[plan]
+    if not product_id:
+        raise HTTPException(500, f"CREEM_PRODUCT_{plan.upper()} not configured")
+    if not CREEM_API_KEY:
+        raise HTTPException(500, "CREEM_API_KEY not configured")
 
-    stripe = _stripe()
+    payload = json.dumps({
+        "product_id": product_id,
+        "request_id": user.id,                       # our reference, echoed back
+        "success_url": f"{APP_URL}/account/?upgraded=1",
+        "metadata": {"user_id": user.id, "plan": plan},
+        "customer": {"email": user.email},
+    }).encode()
 
-    # get or create Stripe customer
-    customer_id = user.stripe_customer
-    if not customer_id:
-        customer = stripe.Customer.create(email=user.email, metadata={"user_id": user.id})
-        customer_id = customer.id
-        user.stripe_customer = customer_id
-        db.commit()
-
-    session = stripe.checkout.Session.create(
-        customer=customer_id,
-        payment_method_types=["card"],
-        line_items=[{"price": price_id, "quantity": 1}],
-        mode="subscription",
-        success_url=f"{APP_URL}/dashboard?upgraded=1",
-        cancel_url=f"{APP_URL}/dashboard?cancelled=1",
-        metadata={"user_id": user.id, "plan": body.plan},
+    req = urllib.request.Request(
+        f"{CREEM_API_URL}/v1/checkouts",
+        data=payload,
+        headers={"x-api-key": CREEM_API_KEY, "Content-Type": "application/json"},
+        method="POST",
     )
-    return {"checkout_url": session.url, "session_id": session.id}
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            res = json.loads(r.read().decode() or "{}")
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode()[:300] if hasattr(e, "read") else str(e)
+        raise HTTPException(502, f"Creem checkout failed ({e.code}): {detail}")
+    except Exception as e:
+        raise HTTPException(502, f"Creem unreachable: {e}")
 
-
-@router.get("/portal")
-def billing_portal(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    """Returns a Stripe billing portal URL so users can manage/cancel."""
-    if not user.stripe_customer:
-        raise HTTPException(400, "No billing account found")
-    stripe = _stripe()
-    session = stripe.billing_portal.Session.create(
-        customer=user.stripe_customer,
-        return_url=f"{APP_URL}/dashboard",
-    )
-    return {"portal_url": session.url}
+    url = res.get("checkout_url")
+    if not url:
+        raise HTTPException(502, f"Creem returned no checkout_url: {res}")
+    return {"checkout_url": url}
 
 
 @router.get("/status")
@@ -90,101 +113,99 @@ def billing_status(user: User = Depends(current_user), db: Session = Depends(get
     sub = db.query(Subscription).filter(Subscription.user_id == user.id).first()
     return {
         "plan":      user.plan,
-        "status":    sub.status    if sub else "none",
+        "status":    sub.status if sub else "none",
         "renews_at": str(sub.renews_at) if sub and sub.renews_at else None,
     }
 
 
-# ── webhook ─────────────────────────────────────────────────────────────
+# ── webhook ───────────────────────────────────────────────────────────────
+
+def _verify_signature(raw: bytes, signature: str) -> bool:
+    if not CREEM_WEBHOOK_SECRET or not signature:
+        return False
+    expected = hmac.new(CREEM_WEBHOOK_SECRET.encode(), raw, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature.strip())
+
+
+def _parse_period_end(obj: dict):
+    for key in ("current_period_end", "current_period_end_date",
+                "next_billing_date", "renews_at", "period_end"):
+        val = obj.get(key)
+        if not val:
+            continue
+        try:
+            if isinstance(val, (int, float)):
+                return datetime.fromtimestamp(val, tz=timezone.utc)
+            return datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+        except Exception:
+            continue
+    return None
+
 
 @router.post("/webhook")
-async def stripe_webhook(
+async def creem_webhook(
     request: Request,
-    stripe_signature: str = Header(None),
     db: Session = Depends(get_db),
+    creem_signature: str = Header(None, alias="creem-signature"),
 ):
-    if not STRIPE_WEBHOOK_SECRET:
-        raise HTTPException(500, "STRIPE_WEBHOOK_SECRET not configured")
-
-    stripe = _stripe()
-    body = await request.body()
-
-    try:
-        event = stripe.Webhook.construct_event(body, stripe_signature, STRIPE_WEBHOOK_SECRET)
-    except stripe.error.SignatureVerificationError:
+    raw = await request.body()
+    # Creem docs are inconsistent on the header name; accept the x- variant too.
+    sig = creem_signature or request.headers.get("x-creem-signature", "")
+    if not _verify_signature(raw, sig):
         raise HTTPException(400, "Invalid signature")
 
-    etype = event["type"]
-    data  = event["data"]["object"]
+    event = json.loads(raw.decode() or "{}")
+    etype = event.get("eventType") or event.get("type") or ""
+    obj   = event.get("object") or event.get("data") or {}
+    meta  = obj.get("metadata") or {}
 
-    if etype == "checkout.session.completed":
-        user_id = data.get("metadata", {}).get("user_id")
-        plan    = data.get("metadata", {}).get("plan", "pro")
-        sub_id  = data.get("subscription")
-        if user_id:
-            _activate_plan(db, user_id, plan, sub_id)
+    # resolve the user: metadata.user_id first, then customer email
+    user = None
+    uid = meta.get("user_id") or obj.get("request_id")
+    if uid:
+        user = db.query(User).filter(User.id == uid).first()
+    if not user:
+        cust = obj.get("customer") or {}
+        email = cust.get("email") if isinstance(cust, dict) else None
+        if email:
+            user = db.query(User).filter(User.email == email).first()
+    if not user:
+        return {"received": True, "note": "no matching user"}
 
-    elif etype in ("customer.subscription.updated", "customer.subscription.created"):
-        _sync_subscription(db, data)
-
-    elif etype in ("customer.subscription.deleted", "invoice.payment_failed"):
-        customer_id = data.get("customer")
-        user = db.query(User).filter(User.stripe_customer == customer_id).first()
-        if user:
-            user.plan = "free"
-            sub = db.query(Subscription).filter(Subscription.user_id == user.id).first()
-            if sub:
-                sub.status = "cancelled" if "deleted" in etype else "past_due"
-            db.commit()
+    if etype in ACTIVATE_EVENTS:
+        plan = meta.get("plan")
+        if not plan:
+            prod = obj.get("product") or {}
+            pid = prod.get("id") if isinstance(prod, dict) else prod
+            plan = _plan_for_product(pid) or "monthly"
+        _activate(db, user, plan, obj)
+    elif etype in DEACTIVATE_EVENTS:
+        _deactivate(db, user)
 
     return {"received": True}
 
 
-def _activate_plan(db: Session, user_id: str, plan: str, stripe_sub_id: str):
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        return
+def _activate(db: Session, user: User, plan: str, obj: dict):
     user.plan = plan
-    sub = db.query(Subscription).filter(Subscription.user_id == user_id).first()
-    if not sub:
-        sub = Subscription(user_id=user_id)
-        db.add(sub)
-    sub.tier          = plan
-    sub.status        = "active"
-    sub.stripe_sub_id = stripe_sub_id
-    db.commit()
-
-
-def _sync_subscription(db: Session, data: dict):
-    stripe_sub_id = data.get("id")
-    customer_id   = data.get("customer")
-    status        = data.get("status")   # active | past_due | cancelled | ...
-
-    user = db.query(User).filter(User.stripe_customer == customer_id).first()
-    if not user:
-        return
+    cust = obj.get("customer") or {}
+    cust_id = cust.get("id") if isinstance(cust, dict) else (cust or None)
+    if cust_id:
+        user.stripe_customer = cust_id          # reused column = Creem customer id
 
     sub = db.query(Subscription).filter(Subscription.user_id == user.id).first()
     if not sub:
         sub = Subscription(user_id=user.id)
         db.add(sub)
+    sub.tier          = plan
+    sub.status        = "active"
+    sub.stripe_sub_id = obj.get("id")           # reused column = Creem subscription id
+    sub.renews_at     = _parse_period_end(obj)
+    db.commit()
 
-    sub.stripe_sub_id = stripe_sub_id
-    sub.status        = status
 
-    renews = data.get("current_period_end")
-    if renews:
-        sub.renews_at = datetime.fromtimestamp(renews, tz=timezone.utc)
-
-    if status == "active":
-        items = data.get("items", {}).get("data", [])
-        for item in items:
-            price_id = item.get("price", {}).get("id", "")
-            if price_id == PRICE_IDS.get("team"):
-                user.plan = "team"; break
-            elif price_id == PRICE_IDS.get("pro"):
-                user.plan = "pro";  break
-    elif status in ("canceled", "unpaid", "past_due"):
-        user.plan = "free"
-
+def _deactivate(db: Session, user: User):
+    user.plan = "free"
+    sub = db.query(Subscription).filter(Subscription.user_id == user.id).first()
+    if sub:
+        sub.status = "cancelled"
     db.commit()
