@@ -159,6 +159,27 @@ def save_profile(body: ProfileIn, user: User = Depends(current_user), db: Sessio
     return {"ok": True, "onboarded": True, "profile": data}
 
 
+# ── change password ─────────────────────────────────────────────────────────
+class PasswordChangeIn(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@router.post("/password")
+def change_password(body: PasswordChangeIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Change the signed-in user's password. Requires the current password, and
+    the new one must clear the same policy as signup."""
+    if not verify_password(body.current_password, user.password_hash):
+        raise HTTPException(401, "Current password is incorrect.")
+    if body.new_password == body.current_password:
+        raise HTTPException(400, "New password must be different from the current one.")
+    _check_password(body.new_password)
+    user.password_hash = hash_password(body.new_password)
+    db.add(user)
+    db.commit()
+    return {"ok": True}
+
+
 # ── 2FA (TOTP) ─────────────────────────────────────────────────────────────
 
 class TwoFAVerifyIn(BaseModel):
