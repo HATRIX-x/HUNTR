@@ -23,7 +23,7 @@ def get_corpus(
     No host, no user identity, no target info.
     """
     agent, user = ctx
-    if user.plan not in ("pro", "team"):
+    if (user.plan or "free") == "free":   # any paid plan (founder|monthly|yearly|pro|team)
         from fastapi import HTTPException
         raise HTTPException(403, "Pro plan required for corpus sync")
 

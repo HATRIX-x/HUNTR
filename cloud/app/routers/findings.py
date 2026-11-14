@@ -7,6 +7,12 @@ from sqlalchemy import func
 
 from ..db import get_db, Finding, FunnelEvent, User
 from ..deps import current_user
+from .sync import scoped_id
+
+
+def _public_id(fid: str | None, user_id: str) -> str | None:
+    pre = f"{user_id}:"
+    return fid[len(pre):] if fid and fid.startswith(pre) else fid
 
 router = APIRouter(prefix="/v1", tags=["findings"])
 
@@ -39,7 +45,8 @@ def get_finding(
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ):
-    f = db.query(Finding).filter(Finding.id == finding_id, Finding.user_id == user.id).first()
+    f = db.query(Finding).filter(Finding.id.in_([scoped_id(user.id, finding_id), finding_id]),
+                                 Finding.user_id == user.id).first()
     if not f:
         from fastapi import HTTPException
         raise HTTPException(404, "Finding not found")
@@ -89,15 +96,15 @@ def funnel_events(
 ):
     q = db.query(FunnelEvent).filter(FunnelEvent.user_id == user.id)
     if program:    q = q.filter(FunnelEvent.program    == program)
-    if finding_id: q = q.filter(FunnelEvent.finding_id == finding_id)
+    if finding_id: q = q.filter(FunnelEvent.finding_id.in_([scoped_id(user.id, finding_id), finding_id]))
     events = q.order_by(FunnelEvent.ts.desc()).limit(limit).all()
-    return [{"id": e.id, "finding_id": e.finding_id, "stage": e.stage,
+    return [{"id": e.id, "finding_id": _public_id(e.finding_id, user.id), "stage": e.stage,
              "amount": e.amount, "program": e.program, "ts": str(e.ts)} for e in events]
 
 
 def _finding_dict(f: Finding) -> dict:
     return {
-        "id":           f.id,
+        "id":           _public_id(f.id, f.user_id),
         "program":      f.program,
         "cls":          f.cls,
         "endpoint":     f.endpoint,

@@ -40,6 +40,15 @@ class User(Base):
     # ── onboarding profile ──
     onboarded       = Column(Boolean, default=False)      # True once the welcome flow is done
     profile         = Column(Text, nullable=True)         # JSON: role, platforms, experience, referral, goal
+    # ── security state ──
+    token_version   = Column(Integer, default=0)          # bump to revoke every outstanding session
+    failed_logins   = Column(Integer, default=0)          # consecutive password/2FA failures
+    locked_until    = Column(DateTime, nullable=True)     # lockout after too many failures
+    totp_last_step  = Column(Integer, nullable=True)      # last accepted TOTP time-step (anti-replay)
+    # ── managed-service credits ──
+    credits               = Column(Integer, default=0)    # prepaid credit balance (1 credit = $1)
+    first_pack_bonus_used = Column(Boolean, default=False) # launch 2× granted on first pack
+    free_hunt_used        = Column(Boolean, default=False) # one-time free-hunt grant used
 
     agents   = relationship("Agent",   back_populates="user", cascade="all, delete")
     findings = relationship("Finding", back_populates="user", cascade="all, delete")
@@ -114,6 +123,20 @@ class Subscription(Base):
     renews_at      = Column(DateTime, nullable=True)
 
 
+class CreditTxn(Base):
+    """Append-only ledger of every credit change — purchases, bonuses, hunt
+    debits, grants, refunds. `ref` is an idempotency key (Creem order/cycle id
+    or hunt id) so a replayed webhook or retried hunt never double-counts."""
+    __tablename__ = "credit_txns"
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    user_id       = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    delta         = Column(Integer, nullable=False)          # +credit / -debit
+    balance_after = Column(Integer, nullable=False)
+    reason        = Column(String, default="")              # purchase:scout | plan:hunter | bonus:launch | hunt:standard | grant:free | refund
+    ref           = Column(String, nullable=True, index=True)  # idempotency key
+    created_at    = Column(DateTime, server_default=func.now())
+
+
 # ── helpers ─────────────────────────────────────────────────────────────
 
 def get_db():
@@ -134,6 +157,13 @@ def _migrate():
         ("backup_codes", "TEXT",                    "TEXT"),
         ("onboarded",    "BOOLEAN DEFAULT FALSE",   "INTEGER DEFAULT 0"),
         ("profile",      "TEXT",                    "TEXT"),
+        ("token_version",  "INTEGER DEFAULT 0",     "INTEGER DEFAULT 0"),
+        ("failed_logins",  "INTEGER DEFAULT 0",     "INTEGER DEFAULT 0"),
+        ("locked_until",   "TIMESTAMP",             "DATETIME"),
+        ("totp_last_step", "INTEGER",               "INTEGER"),
+        ("credits",               "INTEGER DEFAULT 0",     "INTEGER DEFAULT 0"),
+        ("first_pack_bonus_used", "BOOLEAN DEFAULT FALSE", "INTEGER DEFAULT 0"),
+        ("free_hunt_used",        "BOOLEAN DEFAULT FALSE", "INTEGER DEFAULT 0"),
     ]
     dialect = engine.dialect.name
     try:

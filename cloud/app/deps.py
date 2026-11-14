@@ -15,18 +15,22 @@ def _bearer(authorization: str | None = Header(default=None)) -> str:
 
 
 def current_user(token: str = Depends(_bearer), db: Session = Depends(get_db)) -> User:
-    user_id = decode_session_token(token)
-    if not user_id:
+    decoded = decode_session_token(token)
+    if not decoded:
         raise HTTPException(401, "Invalid or expired session token")
+    user_id, tv = decoded
     user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(401, "User not found")
+    # token_version mismatch = session revoked (password change, 2FA change, sign-out-everywhere)
+    if not user or int(user.token_version or 0) != tv:
+        raise HTTPException(401, "Invalid or expired session token")
     return user
 
 
 def current_agent(token: str = Depends(_bearer), db: Session = Depends(get_db)) -> tuple[Agent, User]:
     """Resolve an agent from its raw token. Returns (agent, user)."""
     from .auth import hash_agent_token
+    if len(token) > 256:
+        raise HTTPException(401, "Invalid agent token")
     token_hash = hash_agent_token(token)
     agent = db.query(Agent).filter(Agent.token_hash == token_hash).first()
     if not agent:
@@ -34,10 +38,15 @@ def current_agent(token: str = Depends(_bearer), db: Session = Depends(get_db)) 
     user = db.query(User).filter(User.id == agent.user_id).first()
     if not user:
         raise HTTPException(401, "Agent's user not found")
-    # update last_seen
-    from datetime import datetime, timezone
-    agent.last_seen = datetime.now(timezone.utc)
-    db.commit()
+    # update last_seen (throttled — not a DB write on every sync call)
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    ls = agent.last_seen
+    if ls is not None and ls.tzinfo is None:
+        ls = ls.replace(tzinfo=timezone.utc)
+    if ls is None or now - ls > timedelta(minutes=1):
+        agent.last_seen = now
+        db.commit()
     return agent, user
 
 

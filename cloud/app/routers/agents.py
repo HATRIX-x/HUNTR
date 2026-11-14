@@ -4,7 +4,7 @@ Agent registration and token management.
 import ulid
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ..db import get_db, Agent, User
@@ -14,10 +14,13 @@ from ..deps import current_user, pro_required
 router = APIRouter(prefix="/v1/agents", tags=["agents"])
 
 
+MAX_AGENTS_PER_USER = 20
+
+
 class RegisterIn(BaseModel):
-    name: str = "default"
-    os:   str | None = None
-    version: str | None = None
+    name: str = Field("default", min_length=1, max_length=64, pattern=r"^[A-Za-z0-9 ._\-]+$")
+    os:   str | None = Field(None, max_length=64)
+    version: str | None = Field(None, max_length=32)
 
 
 class RegisterOut(BaseModel):
@@ -28,6 +31,8 @@ class RegisterOut(BaseModel):
 @router.post("/register", response_model=RegisterOut)
 def register(body: RegisterIn, user: User = Depends(pro_required), db: Session = Depends(get_db)):
     # pro_required → free accounts get 403; an operator token needs a paid plan.
+    if db.query(Agent).filter(Agent.user_id == user.id).count() >= MAX_AGENTS_PER_USER:
+        raise HTTPException(409, f"Agent limit reached ({MAX_AGENTS_PER_USER}). Revoke an old one first.")
     raw_token  = generate_agent_token()
     token_hash = hash_agent_token(raw_token)
     agent = Agent(

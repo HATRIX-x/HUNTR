@@ -4,7 +4,8 @@ Auth routes — signup, login, me.
 import json
 import ulid
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..db import get_db, User
@@ -13,6 +14,7 @@ from ..auth import (
     create_2fa_token, decode_2fa_token,
     new_totp_secret, totp_provisioning_uri, verify_totp,
     gen_backup_codes, hash_backup_codes, consume_backup_code,
+    is_locked, record_failure, record_success,
 )
 from ..deps import current_user
 
@@ -47,12 +49,24 @@ def _check_password(pw: str):
 
 class SignupIn(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(max_length=200)
 
 
 class LoginIn(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(max_length=200)
+
+
+# Constant-time-ish login: run bcrypt even when the email doesn't exist so the
+# response time doesn't reveal which emails have accounts.
+_DUMMY_HASH = hash_password("timing-equaliser-not-a-real-password")
+
+
+def _norm_email(e: str) -> str:
+    return (e or "").strip().lower()
+
+
+_LOCKED_MSG = "Too many failed attempts. Try again in a few minutes."
 
 
 class AuthOut(BaseModel):
@@ -65,28 +79,24 @@ class AuthOut(BaseModel):
 @router.post("/signup", response_model=AuthOut)
 def signup(body: SignupIn, db: Session = Depends(get_db)):
     _check_password(body.password)
-    if db.query(User).filter(User.email == body.email).first():
+    email = _norm_email(body.email)
+    if db.query(User).filter(func.lower(User.email) == email).first():
         raise HTTPException(409, "Email already registered")
     user = User(
         id            = ulid.new().str,
-        email         = body.email,
+        email         = email,
         password_hash = hash_password(body.password),
         plan          = "free",
     )
     db.add(user)
     db.commit()
     db.refresh(user)
-    return AuthOut(
-        session_token = create_session_token(user.id),
-        user_id       = user.id,
-        email         = user.email,
-        plan          = user.plan,
-    )
+    return _auth_out(user)
 
 
 def _auth_out(user: User) -> AuthOut:
     return AuthOut(
-        session_token = create_session_token(user.id),
+        session_token = create_session_token(user.id, user.token_version or 0),
         user_id       = user.id,
         email         = user.email,
         plan          = user.plan,
@@ -95,9 +105,18 @@ def _auth_out(user: User) -> AuthOut:
 
 @router.post("/login")
 def login(body: LoginIn, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == body.email).first()
-    if not user or not verify_password(body.password, user.password_hash):
+    user = db.query(User).filter(func.lower(User.email) == _norm_email(body.email)).first()
+    if not user:
+        verify_password(body.password, _DUMMY_HASH)
         raise HTTPException(401, "Invalid email or password")
+    if is_locked(user):
+        raise HTTPException(429, _LOCKED_MSG)
+    if not verify_password(body.password, user.password_hash):
+        record_failure(user)
+        db.commit()
+        raise HTTPException(401, "Invalid email or password")
+    record_success(user)
+    db.commit()
     # If 2FA is enabled, don't hand out a session yet — issue a short-lived
     # challenge token the client exchanges via /2fa/verify.
     if getattr(user, "totp_enabled", False):
@@ -116,6 +135,7 @@ def me(user: User = Depends(current_user)):
         "user_id": user.id,
         "email": user.email,
         "plan": user.plan,
+        "credits": int(getattr(user, "credits", 0) or 0),
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "twofa_enabled": bool(getattr(user, "totp_enabled", False)),
         "onboarded": bool(getattr(user, "onboarded", False)),
@@ -169,13 +189,28 @@ class PasswordChangeIn(BaseModel):
 def change_password(body: PasswordChangeIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """Change the signed-in user's password. Requires the current password, and
     the new one must clear the same policy as signup."""
+    if is_locked(user):
+        raise HTTPException(429, _LOCKED_MSG)
     if not verify_password(body.current_password, user.password_hash):
+        record_failure(user)
+        db.commit()
         raise HTTPException(401, "Current password is incorrect.")
     if body.new_password == body.current_password:
         raise HTTPException(400, "New password must be different from the current one.")
     _check_password(body.new_password)
     user.password_hash = hash_password(body.new_password)
+    # revoke every other session; hand this client a fresh token
+    user.token_version = int(user.token_version or 0) + 1
+    record_success(user)
     db.add(user)
+    db.commit()
+    return {"ok": True, "session_token": create_session_token(user.id, user.token_version)}
+
+
+@router.post("/logout-all")
+def logout_all(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Revoke every outstanding session token for this account (incl. this one)."""
+    user.token_version = int(user.token_version or 0) + 1
     db.commit()
     return {"ok": True}
 
@@ -183,12 +218,35 @@ def change_password(body: PasswordChangeIn, user: User = Depends(current_user), 
 # ── 2FA (TOTP) ─────────────────────────────────────────────────────────────
 
 class TwoFAVerifyIn(BaseModel):
-    twofa_token: str
-    code: str
+    twofa_token: str = Field(max_length=2048)
+    code: str = Field(max_length=32)
 
 
 class CodeIn(BaseModel):
-    code: str
+    code: str = Field(max_length=32)
+
+
+def _check_second_factor(user: User, code: str, db: Session, allow_backup: bool = True) -> bool:
+    """TOTP (replay-protected) or single-use backup code, with lockout accounting.
+    Commits. Raises 429 when locked."""
+    if is_locked(user):
+        raise HTTPException(429, _LOCKED_MSG)
+    step = verify_totp(user.totp_secret, code, user.totp_last_step)
+    if step is not None:
+        user.totp_last_step = step
+        record_success(user)
+        db.commit()
+        return True
+    if allow_backup:
+        ok, remaining = consume_backup_code(code, user.backup_codes)
+        if ok:
+            user.backup_codes = remaining
+            record_success(user)
+            db.commit()
+            return True
+    record_failure(user)
+    db.commit()
+    return False
 
 
 @router.post("/2fa/verify")
@@ -200,12 +258,7 @@ def twofa_verify(body: TwoFAVerifyIn, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == uid).first()
     if not user or not user.totp_enabled:
         raise HTTPException(401, "Invalid request.")
-    if verify_totp(user.totp_secret, body.code):
-        return _auth_out(user)
-    ok, remaining = consume_backup_code(body.code, user.backup_codes)
-    if ok:
-        user.backup_codes = remaining
-        db.commit()
+    if _check_second_factor(user, body.code, db):
         return _auth_out(user)
     raise HTTPException(401, "Invalid code. Try your authenticator app or a backup code.")
 
@@ -218,6 +271,7 @@ def twofa_setup(user: User = Depends(current_user), db: Session = Depends(get_db
         raise HTTPException(409, "Two-factor authentication is already enabled.")
     secret = new_totp_secret()
     user.totp_secret = secret
+    user.totp_last_step = None
     db.commit()
     return {"secret": secret, "otpauth_uri": totp_provisioning_uri(secret, user.email)}
 
@@ -229,13 +283,15 @@ def twofa_enable(body: CodeIn, user: User = Depends(current_user), db: Session =
         raise HTTPException(409, "Two-factor authentication is already enabled.")
     if not user.totp_secret:
         raise HTTPException(400, "Start setup first.")
-    if not verify_totp(user.totp_secret, body.code):
+    if not _check_second_factor(user, body.code, db, allow_backup=False):
         raise HTTPException(401, "That code didn't match. Check your authenticator app and try again.")
     codes = gen_backup_codes()
     user.backup_codes = hash_backup_codes(codes)
     user.totp_enabled = True
+    user.token_version = int(user.token_version or 0) + 1   # kill sessions minted before 2FA
     db.commit()
-    return {"enabled": True, "backup_codes": codes}
+    return {"enabled": True, "backup_codes": codes,
+            "session_token": create_session_token(user.id, user.token_version)}
 
 
 @router.post("/2fa/disable")
@@ -243,13 +299,12 @@ def twofa_disable(body: CodeIn, user: User = Depends(current_user), db: Session 
     """Turn 2FA off after verifying a current code (or a backup code)."""
     if not user.totp_enabled:
         return {"enabled": False}
-    ok = verify_totp(user.totp_secret, body.code)
-    if not ok:
-        ok, remaining = consume_backup_code(body.code, user.backup_codes)
-    if not ok:
+    if not _check_second_factor(user, body.code, db):
         raise HTTPException(401, "Enter a valid code to turn off two-factor authentication.")
     user.totp_enabled = False
     user.totp_secret = None
     user.backup_codes = None
+    user.totp_last_step = None
+    user.token_version = int(user.token_version or 0) + 1
     db.commit()
-    return {"enabled": False}
+    return {"enabled": False, "session_token": create_session_token(user.id, user.token_version)}

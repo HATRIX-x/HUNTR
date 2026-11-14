@@ -253,14 +253,16 @@ async function showAccount(plan){{
   const r = await fetch(API+'/v1/agents/', {{headers:{{'Authorization':'Bearer '+_session}}}});
   const d = await r.json();
   const list = document.getElementById('agents-list');
-  if(!d.agents||!d.agents.length){{ list.innerHTML='<div style="font-size:13px;color:var(--text3);padding:12px 0">No agents yet.</div>'; return; }}
-  list.innerHTML = d.agents.map(a=>`
+  const agents = Array.isArray(d) ? d : (d.agents||[]);
+  const esc = s => String(s==null?'':s).replace(/[&<>"']/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}})[c]);
+  if(!agents.length){{ list.innerHTML='<div style="font-size:13px;color:var(--text3);padding:12px 0">No agents yet.</div>'; return; }}
+  list.innerHTML = agents.map(a=>`
     <div style="background:rgba(0,0,0,0.3);border:1px solid var(--border);border-radius:9px;padding:12px 14px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between">
       <div>
-        <div style="font-size:13px;font-weight:600">${{a.name}}</div>
-        <div style="font-size:11px;font-family:var(--mono);color:var(--text3)">${{a.os||'unknown'}} · last seen ${{a.last_seen?new Date(a.last_seen).toLocaleDateString():'never'}}</div>
+        <div style="font-size:13px;font-weight:600">${{esc(a.name)}}</div>
+        <div style="font-size:11px;font-family:var(--mono);color:var(--text3)">${{esc(a.os||'unknown')}} · last seen ${{a.last_seen?new Date(a.last_seen).toLocaleDateString():'never'}}</div>
       </div>
-      <button onclick="revokeAgent('${{a.id}}')" style="background:none;border:1px solid rgba(251,113,133,0.2);border-radius:6px;padding:4px 10px;font-size:11px;color:var(--red);cursor:pointer">Revoke</button>
+      <button onclick="revokeAgent('${{esc(a.id).replace(/[^A-Za-z0-9]/g,'')}}')" style="background:none;border:1px solid rgba(251,113,133,0.2);border-radius:6px;padding:4px 10px;font-size:11px;color:var(--red);cursor:pointer">Revoke</button>
     </div>`).join('');
 }}
 
@@ -382,6 +384,8 @@ echo "  ✓ Dependencies installed"
 
 # ── write config ──────────────────────────────────────────────────────────
 mkdir -p "$CONFIG_DIR/logs"
+chmod 700 "$CONFIG_DIR"
+umask 077   # config.json holds the agent token — owner-only
 cat > "$CONFIG_DIR/config.json" <<JSON
 {{
   "agent_token": "$HUNTR_TOKEN",
