@@ -97,7 +97,7 @@ export function CapabilityGraph3D({ nodes, edges }: { nodes: GraphNode[]; edges:
       for (const s of stars) {
         const a = (0.08 + 0.08 * Math.sin(el / 900 * s.sp + s.ph)) * s.depth;
         ctx.fillStyle = `rgba(188,180,220,${a})`;
-        ctx.beginPath(); ctx.arc(s.x * W + px * s.depth, s.y * H + py * s.depth, s.r, 0, 7); ctx.fill();
+        ctx.beginPath(); ctx.arc(s.x * W + px * s.depth, s.y * H + py * s.depth, Math.max(0, s.r), 0, 7); ctx.fill();
       }
 
       const PR = pts.map(proj);

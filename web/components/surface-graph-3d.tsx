@@ -99,7 +99,7 @@ export function SurfaceGraph3D() {
         const a = (0.1 + 0.09 * Math.sin(el / 900 * s.sp + s.ph)) * s.depth;
         ctx.fillStyle = `rgba(188,180,220,${a})`;
         ctx.beginPath();
-        ctx.arc(s.x * W + px * s.depth, s.y * H + py * s.depth, s.r, 0, 7);
+        ctx.arc(s.x * W + px * s.depth, s.y * H + py * s.depth, Math.max(0, s.r), 0, 7);
         ctx.fill();
       }
 
@@ -144,7 +144,7 @@ export function SurfaceGraph3D() {
       // ── scan wavefront ring ──
       if (!reduce) {
         ctx.beginPath(); ctx.strokeStyle = rgba(C.root, 0.12 * (1 - scanT));
-        ctx.lineWidth = 1; ctx.arc(W / 2, H / 2, scanT * RAD * 1.5, 0, 7); ctx.stroke();
+        ctx.lineWidth = 1; ctx.arc(W / 2, H / 2, Math.max(0, scanT * RAD * 1.5), 0, 7); ctx.stroke();
       }
 
       // ── nodes, back to front ──
@@ -167,7 +167,7 @@ export function SurfaceGraph3D() {
 
         if (n.kind === "root") {
           ctx.strokeStyle = rgba(C.root, 0.5 * alpha); ctx.lineWidth = 1.2;
-          ctx.beginPath(); ctx.arc(p.X, p.Y, r + 7 * p.scale, 0, 7); ctx.stroke();
+          ctx.beginPath(); ctx.arc(p.X, p.Y, Math.max(0, r + 7 * p.scale), 0, 7); ctx.stroke();
         }
         // labels: only hovered+neighbours, or crit/high facing front
         const showLabel = n.label && (nbr.has(i) || (hover < 0 && (n.kind === "crit" || n.kind === "high" || n.kind === "root") && p.scale > 0.92));
