@@ -3,7 +3,8 @@ import Link from "next/link";
 import { Reveal } from "@/components/reveal";
 import { MailLink } from "@/components/legal";
 import { HudStrip } from "@/components/hud-strip";
-import { PriceCounter } from "@/components/price-counter";
+import { PricingPlans } from "@/components/pricing-plans";
+import { HuntEstimator } from "@/components/hunt-estimator";
 
 export const metadata: Metadata = {
   title: "Pricing",
@@ -19,46 +20,6 @@ export const metadata: Metadata = {
   },
   robots: { index: true, follow: true },
 };
-
-// One-time credit packs — the primary way to buy. 1 credit = $1 of hunting,
-// with a volume bonus on the bigger packs.
-const packs = [
-  {
-    name: "Scout",
-    amount: 25,
-    credits: "25 credits",
-    note: "Get eyes on the target — a couple of hunts",
-    highlight: false,
-  },
-  {
-    name: "Stalk",
-    amount: 100,
-    credits: "115 credits",
-    note: "+15% bonus · most popular",
-    highlight: true,
-  },
-  {
-    name: "Takedown",
-    amount: 300,
-    credits: "360 credits",
-    note: "+20% bonus · best rate",
-    highlight: false,
-  },
-];
-
-// Optional monthly plans for regulars — a better standing rate, credits roll over.
-const plans = [
-  { name: "Hunter", amount: 49, credits: "55 credits / mo", note: "For regulars — better rate, credits roll over" },
-  { name: "Apex", amount: 149, credits: "180 credits / mo", note: "Always-on — the best standing rate" },
-];
-
-// What a hunt typically costs — HUNTR sizes the surface during recon and shows
-// you the estimate before it spends anything.
-const sizes = [
-  ["Light", "One host, small surface — up to ~75 endpoints", "~12 credits"],
-  ["Standard", "A full program — up to ~300 endpoints", "~30 credits"],
-  ["Deep", "Large multi-host surface, chains + zero-day", "~75 credits"],
-];
 
 const faqs = [
   [
@@ -126,156 +87,68 @@ export default function Pricing() {
         </div>
       </section>
 
-      {/* CREDIT PACKS */}
+      {/* BUY — packs and monthly plans behind one switch */}
       <section className="bg-surface">
         <div className="site-wrap py-20 sm:py-24">
-          <Reveal type="mask">
-            <span className="label text-muted">Credits</span>
-            <h2 className="display mt-4 text-[clamp(2rem,5vw,4rem)]">
-              Load up and hunt.
-            </h2>
-            <p className="mt-5 max-w-[54ch] text-lg text-fg/70">
-              One credit is one dollar of hunting. Buy a pack whenever you need it — the bigger the pack, the more
-              bonus credits you get. No subscription required.
-            </p>
-          </Reveal>
+          <PricingPlans />
 
-          <div className="mt-14 grid items-stretch gap-5 lg:grid-cols-3" data-reveal-group>
-            {packs.map((p) => (
-              <div
-                key={p.name}
-                data-lantern
-                className={`pricing-card lantern relative flex flex-col rounded-xl border p-8 sm:p-10 ${
-                  p.highlight ? "pricing-featured border-brand/40 bg-surface2 shadow-glow-brand" : "border-line bg-bg/40"
-                }`}
-              >
-                {p.highlight && (
-                  <span className="verified absolute right-6 top-6">Best value</span>
-                )}
-                <h3 className="display text-2xl">{p.name}</h3>
-                <div className="mt-6 flex items-end gap-2">
-                  <PriceCounter value={p.amount} className="display text-5xl text-fg" />
-                </div>
-                <p className="mt-3 text-sm font-semibold text-green">{p.credits}</p>
-                <p className="mt-1 text-sm text-muted">{p.note}</p>
-                <div className="flex-1" />
-                <Link
-                  href="/signup/"
-                  className={`mt-10 ${p.highlight ? "btn-grad" : "btn-outline"} w-full text-center`}
-                >
-                  Buy credits
-                </Link>
-              </div>
-            ))}
+          <div className="mt-10 grid gap-px overflow-hidden rounded-[14px] border border-line bg-line md:grid-cols-2">
+            <div className="bg-surface p-7 sm:p-8">
+              <h3 className="font-semibold text-fg">We run it for you.</h3>
+              <p className="mt-2 leading-relaxed text-fg/70">
+                No Anthropic key, no install, nothing to configure. HUNTR runs every hunt on our own
+                infrastructure — you just load credits and point it at a target you&apos;re authorized to test.
+              </p>
+            </div>
+            <div className="bg-surface p-7 sm:p-8">
+              <h3 className="font-semibold text-fg">No surprise bills.</h3>
+              <p className="mt-2 leading-relaxed text-fg/70">
+                A hunt can only ever spend the credits in your balance. The moment it runs out, the hunt stops
+                and hands you everything it found — you decide whether to top up and keep going.
+              </p>
+            </div>
           </div>
-
-          {/* Managed callout — replaces the old BYO-key callout */}
-          <Reveal className="panel mt-12 max-w-[72ch] overflow-hidden p-6 pl-8 text-fg/80">
-            <span className="absolute inset-y-0 left-0 w-[3px] bg-[image:var(--grad-brand-v)]" aria-hidden />
-            <span className="font-semibold text-fg">We run it for you.</span> No Anthropic key, no install, nothing
-            to configure. HUNTR runs every hunt on our own infrastructure — you just load credits and point it at a
-            target you&apos;re authorized to test. Each hunt meters its own usage and stops at your balance, so you
-            can never be charged more than you&apos;ve loaded.
-          </Reveal>
-          <Reveal className="mt-6 label text-faint">
-            Prices in USD, exclusive of any applicable taxes. Billing by Creem, our merchant of record · Authorized targets only.
-          </Reveal>
+          <p className="mt-6 text-sm text-faint">
+            Prices in USD, exclusive of any applicable taxes. Billing by Creem, our merchant of record. Authorized targets only.
+          </p>
         </div>
       </section>
 
-      {/* HOW CREDITS WORK */}
+      {/* HOW CREDITS WORK — estimator */}
       <section id="how" className="border-t border-line">
         <div className="site-wrap py-20 sm:py-24">
           <Reveal type="mask">
-            <span className="label text-muted">How credits work</span>
-            <h2 className="display mt-4 max-w-[22ch] text-[clamp(2rem,5vw,4rem)]">
-              Priced by the hunt.
-            </h2>
-            <p className="mt-5 max-w-[56ch] text-lg text-fg/70">
+            <h2 className="display max-w-[22ch] text-[clamp(2rem,5vw,4rem)]">Priced by the hunt.</h2>
+            <p className="mt-5 max-w-[58ch] text-lg text-fg/70">
               HUNTR sizes the target during recon and shows you a credit estimate before it spends a thing. Then it
               meters usage live as it hunts — you only pay for the work that actually runs.
             </p>
           </Reveal>
-
-          <div className="mt-14 grid gap-px overflow-hidden rounded-xl border border-line bg-line sm:grid-cols-3" data-reveal-group>
-            {sizes.map(([name, desc, cost], i) => (
-              <div key={name} className="lantern bg-surface p-8 sm:p-10" data-lantern>
-                <div className="flex items-end gap-1.5" aria-hidden>
-                  {[0, 1, 2].map((b) => (
-                    <span key={b} className={`w-2 rounded-sm ${b <= i ? "bg-brand" : "bg-line-2"}`} style={{ height: 10 + b * 8 }} />
-                  ))}
-                </div>
-                <h3 className="display mt-6 text-2xl">{name}</h3>
-                <p className="mt-3 leading-relaxed text-muted">{desc}</p>
-                <p className="mt-5 font-mono text-sm font-semibold text-green">{cost}</p>
-              </div>
-            ))}
-          </div>
-
-          <Reveal className="panel mt-12 max-w-[64ch] overflow-hidden p-6 pl-8 text-fg/75">
-            <span className="absolute inset-y-0 left-0 w-[3px] bg-[image:var(--grad-brand-v)]" aria-hidden />
-            <span className="font-semibold text-fg">No surprise bills.</span> A hunt can only ever spend the credits
-            in your balance. The moment it runs out, the hunt stops and hands you everything it found — you decide
-            whether to top up and keep going.
-          </Reveal>
-        </div>
-      </section>
-
-      {/* MONTHLY PLANS */}
-      <section className="bg-surface">
-        <div className="site-wrap py-20 sm:py-24">
-          <Reveal type="mask">
-            <span className="label text-muted">Subscribe &amp; save</span>
-            <h2 className="display mt-4 text-[clamp(2rem,5vw,4rem)]">
-              Hunting a lot? <span className="text-green">Lock a better rate.</span>
-            </h2>
-            <p className="mt-5 max-w-[54ch] text-lg text-fg/70">
-              Optional monthly plans for regulars — a lower price per credit and unused credits roll over while
-              you&apos;re subscribed. Cancel anytime; pure pay-as-you-go stays available too.
-            </p>
-          </Reveal>
-
-          <div className="mt-14 grid gap-5 sm:grid-cols-2 lg:max-w-3xl" data-reveal-group>
-            {plans.map((p) => (
-              <div key={p.name} data-lantern className="pricing-card lantern flex flex-col rounded-xl border border-line bg-bg/40 p-8 sm:p-10">
-                <h3 className="display text-2xl">{p.name}</h3>
-                <div className="mt-6 flex items-end gap-2">
-                  <PriceCounter value={p.amount} className="display text-5xl text-fg" />
-                  <span className="mb-1 text-muted">/ month</span>
-                </div>
-                <p className="mt-3 text-sm font-semibold text-green">{p.credits}</p>
-                <p className="mt-1 text-sm text-muted">{p.note}</p>
-                <Link href="/signup/" className="btn-outline mt-10 w-full text-center">
-                  Choose {p.name}
-                </Link>
-              </div>
-            ))}
+          <div className="mt-12">
+            <HuntEstimator />
           </div>
         </div>
       </section>
 
       {/* FAQ */}
-      <section className="border-t border-line">
-        <div className="site-wrap py-20 sm:py-24">
-          <Reveal type="mask">
-            <span className="label text-muted">Questions</span>
-            <h2 className="display mt-4 text-[clamp(2rem,5vw,4rem)]">
-              Good to know.
-            </h2>
-          </Reveal>
-          <div className="mt-12 grid gap-px overflow-hidden rounded-xl border border-line bg-line sm:grid-cols-2" data-reveal-group>
-            {faqs.map(([q, a]) => (
-              <div key={q} className="bg-surface p-8 sm:p-10">
-                <h3 className="display text-xl">{q}</h3>
-                <p className="mt-3 leading-relaxed text-muted">{a}</p>
-              </div>
+      <section className="border-t border-line bg-surface">
+        <div className="site-wrap grid gap-10 py-20 sm:py-24 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:gap-16">
+          <div className="lg:sticky lg:top-28 lg:self-start">
+            <h2 className="display text-[clamp(2rem,5vw,4rem)]">Good to know.</h2>
+            <p className="mt-5 text-lg text-fg/70">Questions? <MailLink /></p>
+            <div className="mt-8 flex flex-wrap gap-3">
+              <Link href="/signup/" className="btn-brand">Start free</Link>
+              <Link href="/terms/" className="btn-outline">Terms of Service</Link>
+            </div>
+          </div>
+          <div className="border-t border-line">
+            {faqs.map(([q, a], i) => (
+              <details key={q} className="faq-item" open={i === 0}>
+                <summary><h3 className="text-lg font-semibold text-fg">{q}</h3></summary>
+                <p className="max-w-[62ch] pb-6 leading-relaxed text-muted">{a}</p>
+              </details>
             ))}
           </div>
-          <Reveal className="mt-12 flex flex-wrap items-center gap-4">
-            <Link href="/signup/" className="btn-brand">Start free</Link>
-            <Link href="/terms/" className="btn-outline">Terms of Service</Link>
-            <span className="label text-muted">Questions? <MailLink /></span>
-          </Reveal>
         </div>
       </section>
     </main>
