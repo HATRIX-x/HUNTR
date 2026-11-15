@@ -66,12 +66,6 @@ CREDITS_FOR = {
     "scout": 30, "stalk": 115, "takedown": 360,   # one-time packs
     "hunter": 55, "apex": 180,                     # monthly plan allotment
 }
-# Launch promo: the first N buyers get double credits on their first pack, up
-# to LAUNCH_BONUS_MAX bonus credits (so a first Takedown can't be had at half price).
-LAUNCH_BONUS_CAP = int(os.environ.get("CREEM_LAUNCH_BONUS_CAP", "100"))
-LAUNCH_BONUS_MAX = int(os.environ.get("CREEM_LAUNCH_BONUS_MAX", "100"))
-
-
 def _product_id_for(plan: str) -> str:
     """Resolve a plan/pack/legacy slug to its Creem product id."""
     return (PACK_PRODUCT_IDS.get(plan) or PLAN_PRODUCT_IDS.get(plan)
@@ -408,17 +402,8 @@ def _add_credits(db: Session, user: User, amount: int, reason: str, ref: str) ->
 
 
 def _credit_pack(db: Session, user: User, key: str, obj: dict):
-    """One-time pack purchase → grant credits, plus the launch 2× on a user's
-    first pack (capped at LAUNCH_BONUS_MAX) while the global promo cap still has room."""
-    base = CREDITS_FOR.get(key, 0)
-    ref = _order_ref(obj)
-    _add_credits(db, user, base, f"purchase:{key}", ref)
-    if not user.first_pack_bonus_used:
-        granted = db.query(User).filter(User.first_pack_bonus_used.is_(True)).count()
-        if granted < LAUNCH_BONUS_CAP:
-            user.first_pack_bonus_used = True
-            _add_credits(db, user, min(base, LAUNCH_BONUS_MAX), "bonus:launch", ref)
-        db.commit()
+    """One-time pack purchase → grant the pack's credits. No promotional bonus."""
+    _add_credits(db, user, CREDITS_FOR.get(key, 0), f"purchase:{key}", _order_ref(obj))
 
 
 def _credit_plan(db: Session, user: User, key: str, obj: dict):
