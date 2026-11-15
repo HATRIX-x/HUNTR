@@ -5,6 +5,7 @@ import { MailLink } from "@/components/legal";
 import { HudStrip } from "@/components/hud-strip";
 import { PricingPlans } from "@/components/pricing-plans";
 import { HuntEstimator } from "@/components/hunt-estimator";
+import { StartLink } from "@/components/start-link";
 
 export const metadata: Metadata = {
   title: "Pricing",
@@ -70,7 +71,7 @@ export default function Pricing() {
             credits you&apos;ve loaded, so there are no surprise bills. Ever.
           </Reveal>
           <Reveal delay={240} className="mx-auto mt-10 flex flex-wrap justify-center gap-4">
-            <Link href="/signup/" className="btn-grad" data-magnetic>Get started</Link>
+            <StartLink className="btn-grad" />
             <a href="#how" className="btn-outline">How credits work</a>
           </Reveal>
           <Reveal delay={320}>
@@ -88,7 +89,7 @@ export default function Pricing() {
       </section>
 
       {/* BUY — packs and monthly plans behind one switch */}
-      <section className="bg-surface">
+      <section id="buy" className="scroll-mt-20 bg-surface">
         <div className="site-wrap py-20 sm:py-24">
           <PricingPlans />
 
@@ -137,7 +138,7 @@ export default function Pricing() {
             <h2 className="display text-[clamp(2rem,5vw,4rem)]">Good to know.</h2>
             <p className="mt-5 text-lg text-fg/70">Questions? <MailLink /></p>
             <div className="mt-8 flex flex-wrap gap-3">
-              <Link href="/signup/" className="btn-brand">Get started</Link>
+              <StartLink className="btn-brand" />
               <Link href="/terms/" className="btn-outline">Terms of Service</Link>
             </div>
           </div>

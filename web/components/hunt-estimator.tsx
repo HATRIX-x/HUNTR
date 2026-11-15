@@ -1,8 +1,8 @@
 "use client";
 
-import Link from "next/link";
 import { useState } from "react";
 import { HUNT_SIZES, PACKS, PLANS } from "@/components/pricing-plans";
+import { CheckoutButton } from "@/components/checkout-button";
 
 // Works out what a month of hunting costs from the published hunt sizes, and
 // which pack or plan covers it. Pure arithmetic on the page's own numbers.
@@ -108,7 +108,16 @@ export function HuntEstimator() {
         </div>
 
         <div className="flex-1" />
-        <Link href="/signup/" className="btn-grad mt-7 w-full text-center">Get started</Link>
+        <div className="mt-7">
+          <CheckoutButton plan={packFit.name.toLowerCase()} className="btn-grad w-full text-center">
+            Buy {packFit.name} · ${packFit.amount}
+          </CheckoutButton>
+        </div>
+        {n > 1 && (
+          <p className="mt-3 text-sm text-fg/70">
+            Checkout is one pack at a time, so buy {packFit.name} {n} times to cover this.
+          </p>
+        )}
         <p className="mt-4 text-sm leading-relaxed text-muted">
           A typical figure, not a quote. HUNTR shows the real estimate for your target before it spends anything.
         </p>

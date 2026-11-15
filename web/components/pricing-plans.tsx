@@ -1,8 +1,8 @@
 "use client";
 
-import Link from "next/link";
 import { useState } from "react";
 import { PriceCounter } from "@/components/price-counter";
+import { CheckoutButton } from "@/components/checkout-button";
 
 // Typical hunt sizes, in credits — the same figures the estimator and FAQ use.
 export const HUNT_SIZES = [
@@ -77,9 +77,11 @@ function Card({ o, monthly, featured, max }: { o: Offer; monthly: boolean; featu
       </dl>
 
       <div className="flex-1" />
-      <Link href="/signup/" className={`mt-8 ${featured ? "btn-grad" : "btn-outline"} w-full text-center`}>
-        {monthly ? `Choose ${o.name}` : "Buy credits"}
-      </Link>
+      <div className="mt-8">
+        <CheckoutButton plan={o.name.toLowerCase()} className={`${featured ? "btn-grad" : "btn-outline"} w-full text-center`}>
+          {monthly ? `Choose ${o.name}` : "Buy credits"}
+        </CheckoutButton>
+      </div>
     </div>
   );
 }
