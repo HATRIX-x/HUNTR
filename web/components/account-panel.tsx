@@ -21,7 +21,7 @@ const PLAN_LABELS: Record<string, string> = {
 
 // Credit packs offered in-account (slug must match the backend / Creem product).
 const CREDIT_PACKS = [
-  { slug: "scout", name: "Scout", price: "$25", credits: "25 credits" },
+  { slug: "scout", name: "Scout", price: "$30", credits: "30 credits" },
   { slug: "stalk", name: "Stalk", price: "$100", credits: "115 credits" },
   { slug: "takedown", name: "Takedown", price: "$300", credits: "360 credits" },
 ];
@@ -229,7 +229,7 @@ export function AccountPanel() {
           ))}
         </div>
         <Link href="/pricing/" className="relative mt-5 inline-block label ulink text-muted hover:text-fg">
-          See all packs &amp; monthly plans
+          See all packs
         </Link>
       </div>
 

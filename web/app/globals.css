@@ -564,24 +564,6 @@ a.panel:hover, button.panel:hover, .panel.is-hoverable:hover { border-color: var
 .display, h1, h2 { text-wrap-style: balance; }
 
 /* ── pricing: pay-mode switch, credit meter, estimator ─────────────── */
-.seg {
-  position: relative; display: inline-grid; grid-template-columns: 1fr 1fr; padding: 4px;
-  border: 1px solid var(--line-2); border-radius: 999px; background: rgb(var(--bg-rgb) / 0.6);
-}
-.seg button {
-  position: relative; z-index: 1; padding: 10px 22px; border-radius: 999px; white-space: nowrap;
-  font-size: 14px; font-weight: 600; color: var(--muted); transition: color var(--dur-3) var(--ease-out);
-}
-.seg button:hover { color: var(--fg); }
-.seg button[aria-selected="true"] { color: var(--fg); }
-.seg-thumb {
-  position: absolute; top: 4px; bottom: 4px; left: 4px; width: calc(50% - 4px); border-radius: 999px;
-  background: var(--brand-a20); border: 1px solid var(--brand-a40);
-  box-shadow: 0 0 22px -8px var(--brand);
-  transition: transform .4s var(--ease-out);
-}
-.seg[data-on="1"] .seg-thumb { transform: translateX(100%); }
-
 .credit-meter { display: flex; gap: 2px; height: 6px; border-radius: 999px; background: rgba(255,255,255,0.06); overflow: hidden; }
 .credit-meter-base { background: var(--green-600); border-radius: 999px 0 0 999px; }
 .credit-meter-bonus { background: var(--green-300); box-shadow: 0 0 10px var(--green-a40); }
