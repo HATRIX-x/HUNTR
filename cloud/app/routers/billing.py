@@ -285,17 +285,6 @@ def agent_refund(body: ConsumeIn, ctx=Depends(current_agent),
     return _refund(db, user, body.amount, body.ref, body.reason + ":refund")
 
 
-@router.post("/free-hunt")
-def grant_free_hunt(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    """One-time 'first hunt's on us' grant (approach A size = one Standard hunt).
-    Guarded by free_hunt_used so it can only ever fire once per account."""
-    if user.free_hunt_used:
-        raise HTTPException(409, "Free hunt already used")
-    user.free_hunt_used = True
-    bal = _add_credits(db, user, 30, "grant:free-hunt", f"free:{user.id}")
-    return {"ok": True, "balance": bal}
-
-
 # ── webhook ───────────────────────────────────────────────────────────────
 
 def _verify_signature(raw: bytes, signature: str) -> bool:
