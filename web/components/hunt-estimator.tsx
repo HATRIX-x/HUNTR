@@ -108,7 +108,7 @@ export function HuntEstimator() {
         </div>
 
         <div className="flex-1" />
-        <Link href="/signup/" className="btn-grad mt-7 w-full text-center">Start free</Link>
+        <Link href="/signup/" className="btn-grad mt-7 w-full text-center">Get started</Link>
         <p className="mt-4 text-sm leading-relaxed text-muted">
           A typical figure, not a quote. HUNTR shows the real estimate for your target before it spends anything.
         </p>

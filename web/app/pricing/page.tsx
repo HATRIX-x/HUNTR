@@ -70,11 +70,11 @@ export default function Pricing() {
             credits you&apos;ve loaded, so there are no surprise bills. Ever.
           </Reveal>
           <Reveal delay={240} className="mx-auto mt-10 flex flex-wrap justify-center gap-4">
-            <Link href="/signup/" className="btn-grad" data-magnetic>Start free</Link>
+            <Link href="/signup/" className="btn-grad" data-magnetic>Get started</Link>
             <a href="#how" className="btn-outline">How credits work</a>
           </Reveal>
           <Reveal delay={320}>
-            <p className="mt-6 inline-flex items-center gap-2 text-sm text-muted"><span className="live-dot !h-1.5 !w-1.5" /><span><span className="text-green">First hunt&apos;s on us.</span> No commitment.</span></p>
+            <p className="mt-6 inline-flex items-center gap-2 text-sm text-muted"><span className="live-dot !h-1.5 !w-1.5" /><span><span className="text-green">No subscription required.</span> Credits don&apos;t expire.</span></p>
           </Reveal>
         </div>
       </section>
@@ -137,7 +137,7 @@ export default function Pricing() {
             <h2 className="display text-[clamp(2rem,5vw,4rem)]">Good to know.</h2>
             <p className="mt-5 text-lg text-fg/70">Questions? <MailLink /></p>
             <div className="mt-8 flex flex-wrap gap-3">
-              <Link href="/signup/" className="btn-brand">Start free</Link>
+              <Link href="/signup/" className="btn-brand">Get started</Link>
               <Link href="/terms/" className="btn-outline">Terms of Service</Link>
             </div>
           </div>
