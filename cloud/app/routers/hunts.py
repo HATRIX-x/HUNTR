@@ -31,11 +31,25 @@ MIN_CREDITS = int(os.environ.get("HUNT_MIN_CREDITS", "12"))   # a light hunt's e
 _MODES = {"black", "grey", "white"}
 
 
+class CredsIn(BaseModel):
+    """Grey/white-box credentials for the target. `session` is the one-paste blob
+    (cookie / bearer / header line / Netscape cookie file / copied cURL) the worker
+    sorts out with huntrlib; the rest are explicit overrides. Secrets — carried
+    only in the ephemeral queue job, never written to the hunts table."""
+    session:     str = Field("", max_length=20000)
+    auth_header: str = Field("", max_length=4000)
+    ua:          str = Field("", max_length=400)
+
+
 class HuntIn(BaseModel):
     target:      str = Field(min_length=1, max_length=400)
     program:     str = Field("", max_length=200)
     mode:        str = Field("grey")
     scope_types: str = Field("web,api", max_length=64)
+    # Full program/scope page paste → Haiku 5.5 classifies in/out-of-scope on the
+    # worker so the hunt respects scope and drops out-of-scope (N/A) findings.
+    scope_text:  str = Field("", max_length=60000)
+    creds:       CredsIn | None = None
 
 
 def _hunt_out(h: Hunt) -> dict:
@@ -77,11 +91,18 @@ def create_hunt(body: HuntIn, user: User = Depends(current_user), db: Session = 
     db.add(hunt)
     db.commit()
 
+    # creds + scope page travel ONLY in the ephemeral queue job (popped once by a
+    # worker, never persisted). Black-box carries no creds regardless of input.
+    creds = None
+    if mode in ("grey", "white") and body.creds is not None:
+        creds = {k: v for k, v in body.creds.model_dump().items() if (v or "").strip()}
     try:
         queue.enqueue({
             "hunt_id": hunt_id, "user_id": user.id,
             "target": hunt.target, "program": hunt.program, "mode": hunt.mode,
             "scope_types": hunt.scope_types,
+            "scope_text": (body.scope_text or "").strip(),
+            "creds": creds or None,
             "agent_token": raw_token, "cloud_url": CLOUD_URL,
         })
     except Exception as e:
