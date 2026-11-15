@@ -143,6 +143,7 @@ class Hunt(Base):
     vnc_port    = Column(Integer, nullable=True)
     logs        = Column(Text, nullable=True)               # JSON array of recent engine log lines (live tail)
     findings_json = Column(Text, nullable=True)             # JSON array of this hunt's findings incl. report/poc/repro
+    artifacts_json = Column(Text, nullable=True)            # JSON {surface, coverage, graph} for the console's Surface/Coverage/Map views
     created_at  = Column(DateTime, server_default=func.now())
     updated_at  = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -189,6 +190,10 @@ def _migrate():
         ("first_pack_bonus_used", "BOOLEAN DEFAULT FALSE", "INTEGER DEFAULT 0"),
         ("free_hunt_used",        "BOOLEAN DEFAULT FALSE", "INTEGER DEFAULT 0"),
     ]
+    # columns layered onto the hunts table after its first deploy
+    hunt_adds = [
+        ("artifacts_json", "TEXT", "TEXT"),
+    ]
     dialect = engine.dialect.name
     try:
         with engine.begin() as conn:
@@ -197,9 +202,15 @@ def _migrate():
                 for name, _pg, sq in adds:
                     if name not in existing:
                         conn.exec_driver_sql(f"ALTER TABLE users ADD COLUMN {name} {sq}")
+                h_existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(hunts)")}
+                for name, _pg, sq in hunt_adds:
+                    if name not in h_existing:
+                        conn.exec_driver_sql(f"ALTER TABLE hunts ADD COLUMN {name} {sq}")
             else:
                 for name, pg, _sq in adds:
                     conn.exec_driver_sql(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {name} {pg}")
+                for name, pg, _sq in hunt_adds:
+                    conn.exec_driver_sql(f"ALTER TABLE hunts ADD COLUMN IF NOT EXISTS {name} {pg}")
     except Exception as e:
         # never crash boot on a migration hiccup; log and continue
         print(f"[db] migrate warning: {e}")

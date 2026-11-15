@@ -149,6 +149,35 @@ def cancel_hunt(hunt_id: str, user: User = Depends(current_user), db: Session = 
     return {"ok": True, "status": "cancelled"}
 
 
+class HuntControlIn(BaseModel):
+    action: str   # pause | resume | cancel
+
+
+@router.post("/hunts/{hunt_id}/control")
+def control_hunt(hunt_id: str, body: HuntControlIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Operator controls for a live hunt — pause / resume / cancel. The worker
+    reads the resulting status on its next progress tick and SIGSTOPs/SIGCONTs or
+    stops the engine accordingly."""
+    action = (body.action or "").lower()
+    if action not in {"pause", "resume", "cancel"}:
+        raise HTTPException(400, "action must be pause, resume, or cancel")
+    h = db.query(Hunt).filter(Hunt.id == hunt_id, Hunt.user_id == user.id).first()
+    if not h:
+        raise HTTPException(404, "Hunt not found")
+    if h.status in _TERMINAL:
+        return {"ok": True, "status": h.status}
+    if action == "cancel":
+        h.status = "cancelled"
+    elif action == "pause":
+        if h.status in ("running", "queued"):
+            h.status = "paused"
+    elif action == "resume":
+        if h.status == "paused":
+            h.status = "running"
+    db.commit()
+    return {"ok": True, "status": h.status}
+
+
 class HuntProgressIn(BaseModel):
     hunt_id: str
     stage:   str = ""
@@ -166,16 +195,20 @@ def hunt_progress(body: HuntProgressIn, ctx=Depends(current_agent), db: Session 
         raise HTTPException(404, "Hunt not found")
     if h.status == "cancelled":
         return {"ok": True, "cancel": True}        # tell the worker to stop
+    paused = h.status == "paused"
     if h.status in ("queued", "running"):
         h.status = "running"
+    # while paused, hold the status and still record the latest tail/stage so the
+    # operator sees where it froze; don't advance pct.
     h.stage = (body.stage or "")[:80]
-    h.pct = max(0, min(100, int(body.pct or 0)))
+    if not paused:
+        h.pct = max(0, min(100, int(body.pct or 0)))
     if body.findings:
         h.findings = int(body.findings)
     if body.tail:
         h.logs = json.dumps([str(s)[:300] for s in body.tail[-60:]])
     db.commit()
-    return {"ok": True, "cancel": False}
+    return {"ok": True, "cancel": False, "pause": paused}
 
 
 class HuntFindingsIn(BaseModel):
@@ -207,6 +240,71 @@ def hunt_findings_list(hunt_id: str, user: User = Depends(current_user), db: Ses
     except Exception:
         items = []
     return {"findings": items}
+
+
+@router.get("/findings")
+def all_findings(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Every finding across the user's hunts, newest hunt first — the console's
+    Findings view. Each finding is tagged with its hunt for grouping/linking."""
+    hunts = (db.query(Hunt).filter(Hunt.user_id == user.id)
+               .order_by(Hunt.created_at.desc()).limit(200).all())
+    out = []
+    for h in hunts:
+        try:
+            items = json.loads(h.findings_json) if h.findings_json else []
+        except Exception:
+            items = []
+        for f in items:
+            if not isinstance(f, dict):
+                continue
+            out.append({**f, "hunt_id": h.id, "target": h.target, "program": h.program,
+                        "hunt_created_at": str(h.created_at)})
+    return {"findings": out, "count": len(out)}
+
+
+# ── console artifacts: surface / coverage / graph ──────────────────────────
+
+class HuntArtifactsIn(BaseModel):
+    hunt_id: str
+    surface:  dict | None = None   # {hosts, endpoints, stats, scope:{allow,deny}}
+    coverage: dict | None = None   # {pct, tested, total, classes:[...], rows:[...]}
+    graph:    dict | None = None   # {nodes:[...], edges:[...]}
+
+
+@router.post("/agents/hunt-artifacts")
+def hunt_artifacts(body: HuntArtifactsIn, ctx=Depends(current_agent), db: Session = Depends(get_db)):
+    """Worker → cloud: the hunt's surface map, coverage grid, and capability graph
+    for the console's Surface / Coverage / Map views. Merges so a later partial
+    push never wipes an earlier section."""
+    _agent, user = ctx
+    h = db.query(Hunt).filter(Hunt.id == body.hunt_id, Hunt.user_id == user.id).first()
+    if not h:
+        raise HTTPException(404, "Hunt not found")
+    try:
+        cur = json.loads(h.artifacts_json) if h.artifacts_json else {}
+    except Exception:
+        cur = {}
+    for k in ("surface", "coverage", "graph"):
+        v = getattr(body, k)
+        if v is not None:
+            cur[k] = v
+    h.artifacts_json = json.dumps(cur)[:6_000_000]   # cap the blob
+    db.commit()
+    return {"ok": True, "have": sorted(k for k in ("surface", "coverage", "graph") if cur.get(k))}
+
+
+@router.get("/hunts/{hunt_id}/artifacts")
+def hunt_artifacts_get(hunt_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    h = db.query(Hunt).filter(Hunt.id == hunt_id, Hunt.user_id == user.id).first()
+    if not h:
+        raise HTTPException(404, "Hunt not found")
+    try:
+        art = json.loads(h.artifacts_json) if h.artifacts_json else {}
+    except Exception:
+        art = {}
+    return {"surface": art.get("surface"), "coverage": art.get("coverage"), "graph": art.get("graph")}
+
+
 
 
 class HuntStatusIn(BaseModel):
