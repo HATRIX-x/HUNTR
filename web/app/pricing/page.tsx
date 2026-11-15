@@ -80,14 +80,6 @@ export default function Pricing() {
         </div>
       </section>
 
-      {/* LAUNCH OFFER */}
-      <section className="relative border-y border-green/20 bg-green/[0.06]">
-        <div className="site-wrap flex flex-wrap items-center justify-center gap-x-4 gap-y-1 py-3.5 text-center">
-          <span className="statuspill text-green">Launch offer</span>
-          <span className="text-sm font-semibold text-fg">First 100 hunters get <span className="text-green">double credits</span> on their first pack, up to 100 bonus credits.</span>
-        </div>
-      </section>
-
       {/* BUY — credit packs */}
       <section id="buy" className="scroll-mt-20 bg-surface">
         <div className="site-wrap py-20 sm:py-24">
