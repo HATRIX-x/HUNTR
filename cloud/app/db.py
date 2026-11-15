@@ -123,6 +123,30 @@ class Subscription(Base):
     renews_at      = Column(DateTime, nullable=True)
 
 
+class Hunt(Base):
+    """A cloud hunt: queued by the account, run by a worker container, reported
+    back via /v1/agents/hunt-status. One row = one hunt the user triggered."""
+    __tablename__ = "hunts"
+    id          = Column(String, primary_key=True)           # ulid
+    user_id     = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    target      = Column(String, nullable=False)
+    program     = Column(String, default="")
+    mode        = Column(String, default="grey")             # black | grey | white
+    scope_types = Column(String, default="web,api")
+    status      = Column(String, default="queued")           # queued|running|done|error|blocked|cancelled
+    stage       = Column(String, default="")                 # engine stage label (live)
+    pct         = Column(Integer, default=0)                  # 0-100 progress (live)
+    findings    = Column(Integer, default=0)
+    error       = Column(String, nullable=True)
+    agent_id    = Column(String, nullable=True)              # ephemeral worker agent for this hunt
+    vnc_host    = Column(String, nullable=True)              # worker's internal address for the live view
+    vnc_port    = Column(Integer, nullable=True)
+    logs        = Column(Text, nullable=True)               # JSON array of recent engine log lines (live tail)
+    findings_json = Column(Text, nullable=True)             # JSON array of this hunt's findings incl. report/poc/repro
+    created_at  = Column(DateTime, server_default=func.now())
+    updated_at  = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class CreditTxn(Base):
     """Append-only ledger of every credit change — purchases, bonuses, hunt
     debits, grants, refunds. `ref` is an idempotency key (Creem order/cycle id

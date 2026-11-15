@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from .db import init_db
-from .routers import auth, agents, sync, findings, corpus, billing, web
+from .routers import auth, agents, sync, findings, corpus, billing, web, hunts
 
 IS_PROD = os.environ.get("ENV") == "production"
 
@@ -77,6 +77,7 @@ app.include_router(sync.router)
 app.include_router(findings.router)
 app.include_router(corpus.router)
 app.include_router(billing.router)
+app.include_router(hunts.router)
 app.include_router(web.router)
 
 
