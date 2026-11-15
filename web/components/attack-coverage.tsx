@@ -75,9 +75,9 @@ export function AttackCoverage() {
       </div>
       <style>{`
         .ac-tag { transition: color .25s ease; }
-        .ac-tag.ac-on { color: #AEB4C0; }
+        .ac-tag.ac-on { color: var(--muted); }
         .ac-tag .ac-dot { transition: background .25s ease, box-shadow .25s ease; }
-        .ac-tag.ac-on .ac-dot { background: #4ADE80; box-shadow: 0 0 6px rgba(74,222,128,0.5); }
+        .ac-tag.ac-on .ac-dot { background: var(--green); box-shadow: 0 0 6px var(--green-a40); }
       `}</style>
     </div>
   );

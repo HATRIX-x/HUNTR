@@ -12,8 +12,8 @@ const FINDINGS: { sev: string; cls: string; path: string; verdict: Verdict }[] =
 ];
 
 const sevColor: Record<string, string> = {
-  CRIT: "text-[#ff6b6b] border-[#ff6b6b]/40",
-  HIGH: "text-[#E7C983] border-[#E7C983]/40",
+  CRIT: "text-critical border-critical/40",
+  HIGH: "text-high border-high/40",
   MED: "text-brand border-brand/40",
   LOW: "text-muted border-line",
 };
@@ -140,7 +140,7 @@ export function FireControl() {
         <span className="h-2.5 w-2.5 rounded-full bg-line-2" />
         <span className="ml-2 font-mono text-[11px] uppercase tracking-[0.12em] text-muted">huntr · fire control</span>
         <span className="ml-auto flex items-center gap-2 font-mono text-[10.5px] uppercase tracking-[0.1em] text-green">
-          <span className="h-1.5 w-1.5 rounded-full bg-green shadow-[0_0_8px_var(--green,#4ADE80)]" />
+          <span className="h-1.5 w-1.5 rounded-full bg-green shadow-[0_0_8px_var(--green)]" />
           {phase === "report" ? "done" : "running"}
         </span>
       </div>
@@ -207,7 +207,7 @@ export function FireControl() {
         </div>
         <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-surface2">
           <div
-            className="h-full rounded-full bg-gradient-to-r from-brand to-green transition-all duration-500"
+            className="h-full rounded-full bg-grad-brand transition-all duration-500"
             style={{ width: `${cov}%` }}
           />
         </div>

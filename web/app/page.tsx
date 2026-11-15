@@ -3,7 +3,7 @@ import { Reveal } from "@/components/reveal";
 import { Marquee } from "@/components/marquee";
 import { Stat } from "@/components/stat";
 import { ZeroDayStat } from "@/components/zeroday-stat";
-import { Waitlist } from "@/components/waitlist";
+import { GetStarted, CtaBand } from "@/components/get-started";
 import { JsonLd } from "@/components/jsonld";
 import { InteractiveHunt } from "@/components/interactive-hunt";
 import { SurfaceGraph3D } from "@/components/surface-graph-3d";
@@ -41,19 +41,26 @@ export default function Home() {
       <HudStrip />
 
       {/* HERO */}
-      <section className="relative border-b border-line">
-        <div className="site-wrap pb-16 pt-14 sm:pb-20 sm:pt-20">
+      <section className="relative overflow-hidden border-b border-line">
+        <div
+          className="pointer-events-none absolute right-[-10%] top-[8%] hidden h-[680px] w-[680px] rounded-full opacity-70 blur-3xl lg:block"
+          style={{ background: "radial-gradient(circle at 40% 40%, rgba(139,92,246,0.28), transparent 60%), radial-gradient(circle at 65% 70%, rgba(74,222,128,0.16), transparent 60%)" }}
+          aria-hidden
+        />
+        <div className="site-wrap relative pb-16 pt-14 sm:pb-24 sm:pt-20">
           <div className="flex items-center gap-4" data-reveal="up">
-            <span className="h-2 w-2 bg-brand" />
-            <span className="label text-muted">Autonomous AI · Bug bounty operator</span>
+            <span className="inline-flex items-center gap-2.5 rounded-full border border-line-2 bg-bg/50 py-1.5 pl-2.5 pr-3.5">
+              <span className="live-dot" />
+              <span className="label text-[10.5px] text-fg/80">Autonomous bug bounty operator</span>
+            </span>
           </div>
 
-          <div className="mt-8 grid items-center gap-12 lg:grid-cols-[1.02fr_minmax(0,0.98fr)] lg:gap-16">
+          <div className="mt-8 grid items-center gap-12 [&>*]:min-w-0 lg:grid-cols-[1.02fr_minmax(0,0.98fr)] lg:gap-16">
             <div>
               <h1 className="display text-[clamp(2.7rem,6.4vw,5.6rem)]" data-hero>
                 <span className="block overflow-hidden"><span data-reveal="up" className="block">Anyone can run a</span></span>
                 <span className="block overflow-hidden"><span data-reveal="up" data-delay="80" className="block text-outline">scanner.</span></span>
-                <span className="block overflow-hidden"><span data-reveal="up" data-delay="160" className="block">HUNTR runs <span className="text-brand">the hunt.</span></span></span>
+                <span className="block overflow-hidden"><span data-reveal="up" data-delay="160" className="block">HUNTR runs <span className="whitespace-nowrap text-grad">the hunt.</span></span></span>
               </h1>
 
               <Reveal as="p" delay={220} className="mt-8 max-w-[46ch] text-lg leading-relaxed text-fg/80">
@@ -63,20 +70,23 @@ export default function Home() {
               </Reveal>
 
               <Reveal delay={300} className="mt-8">
-                <Waitlist slot="hero" />
+                <GetStarted />
               </Reveal>
 
               <Reveal delay={360} className="mt-8 flex flex-wrap gap-x-8 gap-y-3 border-t border-line pt-6">
-                {[["Report-ready findings", "brand"], ["Never auto-submits", "green"], ["Authorized targets only", "brand"]].map(([t, c]) => (
-                  <span key={t} className="label text-muted">
-                    <span className={`mr-2 ${c === "green" ? "text-green" : "text-brand"}`}>◆</span>
+                {[["Validated, report-ready findings", "green"], ["Never auto-submits", "brand"], ["Authorized targets only", "brand"]].map(([t, c]) => (
+                  <span key={t} className="flex items-center gap-2 text-sm text-muted">
+                    <svg viewBox="0 0 16 16" className={`h-4 w-4 ${c === "green" ? "text-green" : "text-brand"}`} fill="none" aria-hidden>
+                      <circle cx="8" cy="8" r="7" stroke="currentColor" strokeOpacity=".35" />
+                      <path d="M5 8.2 7 10l4-4.3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
                     {t}
                   </span>
                 ))}
               </Reveal>
             </div>
 
-            <Reveal delay={200} className="w-full">
+            <Reveal delay={200} className="relative w-full">
               <InteractiveHunt />
             </Reveal>
           </div>
@@ -94,12 +104,12 @@ export default function Home() {
           <Reveal type="mask">
             <span className="label text-muted">At a glance</span>
             <h2 className="display mt-4 max-w-[18ch] text-[clamp(2rem,5vw,4rem)]">
-              Built to hunt. Measured against <span className="text-brand">ground truth.</span>
+              Built to hunt. Measured against ground truth.
             </h2>
           </Reveal>
           <div className="mt-16 grid gap-12 sm:grid-cols-3">
-            <Reveal delay={0}><Stat value={58} label="Vulnerability classes" sub="Hunted end-to-end — recon to validated report." tone="brand" /></Reveal>
-            <Reveal delay={120}><Stat value={11} label="Specialist agents" sub="Recon, exploit, chaining, reporting — each a focused agent." tone="fg" /></Reveal>
+            <Reveal delay={0}><Stat value={58} label="Vulnerability classes" sub="Hunted end-to-end, recon to validated report." tone="brand" /></Reveal>
+            <Reveal delay={120}><Stat value={11} label="Specialist agents" sub="Recon, exploit, chaining, reporting — each a focused agent." tone="cyan" /></Reveal>
             <Reveal delay={240}><Stat value={0} label="Auto-submissions" sub="You review and send. Every finding, every time." tone="green" /></Reveal>
             <ZeroDayStat />
           </div>
@@ -114,13 +124,13 @@ export default function Home() {
             <p className="display mt-8 max-w-[16ch] text-[clamp(2.4rem,6.4vw,5.6rem)]">
               Scanners give <span className="text-outline">noise.</span>
               <br />
-              Hunters give <span className="text-brand">payouts.</span>
+              Hunters give <span className="text-green">payouts.</span>
             </p>
           </Reveal>
-          <div className="mt-16 grid gap-px overflow-hidden border border-line sm:grid-cols-2 lg:grid-cols-4" data-reveal-group>
-            {cells.map(([k, h, p], i) => (
+          <div className="mt-16 grid gap-px overflow-hidden rounded-xl border border-line bg-line sm:grid-cols-2 lg:grid-cols-4" data-reveal-group>
+            {cells.map(([k, h, p]) => (
               <div key={h} className="lantern bg-surface2 p-8" data-lantern>
-                <div className="label text-faint">0{i + 1} · {k}</div>
+                <div className={`label ${k === "Signal" ? "text-cyan" : k === "Output" ? "text-green" : "text-brand"}`}>{k}</div>
                 <h3 className="display mt-5 text-2xl">{h}</h3>
                 <p className="mt-3 text-sm leading-relaxed text-muted">{p}</p>
               </div>
@@ -135,17 +145,17 @@ export default function Home() {
 
       {/* SURFACE GRAPH */}
       <section className="scanline overflow-hidden border-b border-line">
-        <div className="site-wrap grid items-center gap-12 py-20 lg:grid-cols-[minmax(0,0.92fr)_1fr] lg:gap-16 sm:py-28">
+        <div className="site-wrap grid items-center gap-12 [&>*]:min-w-0 py-20 lg:grid-cols-[minmax(0,0.92fr)_1fr] lg:gap-16 sm:py-28">
           <Reveal className="order-2 lg:order-1">
-            <div className="rounded-2xl border border-brand/20 bg-bg/40 p-3 shadow-[0_40px_120px_-50px_rgba(167,139,250,0.4)]">
+            <div className="brackets rounded-2xl border border-brand/20 bg-bg/40 p-3 shadow-glow-brand">
               <SurfaceGraph3D />
             </div>
           </Reveal>
           <div className="order-1 lg:order-2">
             <Reveal type="mask">
-              <span className="label text-muted">Live surface map</span>
+              <span className="label text-cyan">Live surface map</span>
               <h2 className="display mt-4 text-[clamp(2rem,5.5vw,4.5rem)] leading-[1.02]">
-                The whole surface — <span className="text-brand">one living graph.</span>
+                The whole surface, one living graph.
               </h2>
             </Reveal>
             <Reveal as="p" delay={120} className="mt-6 max-w-[48ch] text-lg leading-relaxed text-fg/75">
@@ -157,7 +167,7 @@ export default function Home() {
               <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: "var(--critical)" }} />critical</span>
               <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: "var(--high)" }} />high</span>
               <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: "var(--validated)" }} />validated</span>
-              <span className="text-faint">· drag to orbit →</span>
+              <span className="text-faint">drag to orbit</span>
             </Reveal>
           </div>
         </div>
@@ -172,26 +182,29 @@ export default function Home() {
             <p className="mt-5 max-w-[52ch] text-lg text-fg/70">Same target, two very different outputs. A scanner flags; HUNTR hunts, validates, and writes it up.</p>
           </Reveal>
           <div className="mt-14 grid gap-8 lg:grid-cols-2">
-            <Reveal className="border border-brand/40 bg-surface p-8 shadow-[0_0_0_1px_rgba(167,139,250,0.15),0_40px_120px_-60px_rgba(167,139,250,0.4)] sm:p-10">
+            <Reveal className="panel p-8 shadow-glow-brand sm:p-10">
               <div className="flex items-baseline justify-between">
-                <h3 className="display text-3xl">HUNTR</h3>
-                <span className="label bg-brand px-3 py-1 text-brand-ink">Operator</span>
+                <h3 className="display text-3xl text-grad">HUNTR</h3>
+                <span className="statuspill text-green"><span className="live-dot !h-1.5 !w-1.5" />Operator</span>
               </div>
               <ul className="mt-8 space-y-4">
                 {["Tests behavior, then validates every finding", "Drops false positives before they reach you", "Reproduction and impact drafted per finding", "Covers the surface to depth — not one-shot", "Never auto-submits — you review and send"].map((t) => (
-                  <li key={t} className="flex gap-4 text-fg"><span className="mt-1 text-brand">→</span><span>{t}</span></li>
+                  <li key={t} className="flex gap-4 text-fg">
+                    <svg viewBox="0 0 16 16" className="mt-1 h-4 w-4 shrink-0 text-green" fill="none" aria-hidden><path d="M3.5 8.4 6.5 11l6-6.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                    <span>{t}</span>
+                  </li>
                 ))}
               </ul>
-              <Link href="/access" className="btn-brand mt-10 w-full" data-magnetic>Request access</Link>
+              <Link href="/signup/" className="btn-grad mt-10 w-full" data-magnetic>Start hunting</Link>
             </Reveal>
-            <Reveal delay={120} className="border border-line p-8 sm:p-10">
+            <Reveal delay={120} className="rounded-xl border border-dashed border-line-2 p-8 sm:p-10">
               <div className="flex items-baseline justify-between">
                 <h3 className="display text-3xl text-muted">Traditional scanner</h3>
                 <span className="label border border-line px-3 py-1 text-muted">Noise</span>
               </div>
               <ul className="mt-8 space-y-4">
                 {["Stops at surface signals (200 OK, reflected param)", "Dumps everything — you sift the false positives", "No reproduction or impact — you write the report", "One-shot, shallow pass over the surface", "Flags without judgment — confirms nothing"].map((t) => (
-                  <li key={t} className="flex gap-4 text-muted"><span className="mt-1">×</span><span>{t}</span></li>
+                  <li key={t} className="flex gap-4 text-muted"><span className="mt-0.5 w-4 shrink-0 text-center text-faint">×</span><span>{t}</span></li>
                 ))}
               </ul>
               <span className="btn mt-10 block w-full border border-line py-3 text-center text-faint">The status quo</span>
@@ -218,25 +231,7 @@ export default function Home() {
         </div>
       </section>
 
-      {/* FINAL CTA */}
-      <section className="bg-brand text-brand-ink">
-        <div className="site-wrap py-24 text-center sm:py-32">
-          <Reveal type="mask">
-            <span className="label text-brand-ink/70">Early access</span>
-            <h2 className="display mx-auto mt-6 max-w-[14ch] text-[clamp(2.6rem,7vw,6rem)] text-brand-ink">
-              Stop scanning. Start hunting.
-            </h2>
-          </Reveal>
-          <Reveal delay={160}>
-            <p className="mx-auto mt-6 max-w-[46ch] text-lg text-brand-ink/75">
-              Request early access to HUNTR and we&apos;ll reach out when your spot opens.
-            </p>
-            <div className="mx-auto mt-10 flex max-w-md justify-center">
-              <Waitlist onAccent slot="cta" className="w-full" />
-            </div>
-          </Reveal>
-        </div>
-      </section>
+      <CtaBand title="Stop scanning. Start hunting." body="Create your account, load credits, and point HUNTR at a target you're authorized to test. We run the hunt for you." />
     </main>
   );
 }

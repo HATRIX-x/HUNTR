@@ -12,9 +12,9 @@ export function Stat({
   suffix?: string;
   label: string;
   sub?: string;
-  tone?: "brand" | "green" | "fg";
+  tone?: "brand" | "green" | "cyan" | "fg";
 }) {
-  const color = tone === "green" ? "text-green" : tone === "fg" ? "text-fg" : "text-brand";
+  const color = tone === "green" ? "text-green" : tone === "cyan" ? "text-cyan" : tone === "fg" ? "text-fg" : "text-brand";
 
   return (
     <div>

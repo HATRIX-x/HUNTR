@@ -22,8 +22,10 @@ export function LegalPage({
       <section className="border-b border-line">
         <div className="site-wrap pb-14 pt-16 sm:pb-16 sm:pt-24">
           <div className="flex items-center gap-4">
-            <span className="h-2 w-2 bg-brand" />
-            <span className="label text-muted">{kicker}</span>
+            <span className="inline-flex items-center gap-2.5 rounded-full border border-line-2 bg-bg/50 py-1.5 pl-2.5 pr-3.5">
+              <span className="h-1.5 w-1.5 rounded-full bg-brand shadow-[0_0_8px_var(--brand-a40)]" />
+              <span className="label text-[10.5px] text-fg/80">{kicker}</span>
+            </span>
           </div>
           <h1 className="display mt-6 max-w-[20ch] text-[clamp(2.4rem,7vw,5rem)]">{title}</h1>
           <p className="mt-6 max-w-[62ch] text-lg leading-relaxed text-fg/80">{intro}</p>

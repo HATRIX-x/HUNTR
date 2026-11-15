@@ -31,8 +31,8 @@ export function AttackFunnel() {
       <svg viewBox="0 0 1200 620" className="h-[clamp(300px,40vw,540px)] w-full" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
         <defs>
           <radialGradient id="fn-glow" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#4ADE80" stopOpacity="0.8" />
-            <stop offset="100%" stopColor="#4ADE80" stopOpacity="0" />
+            <stop offset="0%" stopColor="var(--green)" stopOpacity="0.8" />
+            <stop offset="100%" stopColor="var(--green)" stopOpacity="0" />
           </radialGradient>
         </defs>
 
@@ -42,23 +42,23 @@ export function AttackFunnel() {
           </text>
         ))}
         {NODES.map((n, i) => (
-          <circle key={"n" + i} cx={n.x} cy={56} r={3.5} fill={i % 2 ? "#4ADE80" : "#A78BFA"} />
+          <circle key={"n" + i} cx={n.x} cy={56} r={3.5} fill={i % 2 ? "var(--green)" : "var(--brand)"} />
         ))}
 
         {PATHS.map((d, i) => (
           <path key={"b" + i} d={d} fill="none" stroke="rgba(167,139,250,0.12)" strokeWidth={1} strokeLinecap="round" />
         ))}
         {PATHS.map((d, i) => (
-          <path key={"h" + i} className="fn-halo" d={d} fill="none" stroke={i % 2 ? "#4ADE80" : "#A78BFA"} strokeOpacity={0.16} strokeWidth={9} strokeLinecap="round" style={{ animationDelay: `${i * 0.3}s` }} />
+          <path key={"h" + i} className="fn-halo" d={d} fill="none" stroke={i % 2 ? "var(--green)" : "var(--brand)"} strokeOpacity={0.16} strokeWidth={9} strokeLinecap="round" style={{ animationDelay: `${i * 0.3}s` }} />
         ))}
         {PATHS.map((d, i) => (
-          <path key={"c" + i} className="fn-comet" d={d} fill="none" stroke={i % 2 ? "#6ff0a0" : "#c3b2ff"} strokeWidth={2.4} strokeLinecap="round" style={{ animationDelay: `${i * 0.3}s` }} />
+          <path key={"c" + i} className="fn-comet" d={d} fill="none" stroke={i % 2 ? "var(--green-300)" : "var(--brand-300)"} strokeWidth={2.4} strokeLinecap="round" style={{ animationDelay: `${i * 0.3}s` }} />
         ))}
 
         <circle cx={LOCK.x} cy={LOCK.y} r={64} fill="url(#fn-glow)" opacity={0.5} />
-        <circle className="fn-ring" cx={LOCK.x} cy={LOCK.y} r={24} fill="none" stroke="#4ADE80" strokeWidth={1.5} />
-        <circle cx={LOCK.x} cy={LOCK.y} r={6} fill="#4ADE80" />
-        <g stroke="#4ADE80" strokeWidth={1.5} opacity={0.75}>
+        <circle className="fn-ring" cx={LOCK.x} cy={LOCK.y} r={24} fill="none" stroke="var(--green)" strokeWidth={1.5} />
+        <circle cx={LOCK.x} cy={LOCK.y} r={6} fill="var(--green)" />
+        <g stroke="var(--green)" strokeWidth={1.5} opacity={0.75}>
           <line x1={LOCK.x} y1={LOCK.y - 32} x2={LOCK.x} y2={LOCK.y - 18} />
           <line x1={LOCK.x} y1={LOCK.y + 18} x2={LOCK.x} y2={LOCK.y + 32} />
           <line x1={LOCK.x - 32} y1={LOCK.y} x2={LOCK.x - 18} y2={LOCK.y} />

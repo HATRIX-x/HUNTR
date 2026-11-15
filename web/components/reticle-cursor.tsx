@@ -1,12 +1,20 @@
 "use client";
 import { useEffect, useRef } from "react";
+import { usePathname } from "next/navigation";
 
-/** A targeting-reticle cursor for the operator console. Follows the pointer, grows
- *  over interactive elements. Desktop/hover only — hidden on touch. */
+// App surfaces are working tools — they keep the native cursor for precise
+// clicking in nav, tables and forms. The reticle is a marketing-page flourish.
+const APP_ROUTES = ["/dashboard", "/account", "/login", "/signup"];
+
+/** A targeting-reticle cursor for the marketing pages. Follows the pointer, grows
+ *  over interactive elements. Desktop/hover only — hidden on touch, and off on the
+ *  operator console (native cursor there). */
 export function ReticleCursor() {
   const ref = useRef<HTMLDivElement | null>(null);
+  const pathname = usePathname();
 
   useEffect(() => {
+    if (APP_ROUTES.some((r) => pathname === r || pathname.startsWith(r + "/"))) return;
     if (window.matchMedia && window.matchMedia("(hover: none)").matches) return;
     const el = ref.current;
     if (!el) return;
@@ -20,6 +28,7 @@ export function ReticleCursor() {
     };
     const move = (e: PointerEvent) => {
       tx = e.clientX; ty = e.clientY;
+      el.classList.add("tracking"); // stays hidden until the pointer actually moves
       const t = e.target as HTMLElement;
       const hot = !!t.closest("a,button,input,[data-hot]");
       el.classList.toggle("hot", hot);
@@ -33,11 +42,15 @@ export function ReticleCursor() {
     return () => {
       cancelAnimationFrame(raf);
       document.body.classList.remove("reticle-on");
+      el.classList.remove("tracking");
       window.removeEventListener("pointermove", move);
       document.removeEventListener("pointerleave", leave);
       document.removeEventListener("pointerenter", enter);
     };
-  }, []);
+  }, [pathname]);
+
+  // No reticle element at all on the app surfaces (keeps the native cursor clean).
+  if (APP_ROUTES.some((r) => pathname === r || pathname.startsWith(r + "/"))) return null;
 
   return (
     <div ref={ref} className="reticle" aria-hidden="true">

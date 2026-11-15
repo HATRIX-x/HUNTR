@@ -1,6 +1,6 @@
 import "./globals.css";
 import type { Metadata } from "next";
-import { Bricolage_Grotesque, Inter } from "next/font/google";
+import { Bricolage_Grotesque, Inter, JetBrains_Mono } from "next/font/google";
 import { Nav } from "@/components/nav";
 import { Footer } from "@/components/footer";
 import { Motion } from "@/components/motion";
@@ -8,6 +8,7 @@ import { ReticleCursor } from "@/components/reticle-cursor";
 
 const display = Bricolage_Grotesque({ subsets: ["latin"], variable: "--font-display", display: "swap" });
 const body = Inter({ subsets: ["latin"], variable: "--font-body", display: "swap" });
+const mono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono", display: "swap", weight: ["400", "500", "600"] });
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://huntr.run"),
@@ -50,7 +51,7 @@ export const viewport = { themeColor: "#0A0B0D" };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${display.variable} ${body.variable}`} style={{ background: "#0A0B0D", colorScheme: "dark" }}>
+    <html lang="en" className={`${display.variable} ${body.variable} ${mono.variable}`} style={{ background: "#0A0B0D", colorScheme: "dark" }}>
       <head>
         {/* paint dark on the very first frame, before external CSS — kills the white FOUC flash */}
         <style dangerouslySetInnerHTML={{ __html: "html{background:#0A0B0D}body{background:#0A0B0D;color:#ECEEF2;margin:0}" }} />
@@ -77,6 +78,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <b className="a2" />
           <b className="a3" />
         </div>
+        <div className="scroll-beam" aria-hidden="true" />
         <Motion />
         <ReticleCursor />
         <Nav />

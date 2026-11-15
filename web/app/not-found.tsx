@@ -12,11 +12,13 @@ export default function NotFound() {
       <section className="border-b border-line">
         <div className="site-wrap flex min-h-[64vh] flex-col items-center justify-center py-24 text-center">
           <div className="flex items-center gap-4">
-            <span className="h-2 w-2 bg-brand" />
-            <span className="label text-muted">Error 404</span>
+            <span className="inline-flex items-center gap-2.5 rounded-full border border-line-2 bg-bg/50 py-1.5 pl-2.5 pr-3.5">
+              <span className="h-1.5 w-1.5 rounded-full bg-brand shadow-[0_0_8px_var(--brand-a40)]" />
+              <span className="label text-[10.5px] text-fg/80">Error 404</span>
+            </span>
           </div>
           <h1 className="display mt-8 text-[clamp(4rem,18vw,12rem)] leading-none">
-            4<span className="text-brand">0</span>4
+            4<span className="text-grad">0</span>4
           </h1>
           <p className="mt-6 max-w-[46ch] text-lg leading-relaxed text-fg/80">
             This page got away. The link may be broken or the page may have moved — but the hunt
@@ -31,7 +33,7 @@ export default function NotFound() {
               ["/benchmark/", "Benchmark"],
               ["/pricing/", "Pricing"],
               ["/research/", "Research"],
-              ["/access/", "Request access"],
+              ["/signup/", "Sign up"],
             ].map(([href, label]) => (
               <Link key={href} href={href} className="label ulink text-muted hover:text-fg">
                 {label}

@@ -27,16 +27,21 @@ const SOCIALS = [
 
 export function Footer() {
   return (
-    <footer className="border-t border-line bg-surface text-fg">
-      <div className="site-wrap py-14">
+    <footer className="relative bg-surface text-fg">
+      <div className="grad-rule absolute inset-x-0 top-0" aria-hidden />
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-40 opacity-60" style={{ background: "radial-gradient(60% 100% at 50% 0%, var(--brand-a10), transparent 70%)" }} aria-hidden />
+      <div className="site-wrap relative py-16 sm:py-20">
         <div className="flex flex-col gap-10 md:flex-row md:items-end md:justify-between">
           <div>
-            <Link href="/" className="flex items-center gap-3 display text-4xl tracking-tightest text-fg sm:text-5xl">
-              <BrandMark className="h-9 w-9 sm:h-10 sm:w-10" />
-              HUNTR<span className="text-brand">.</span>
+            <Link href="/" className="group flex items-center gap-3 display text-4xl tracking-tightest sm:text-5xl">
+              <BrandMark className="h-9 w-9 transition-transform duration-500 ease-out group-hover:rotate-90 sm:h-10 sm:w-10" glow />
+              <span className="text-grad">HUNTR</span>
             </Link>
-            <p className="mt-4 max-w-sm text-sm text-muted">
+            <p className="mt-4 max-w-sm text-sm leading-relaxed text-muted">
               The autonomous operator for bug bounty. It hunts — you decide.
+            </p>
+            <p className="mt-4 inline-flex items-center gap-2 rounded-full border border-green/25 bg-green/5 px-3 py-1 text-xs text-green">
+              <span className="live-dot" /> Operator online
             </p>
             <p className="mt-4 text-sm text-muted">
               Support:{" "}
@@ -52,9 +57,9 @@ export function Footer() {
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-label={s.label}
-                  className="text-muted transition-colors hover:text-brand"
+                  className="grid h-9 w-9 place-items-center rounded-full border border-line text-muted transition-all duration-200 hover:border-brand/50 hover:bg-brand/10 hover:text-brand"
                 >
-                  <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
                     <path d={s.icon} />
                   </svg>
                 </a>
@@ -68,7 +73,7 @@ export function Footer() {
               { href: "/benchmark", label: "Benchmark" },
               { href: "/research", label: "Research" },
               { href: "/pricing", label: "Pricing" },
-              { href: "/access", label: "Access" },
+              { href: "/signup", label: "Sign up" },
             ].map((l) => (
               <Link key={l.href} href={l.href} className="label ulink text-muted hover:text-fg">
                 {l.label}
@@ -82,7 +87,7 @@ export function Footer() {
             <Link href="/privacy" className="ulink text-faint hover:text-fg">Privacy Policy</Link>
             <Link href="/acceptable-use" className="ulink text-faint hover:text-fg">Acceptable Use</Link>
           </nav>
-          <span>© {new Date().getFullYear()} HUNTR · Authorized targets only</span>
+          <span>© {new Date().getFullYear()} HUNTR. Authorized targets only.</span>
         </div>
       </div>
     </footer>

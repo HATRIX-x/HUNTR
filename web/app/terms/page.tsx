@@ -41,7 +41,7 @@ export default function Terms() {
       <Clause n={2} title="Your licence to use HUNTR">
         <p>
           Subject to these Terms and your active subscription, we grant you a limited, non-exclusive,
-          non-transferable, revocable licence to install and use HUNTR for your own authorized security
+          non-transferable, revocable licence to access and use HUNTR for your own authorized security
           testing. You may not:
         </p>
         <ul>
@@ -54,14 +54,17 @@ export default function Terms() {
         </ul>
       </Clause>
 
-      <Clause n={3} title="Your own AI provider key (BYO-key)">
+      <Clause n={3} title="Credits and the managed service">
         <p>
-          HUNTR runs on <strong>your own Anthropic API key</strong>. You are Anthropic&apos;s customer for that
-          usage, you are billed directly by Anthropic for the tokens HUNTR consumes, and your key is stored only
-          on your own machine — we never receive, store, or process it. You are responsible for your own API
-          spend and for complying with Anthropic&apos;s applicable terms and usage policies, including any
-          verification required for security-related use. Our subscription fee is for the HUNTR software and does
-          not include AI usage costs.
+          HUNTR is a <strong>managed service</strong>: we run each hunt for you on our own infrastructure and
+          cover the underlying AI compute. You pay with <strong>credits</strong>, purchased in advance either as
+          one-time packs or through a monthly plan. One credit represents one US dollar of hunting, and each hunt
+          consumes credits based on the work it performs. We show you an estimate before a hunt begins, meter the
+          work as it runs, and stop a hunt when your balance reaches zero — <strong>you are never charged beyond
+          the credits you have loaded.</strong> Unused credits are refundable within 14 days of purchase;
+          promotional or bonus credits, and credits already spent on a completed hunt, are non-refundable. Credit
+          prices may change on a prospective basis, but credits you have already purchased keep the value shown at
+          the time of purchase.
         </p>
       </Clause>
 

@@ -11,7 +11,7 @@ const FINDINGS: F[] = [
   { sev: "LOW", cls: "XSS", path: "/search?q=", verdict: "drop" },
 ];
 const PRESETS = ["acme.api", "shop.example", "api.vault.io"];
-const sevClass: Record<F["sev"], string> = { CRIT: "crit", HIGH: "high", MED: "test", LOW: "test" };
+const sevClass: Record<F["sev"], string> = { CRIT: "crit", HIGH: "high", MED: "med", LOW: "low" };
 
 export function InteractiveHunt() {
   const [target, setTarget] = useState("acme.api");
@@ -137,7 +137,7 @@ export function InteractiveHunt() {
           <span>coverage</span><span className="text-brand">{cov}%</span>
         </div>
         <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-surface2">
-          <div className="h-full rounded-full transition-all duration-500" style={{ width: `${cov}%`, background: "linear-gradient(90deg, var(--brand), var(--validated))" }} />
+          <div className="h-full rounded-full transition-all duration-500" style={{ width: `${cov}%`, background: "var(--grad-brand)" }} />
         </div>
         <div className={`hud mt-3 flex items-center gap-2 text-[11px] transition-opacity duration-500 ${phase === "report" ? "opacity-100" : "opacity-0"}`}>
           <span style={{ color: "var(--validated)" }}>▸</span>

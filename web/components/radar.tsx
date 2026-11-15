@@ -15,7 +15,7 @@ const BLIPS: Blip[] = [
   { a: 330, r: 165, c: "green" },
   { a: 18, r: 250, c: "dim" },
 ];
-const color = { green: "#4ADE80", purple: "#A78BFA", dim: "#5A606C" };
+const color = { green: "var(--green)", purple: "var(--brand)", dim: "var(--faint)" };
 const pos = (a: number, r: number) => ({ x: C + r * Math.sin((a * Math.PI) / 180), y: C - r * Math.cos((a * Math.PI) / 180) });
 const QUAD = [
   { a: 0, label: "WEB" },
@@ -37,12 +37,12 @@ export function Radar() {
       <svg viewBox="0 0 600 600" className="w-full" aria-hidden="true">
         <defs>
           <radialGradient id="rdGlow" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#A78BFA" stopOpacity="0.14" />
-            <stop offset="100%" stopColor="#A78BFA" stopOpacity="0" />
+            <stop offset="0%" stopColor="var(--brand)" stopOpacity="0.14" />
+            <stop offset="100%" stopColor="var(--brand)" stopOpacity="0" />
           </radialGradient>
           <linearGradient id="rdSweep" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stopColor="#A78BFA" stopOpacity="0" />
-            <stop offset="100%" stopColor="#A78BFA" stopOpacity="0.28" />
+            <stop offset="0%" stopColor="var(--brand)" stopOpacity="0" />
+            <stop offset="100%" stopColor="var(--brand)" stopOpacity="0.28" />
           </linearGradient>
         </defs>
 
@@ -56,7 +56,7 @@ export function Radar() {
         {/* sweep */}
         <g className="radar-sweep">
           <path d={`M ${C} ${C} L ${C} 30 A 270 270 0 0 1 ${C + 270 * Math.sin((60 * Math.PI) / 180)} ${C - 270 * Math.cos((60 * Math.PI) / 180)} Z`} fill="url(#rdSweep)" />
-          <line x1={C} y1={C} x2={C} y2={30} stroke="#A78BFA" strokeWidth={1.5} strokeOpacity={0.7} />
+          <line x1={C} y1={C} x2={C} y2={30} stroke="var(--brand)" strokeWidth={1.5} strokeOpacity={0.7} />
         </g>
 
         {/* quadrant labels */}
@@ -81,8 +81,8 @@ export function Radar() {
         })}
 
         {/* center */}
-        <circle cx={C} cy={C} r={16} fill="none" stroke="#4ADE80" strokeWidth={1} opacity={0.4} />
-        <circle cx={C} cy={C} r={5} fill="#4ADE80" />
+        <circle cx={C} cy={C} r={16} fill="none" stroke="var(--green)" strokeWidth={1} opacity={0.4} />
+        <circle cx={C} cy={C} r={5} fill="var(--green)" />
       </svg>
     </div>
   );

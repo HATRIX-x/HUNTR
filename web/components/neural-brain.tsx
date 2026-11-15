@@ -72,14 +72,14 @@ export function NeuralBrain() {
   }, []);
 
   const colorOf = (n: Node) =>
-    COLS[n.col].tone === "green" ? "#4ADE80" : COLS[n.col].tone === "mix" ? (n.valid ? "#4ADE80" : "#5A606C") : "#A78BFA";
+    COLS[n.col].tone === "green" ? "var(--green)" : COLS[n.col].tone === "mix" ? (n.valid ? "var(--green)" : "var(--faint)") : "var(--brand)";
 
   return (
     <div ref={wrap} className="relative">
       <svg viewBox={`0 0 ${W} ${H + 46}`} className="h-[clamp(260px,32vw,420px)] w-full" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
         {/* synapses */}
         {synapses.map((s, i) => (
-          <line key={i} className={`nb-syn-${s.seg}`} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke="#A78BFA" strokeWidth={1} opacity={0.08} />
+          <line key={i} className={`nb-syn-${s.seg}`} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke="var(--brand)" strokeWidth={1} opacity={0.08} />
         ))}
         {/* nodes */}
         {nodes.map((n, i) => (
@@ -100,7 +100,7 @@ export function NeuralBrain() {
             x={c.x}
             y={H + 26}
             textAnchor="middle"
-            fill={c.tone === "green" ? "#4ADE80" : "#A78BFA"}
+            fill={c.tone === "green" ? "var(--green)" : "var(--brand)"}
             opacity={0.4}
             style={{ font: "700 13px ui-monospace, monospace", letterSpacing: "0.14em" }}
           >

@@ -32,11 +32,13 @@ export default function Preview() {
 
       {/* HERO — playable hunt */}
       <section className="border-b border-line">
-        <div className="site-wrap grid items-center gap-12 py-16 lg:grid-cols-[1fr_minmax(0,0.92fr)] lg:gap-16 lg:py-24">
+        <div className="site-wrap grid items-center gap-12 [&>*]:min-w-0 py-16 lg:grid-cols-[1fr_minmax(0,0.92fr)] lg:gap-16 lg:py-24">
           <div>
             <div className="flex items-center gap-4">
-              <span className="h-2 w-2 bg-brand" />
-              <span className="label text-muted">Operator console</span>
+              <span className="inline-flex items-center gap-2.5 rounded-full border border-line-2 bg-bg/50 py-1.5 pl-2.5 pr-3.5">
+                <span className="h-1.5 w-1.5 rounded-full bg-brand shadow-[0_0_8px_var(--brand-a40)]" />
+                <span className="label text-[10.5px] text-fg/80">Operator console</span>
+              </span>
             </div>
             <h1 className="display mt-7 text-[clamp(2.8rem,8vw,6.5rem)] leading-[0.95]">
               Point it. <br /><span className="text-brand">Watch it hunt.</span>
@@ -60,7 +62,7 @@ export default function Preview() {
 
       {/* SURFACE GRAPH — 3D orbit */}
       <section className="scanline border-b border-line bg-surface">
-        <div className="site-wrap grid items-center gap-12 py-20 lg:grid-cols-[minmax(0,0.9fr)_1fr] lg:gap-16 lg:py-28">
+        <div className="site-wrap grid items-center gap-12 [&>*]:min-w-0 py-20 lg:grid-cols-[minmax(0,0.9fr)_1fr] lg:gap-16 lg:py-28">
           <div className="order-2 lg:order-1">
             <div className="rounded-2xl border border-brand/20 bg-bg/40 p-3 shadow-[0_40px_120px_-50px_rgba(167,139,250,0.4)]">
               <SurfaceGraph3D />
