@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   getToken, me, listHunts, startHunt, getHunt, listHuntFindings, cancelHunt,
   controlHunt, listAllFindings, getHuntArtifacts, ApiError,
   type Hunt, type Me, type HuntFinding, type AllFinding, type HuntArtifacts,
+  type GraphNode, type GraphEdge,
 } from "@/lib/api";
 import { VncViewer } from "@/components/vnc-viewer";
 import { CapabilityGraph3D } from "@/components/capability-graph-3d";
@@ -375,7 +376,7 @@ function HuntRow({ h, onWatch, onCancel, onControl }: {
           )}
           <div className="min-w-[3.5rem] text-right">
             <p className={`numeral text-2xl ${h.findings > 0 ? "text-green" : "text-fg/60"}`}>{h.findings}</p>
-            <p className="label mt-0.5 text-[9.5px] text-faint">findings</p>
+            <p className="label mt-0.5 text-[9.5px] text-faint" title={running || paused ? "Candidate findings the engine is still validating — confirmed ones move to the Findings tab when the hunt finishes." : "Validated findings — see the Findings tab for full reports."}>{running || paused ? "candidates" : "findings"}</p>
           </div>
           <StatusPill s={h.status} />
         </div>
@@ -760,10 +761,91 @@ const NODE_COLOR: Record<string, string> = {
   endpoint: "var(--green)", finding: "var(--critical)", param: "var(--high)",
 };
 
+function hostOf(url: string): string {
+  try { return new URL(url).host; } catch { return ""; }
+}
+function pathOf(url: string): string {
+  try { return new URL(url).pathname || url; } catch { return url; }
+}
+
+// Build a capability graph from the mapped surface (hosts + endpoints) and the
+// hunt's findings, for when the engine didn't emit its own graph.json. Hosts and
+// endpoints become nodes (host → endpoint edges); each finding hangs off the
+// endpoint it was found on (matched exactly, then by path prefix for templated
+// endpoints, then by host). Keeps the Map from ever being blank for a hunt that
+// actually mapped a surface.
+function synthGraph(
+  surface: NonNullable<HuntArtifacts["surface"]> | null | undefined,
+  findings: HuntFinding[],
+): { nodes: GraphNode[]; edges: GraphEdge[] } {
+  const nodes: GraphNode[] = [];
+  const edges: GraphEdge[] = [];
+  const seen = new Set<string>();
+  const add = (id: string, label: string, type: string) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    nodes.push({ id, label, type });
+  };
+  const hosts = surface?.hosts ?? [];
+  const eps = surface?.endpoints ?? [];
+  for (const h of hosts) {
+    const hv = h.host ?? "";
+    if (hv) add(`host:${hv}`, hv, "host");
+  }
+  const epIds: { url: string; id: string }[] = [];
+  for (const e of eps.slice(0, 300)) {
+    const url = e.url ?? "";
+    if (!url) continue;
+    const hv = e.host || hostOf(url);
+    if (hv) add(`host:${hv}`, hv, "host");
+    const id = `ep:${url}`;
+    add(id, pathOf(url), "endpoint");
+    epIds.push({ url, id });
+    if (hv) edges.push({ source: `host:${hv}`, target: id });
+  }
+  findings.forEach((f, i) => {
+    const fid = `finding:${i}`;
+    add(fid, `${f.cls || "finding"}${f.title ? ` · ${f.title.slice(0, 40)}` : ""}`, "finding");
+    const fep = f.endpoint || "";
+    let tgt: string | null = null;
+    const exact = epIds.find((e) => e.url === fep);
+    if (exact) tgt = exact.id;
+    if (!tgt && fep) {
+      const base = fep.split("{")[0];
+      if (base.length > 12) tgt = epIds.find((e) => e.url.startsWith(base))?.id ?? null;
+    }
+    if (!tgt && fep) {
+      const hv = hostOf(fep);
+      if (hv && seen.has(`host:${hv}`)) tgt = `host:${hv}`;
+    }
+    if (!tgt && hosts[0]?.host) tgt = `host:${hosts[0].host}`;
+    if (tgt) edges.push({ source: tgt, target: fid });
+  });
+  const ids = new Set(nodes.map((n) => n.id));
+  return {
+    nodes: nodes.slice(0, 400),
+    edges: edges.filter((e) => ids.has(e.source) && ids.has(e.target)).slice(0, 1000),
+  };
+}
+
 function MapView({ hunts, sel, setSel }: { hunts: Hunt[]; sel: string | null; setSel: (id: string) => void }) {
   const picked = hunts.find((h) => h.hunt_id === sel) ?? null;
   const { art, state } = useArtifacts(sel, picked?.status === "running");
-  const g = art?.graph;
+  // Findings for the selected hunt, overlaid as finding nodes when we synthesize.
+  const [findings, setFindings] = useState<HuntFinding[]>([]);
+  useEffect(() => {
+    let alive = true;
+    setFindings([]);
+    if (!sel) return;
+    listHuntFindings(sel).then((r) => { if (alive) setFindings(r.findings ?? []); }).catch(() => {});
+    return () => { alive = false; };
+  }, [sel]);
+  // Prefer the engine's own graph; otherwise synthesize one from the surface so a
+  // hunt that mapped endpoints always has a Map to show.
+  const g = useMemo(() => {
+    if (art?.graph && art.graph.nodes.length) return art.graph;
+    return synthGraph(art?.surface, findings);
+  }, [art, findings]);
   return (
     <div className="space-y-6">
       <ViewHeader title="Map" sub="The capability graph in 3D — every host, endpoint and finding a node; every chainable path an edge. Drag to orbit."
