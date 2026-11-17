@@ -4,8 +4,11 @@ import { useEffect, useRef, useState } from "react";
 import { getToken, API_URL } from "@/lib/api";
 
 // noVNC is loaded from a CDN at runtime (not bundled) — webpackIgnore keeps the
-// Next build from trying to resolve the external URL.
-const NOVNC_URL = "https://cdn.jsdelivr.net/npm/@novnc/novnc@1.5.0/lib/rfb.js";
+// Next build from trying to resolve the external URL. Use jsDelivr's /+esm build:
+// the package's own lib/rfb.js is a CommonJS bundle (require/exports), which a
+// native dynamic import() can't load ("require is not defined"), so the live view
+// failed to initialise. /+esm is a true ES module whose default export is RFB.
+const NOVNC_URL = "https://cdn.jsdelivr.net/npm/@novnc/novnc@1.5.0/+esm";
 
 export function VncViewer({ huntId, onClose }: { huntId: string; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
