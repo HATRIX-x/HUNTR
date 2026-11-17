@@ -391,6 +391,168 @@ function HuntRow({ h, onWatch, onCancel, onControl }: {
   );
 }
 
+/* ── live hunt · phase deck + live browser ────────────────────────── */
+
+type DeckPhase = { key: string; name: string; blurb: string; match: string[]; Icon: () => JSX.Element };
+
+const IcShield = () => (<svg viewBox="0 0 24 24" fill="none" aria-hidden><path d="M12 3l7 3v5c0 4.4-3 7.4-7 9-4-1.6-7-4.6-7-9V6l7-3z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" /><path d="M9 12l2 2 4-4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>);
+const IcRadar = () => (<svg viewBox="0 0 24 24" fill="none" aria-hidden><circle cx="12" cy="12" r="8.5" stroke="currentColor" strokeWidth="1.5" /><circle cx="12" cy="12" r="4" stroke="currentColor" strokeWidth="1.5" /><path d="M12 12l6-3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /><circle cx="12" cy="12" r="1.4" fill="currentColor" /></svg>);
+const IcMap = () => (<svg viewBox="0 0 24 24" fill="none" aria-hidden><path d="M9 4L4 6v14l5-2 6 2 5-2V4l-5 2-6-2z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /><path d="M9 4v14M15 6v14" stroke="currentColor" strokeWidth="1.4" /></svg>);
+const IcBrain = () => (<svg viewBox="0 0 24 24" fill="none" aria-hidden><path d="M8.5 5A3 3 0 006 10a3 3 0 00.5 6 3 3 0 005.5-1.7V6.2A3 3 0 008.5 5z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /><path d="M15.5 5A3 3 0 0118 10a3 3 0 01-.5 6 3 3 0 01-5.5-1.7" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /></svg>);
+const IcTarget = () => (<svg viewBox="0 0 24 24" fill="none" aria-hidden><circle cx="12" cy="12" r="8.5" stroke="currentColor" strokeWidth="1.5" /><circle cx="12" cy="12" r="4" stroke="currentColor" strokeWidth="1.5" /><path d="M12 1.5v4M12 18.5v4M1.5 12h4M18.5 12h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>);
+const IcCheck = () => (<svg viewBox="0 0 24 24" fill="none" aria-hidden><path d="M20 7L10 17l-5-5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>);
+const IcDoc = () => (<svg viewBox="0 0 24 24" fill="none" aria-hidden><path d="M7 3h7l4 4v14H7a2 2 0 01-2-2V5a2 2 0 012-2z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /><path d="M14 3v4h4M9 13h6M9 17h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>);
+
+const DECK_PHASES: DeckPhase[] = [
+  { key: "scope",   name: "Scope lock",     blurb: "Locking the authorized target surface",  match: ["scope"], Icon: IcShield },
+  { key: "recon",   name: "Recon",          blurb: "Enumerating hosts, assets and tech",      match: ["recon", "source", "fingerprint", "boot", "mobile"], Icon: IcRadar },
+  { key: "surface", name: "Map surface",    blurb: "Crawling the app, mapping endpoints",     match: ["surface", "spa", "discover", "capture", "api-test", "auth+spa"], Icon: IcMap },
+  { key: "plan",    name: "Model & plan",   blurb: "Modeling the app, planning attacks",      match: ["plan", "biz", "model"], Icon: IcBrain },
+  { key: "exploit", name: "Exploit",        blurb: "Probing endpoints for real bugs",         match: ["exploit", "authed", "hunt", "ai-direct", "llm-led", "oob", "param"], Icon: IcTarget },
+  { key: "verify",  name: "Verify & chain", blurb: "Proving findings, chaining impact",       match: ["verify", "validate", "judge", "adversarial", "chain", "scenario", "econom"], Icon: IcCheck },
+  { key: "report",  name: "Report",         blurb: "Triaging and writing up what's real",     match: ["supervisor", "triager", "polish", "report", "done"], Icon: IcDoc },
+];
+
+function deckPhaseIndex(stage?: string, status?: string): number {
+  if (status === "done") return DECK_PHASES.length - 1;
+  if (status === "queued" || !stage) return 0;
+  const s = stage.toLowerCase();
+  for (let i = DECK_PHASES.length - 1; i >= 0; i--) {
+    if (DECK_PHASES[i].match.some((k) => s.includes(k))) return i;
+  }
+  return 0;
+}
+
+function ProgressRing({ pct, tone }: { pct: number; tone: string }) {
+  const R = 33, C = 2 * Math.PI * R;
+  const p = Math.max(0, Math.min(100, pct));
+  return (
+    <svg viewBox="0 0 80 80" className="h-[72px] w-[72px] -rotate-90" aria-hidden>
+      <circle cx="40" cy="40" r={R} fill="none" stroke="var(--line)" strokeWidth="5" />
+      <circle cx="40" cy="40" r={R} fill="none" stroke={tone} strokeWidth="5" strokeLinecap="round"
+        strokeDasharray={C} strokeDashoffset={C * (1 - p / 100)} style={{ transition: "stroke-dashoffset .8s ease" }} />
+    </svg>
+  );
+}
+
+function phaseStat(key: string, h: Hunt, hosts: number, endpoints: number): string {
+  const n = h.findings || 0;
+  const noun = h.status === "done" ? "finding" : "candidate";
+  const plural = (c: number, w: string) => `${c} ${w}${c === 1 ? "" : "s"}`;
+  switch (key) {
+    case "scope":   return hosts ? plural(hosts, "host") + " in scope" : "verifying authorization";
+    case "recon":   return endpoints ? `${plural(hosts || 1, "host")} · ${plural(endpoints, "endpoint")}` : "enumerating assets";
+    case "surface": return endpoints ? plural(endpoints, "endpoint") + " mapped" : "crawling the app";
+    case "plan":    return "modeling entities & attack flows";
+    case "exploit": return n ? plural(n, noun) + " so far" : "probing the attack surface";
+    case "verify":  return n ? plural(n, noun) + " under review" : "proving impact";
+    case "report":  return h.status === "done" ? plural(n, "finding") : "finalizing the report";
+    default:        return "";
+  }
+}
+
+function PhaseDeck({ hunt }: { hunt: Hunt }) {
+  const idx = deckPhaseIndex(hunt.stage, hunt.status);
+  const maxRef = useRef(0);
+  if (hunt.status === "running" && idx > maxRef.current) maxRef.current = idx;
+  const cur = hunt.status === "running" ? Math.max(idx, maxRef.current) : idx;
+  const phase = DECK_PHASES[cur];
+  const pct = Math.max(0, Math.min(100, hunt.pct ?? 0));
+  const done = hunt.status === "done";
+  const { art } = useArtifacts(hunt.hunt_id, hunt.status === "running");
+  const endpoints = art?.surface?.endpoints?.length ?? 0;
+  const hosts = art?.surface?.hosts?.length ?? 0;
+  const lastLog = (hunt.logs ?? []).map((l) => (l ?? "").trim()).filter(Boolean).slice(-1)[0] ?? "";
+  const tone = done ? "var(--green)" : "var(--cyan)";
+
+  return (
+    <div className="space-y-3">
+      {/* big active-phase card — remounts (slides in) when the phase changes */}
+      <div key={phase.key} className="deck-card panel brackets relative overflow-hidden p-6 sm:p-7"
+        style={{ ["--bracket" as string]: tone }}>
+        <div className="pointer-events-none absolute inset-0" aria-hidden
+          style={{ background: `radial-gradient(90% 130% at 100% 0%, color-mix(in srgb, ${tone} 10%, transparent), transparent 55%)` }} />
+        <div className="relative flex items-center gap-5">
+          <div className="relative grid shrink-0 place-items-center">
+            <ProgressRing pct={pct} tone={tone} />
+            <span className="absolute grid h-9 w-9 place-items-center" style={{ color: tone }}>
+              <span className="h-5 w-5"><phase.Icon /></span>
+            </span>
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="hud text-[10.5px] uppercase tracking-[0.18em] text-faint">Phase {cur + 1} / {DECK_PHASES.length}</span>
+              {hunt.status === "running" && <span className="statuspill is-live text-green"><span className="live-dot !h-1.5 !w-1.5" /> live</span>}
+              {hunt.status === "queued" && <span className="label text-faint">provisioning</span>}
+              {done && <span className="label text-green">complete</span>}
+            </div>
+            <h3 className="display mt-1 text-2xl text-fg">{phase.name}</h3>
+            <p className="mt-0.5 text-sm text-muted">{phase.blurb}</p>
+            <p className="mt-2 font-mono text-sm text-green tabular">{phaseStat(phase.key, hunt, hosts, endpoints)}</p>
+          </div>
+          <div className="hidden shrink-0 text-right sm:block">
+            <p className="numeral text-3xl text-fg tabular">{pct}%</p>
+            <p className="label text-[9.5px] text-faint">{done ? "complete" : "overall"}</p>
+          </div>
+        </div>
+        {lastLog && (
+          <div className="relative mt-5 flex items-center gap-2 overflow-hidden rounded-lg border border-line bg-bg/60 px-3 py-2">
+            <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-faint">log</span>
+            <span key={lastLog} className="deck-ticker min-w-0 flex-1 truncate font-mono text-xs text-fg/80">{lastLog}</span>
+          </div>
+        )}
+      </div>
+
+      {/* filmstrip — the 7 phases; advances as each completes */}
+      <div className="panel flex items-stretch gap-0 overflow-x-auto p-2">
+        {DECK_PHASES.map((p, i) => {
+          const state = i < cur || (done && i <= cur) ? "done" : i === cur && !done ? "active" : "todo";
+          const col = state === "done" ? "var(--green)" : state === "active" ? "var(--cyan)" : "var(--faint)";
+          return (
+            <div key={p.key} className="flex min-w-0 flex-1 items-center">
+              <div className={`flex min-w-[64px] flex-1 flex-col items-center gap-1 rounded-lg px-1.5 py-2 transition-colors ${state === "active" ? "bg-cyan/10" : ""}`}
+                title={p.name}>
+                <span className={`grid h-7 w-7 place-items-center rounded-full border ${state === "active" ? "deck-pulse" : ""}`}
+                  style={{ color: col, borderColor: `color-mix(in srgb, ${col} 45%, transparent)`, background: state === "todo" ? "transparent" : `color-mix(in srgb, ${col} 12%, transparent)` }}>
+                  <span className="h-4 w-4">{state === "done" ? <IcCheck /> : <p.Icon />}</span>
+                </span>
+                <span className="w-full truncate text-center text-[10px] leading-tight" style={{ color: state === "todo" ? "var(--faint)" : "var(--fg)" }}>{p.name}</span>
+              </div>
+              {i < DECK_PHASES.length - 1 && (
+                <span className="h-px w-3 shrink-0" style={{ background: i < cur ? "var(--green)" : "var(--line)" }} />
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function LiveHunt({ hunt }: { hunt: Hunt }) {
+  return (
+    <section className="enter space-y-3">
+      <div className="flex items-center gap-2">
+        <span className="hud flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-muted">
+          <span className="live-dot" /> live operation
+        </span>
+        <span className="font-mono text-xs text-faint">· {hunt.target}</span>
+      </div>
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
+        <PhaseDeck hunt={hunt} />
+        {hunt.status === "running" ? (
+          <VncViewer huntId={hunt.hunt_id} embedded />
+        ) : (
+          <div className="brackets grid place-items-center rounded-xl border border-line bg-surface p-8 text-center"
+            style={{ ["--bracket" as string]: "var(--faint)" }}>
+            <p className="text-sm text-muted">The live browser opens once the hunt starts running.</p>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 /* ── telemetry summary ────────────────────────────────────────────── */
 
 function Telemetry({ hunts }: { hunts: Hunt[] }) {
@@ -1044,6 +1206,10 @@ export function HuntDashboard() {
           {view === "ops" && (
             <div className="space-y-8">
               <Telemetry hunts={hunts} />
+              {(() => {
+                const live = hunts.find((h) => h.status === "running") ?? hunts.find((h) => h.status === "queued");
+                return live ? <LiveHunt hunt={live} /> : null;
+              })()}
 
       {/* launch form — arming an operation */}
       <form onSubmit={onLaunch} className="panel brackets overflow-hidden">

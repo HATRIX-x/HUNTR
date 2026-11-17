@@ -605,3 +605,24 @@ a.panel:hover, button.panel:hover, .panel.is-hoverable:hover { border-color: var
   transform: rotate(45deg) translate(-2px, -2px); transition: transform .3s var(--ease-out), border-color .3s;
 }
 .faq-item[open] summary::after { transform: rotate(-135deg) translate(-2px, -2px); border-color: var(--cyan); }
+
+/* ── live-hunt phase deck ─────────────────────────────────────────── */
+.deck-card { animation: deck-in .5s var(--ease-out); }
+@keyframes deck-in {
+  from { opacity: 0; transform: translateX(26px) scale(.985); }
+  to   { opacity: 1; transform: translateX(0) scale(1); }
+}
+.deck-ticker { animation: deck-tick .45s var(--ease-out); }
+@keyframes deck-tick { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+.deck-pulse { position: relative; }
+.deck-pulse::after {
+  content: ""; position: absolute; inset: -3px; border-radius: 9999px;
+  border: 1px solid var(--cyan); opacity: 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .deck-pulse::after { animation: deck-ping 1.9s var(--ease-out) infinite; }
+}
+@keyframes deck-ping { 0% { transform: scale(1); opacity: .6; } 80%,100% { transform: scale(1.5); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .deck-card, .deck-ticker { animation: none; }
+}

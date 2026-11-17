@@ -10,41 +10,168 @@ import { getToken, API_URL } from "@/lib/api";
 // failed to initialise. /+esm is a true ES module whose default export is RFB.
 const NOVNC_URL = "https://cdn.jsdelivr.net/npm/@novnc/novnc@1.5.0/+esm";
 
-export function VncViewer({ huntId, onClose }: { huntId: string; onClose: () => void }) {
+type Rfb = {
+  viewOnly: boolean;
+  scaleViewport: boolean;
+  focusOnClick: boolean;
+  addEventListener: (e: string, f: () => void) => void;
+  disconnect: () => void;
+  focus: () => void;
+};
+
+type Phase = "loading" | "connecting" | "live" | "lost";
+
+/** The live CDP browser stream. Renders inline when `embedded`, else as a modal.
+ *  View-only by default — HUNTR is driving this browser; "Take control" flips the
+ *  RFB to accept the viewer's clicks/keys (they reach the same Chrome the agent
+ *  uses, so it's co-driving). `onControlChange` lets a parent react (e.g. warn). */
+export function VncViewer({
+  huntId,
+  onClose,
+  embedded = false,
+  onControlChange,
+}: {
+  huntId: string;
+  onClose?: () => void;
+  embedded?: boolean;
+  onControlChange?: (inControl: boolean) => void;
+}) {
   const ref = useRef<HTMLDivElement>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const rfbRef = useRef<Rfb | null>(null);
+  const [phase, setPhase] = useState<Phase>("loading");
+  const [control, setControl] = useState(false);
+  const [attempt, setAttempt] = useState(0); // bump to reconnect
 
   useEffect(() => {
-    let rfb: { disconnect: () => void } | null = null;
     let cancelled = false;
+    let rfb: Rfb | null = null;
+    setPhase("connecting");
     (async () => {
       try {
         const mod = await import(/* webpackIgnore: true */ NOVNC_URL);
         if (cancelled || !ref.current) return;
-        const RFB = (mod as { default: new (t: Element, u: string, o?: object) => {
-          viewOnly: boolean; scaleViewport: boolean;
-          addEventListener: (e: string, f: () => void) => void; disconnect: () => void;
-        } }).default;
+        const RFB = (mod as { default: new (t: Element, u: string, o?: object) => Rfb }).default;
         const token = getToken() ?? "";
         const wsBase = API_URL.replace(/^http/, "ws");
         const url = `${wsBase}/v1/hunts/${encodeURIComponent(huntId)}/vnc?token=${encodeURIComponent(token)}`;
         const r = new RFB(ref.current, url, { wsProtocols: ["binary"] });
         r.viewOnly = true;
         r.scaleViewport = true;
-        r.addEventListener("disconnect", () => setErr("Live view disconnected."));
+        r.focusOnClick = false;
+        r.addEventListener("connect", () => !cancelled && setPhase("live"));
+        r.addEventListener("disconnect", () => !cancelled && setPhase("lost"));
         rfb = r;
+        rfbRef.current = r;
       } catch {
-        setErr("Couldn't load the live view.");
+        if (!cancelled) setPhase("lost");
       }
     })();
-    return () => { cancelled = true; try { rfb?.disconnect(); } catch { /* no-op */ } };
-  }, [huntId]);
+    return () => {
+      cancelled = true;
+      rfbRef.current = null;
+      try { rfb?.disconnect(); } catch { /* no-op */ }
+    };
+  }, [huntId, attempt]);
 
+  // apply control state to the live RFB whenever it changes
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    const r = rfbRef.current;
+    if (r && phase === "live") {
+      r.viewOnly = !control;
+      if (control) try { r.focus(); } catch { /* no-op */ }
+    }
+    onControlChange?.(control);
+  }, [control, phase, onControlChange]);
+
+  // Esc closes a modal; if in control, Esc first releases control.
+  useEffect(() => {
+    if (!onClose && !control) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (control) setControl(false);
+      else onClose?.();
+    };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, control]);
+
+  const reconnect = () => { setPhase("connecting"); setAttempt((a) => a + 1); };
+
+  const bracket = phase === "lost" ? "var(--faint)" : control ? "var(--high)" : "var(--green)";
+
+  const chrome = (
+    <>
+      <div className="flex items-center justify-between gap-3 border-b border-line bg-surface2/95 px-4 py-2.5">
+        <span className="hud flex items-center gap-2 text-[11px] uppercase tracking-[0.16em]">
+          {phase === "lost" ? (
+            <><span className="h-1.5 w-1.5 rounded-full bg-faint" /><span className="text-faint">signal lost</span></>
+          ) : phase === "live" ? (
+            control ? (
+              <><span className="h-1.5 w-1.5 rounded-full bg-high" /><span className="font-semibold text-high">you have control</span></>
+            ) : (
+              <><span className="live-dot" /><span className="font-semibold text-green">live · HUNTR is driving</span></>
+            )
+          ) : (
+            <><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cyan" /><span className="text-muted">connecting…</span></>
+          )}
+        </span>
+        <div className="flex items-center gap-1.5">
+          {phase === "live" && (
+            <button
+              type="button"
+              onClick={() => setControl((c) => !c)}
+              className={`label rounded-md px-2.5 py-1 transition-colors ${control ? "bg-high/15 text-high hover:bg-high/25" : "text-muted hover:bg-white/5 hover:text-fg"}`}
+              title={control ? "Stop sending your input to the hunt's browser" : "Send your clicks and keystrokes to the hunt's browser (you'll be co-driving with HUNTR)"}
+            >
+              {control ? "Release control" : "Take control"}
+            </button>
+          )}
+          {phase === "lost" && (
+            <button type="button" onClick={reconnect} className="label rounded-md px-2.5 py-1 text-muted transition-colors hover:bg-white/5 hover:text-fg">
+              Reconnect
+            </button>
+          )}
+          {onClose && (
+            <button type="button" onClick={onClose} className="label rounded-md px-2.5 py-1 text-muted transition-colors hover:bg-white/5 hover:text-fg">
+              Close <span aria-hidden>✕</span>
+            </button>
+          )}
+        </div>
+      </div>
+      <div className={`relative w-full bg-black ${embedded ? "aspect-[16/10]" : "h-[70vh]"}`}>
+        <div ref={ref} className="h-full w-full" />
+        {phase !== "live" && (
+          <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 text-center">
+            {phase === "lost" ? (
+              <p className="px-6 text-sm text-muted">
+                No live view. HUNTR only streams while a hunt is actively running in its browser.
+              </p>
+            ) : (
+              <p className="px-6 text-sm text-faint">Attaching to the operator browser…</p>
+            )}
+          </div>
+        )}
+        {control && phase === "live" && (
+          <div className="pointer-events-none absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent px-4 pb-2.5 pt-8 text-center">
+            <p className="hud text-[10.5px] uppercase tracking-[0.14em] text-high/90">
+              your input is going to the live browser · Esc to release
+            </p>
+          </div>
+        )}
+      </div>
+    </>
+  );
+
+  if (embedded) {
+    return (
+      <div
+        className="brackets relative overflow-hidden rounded-xl border bg-surface"
+        style={{ ["--bracket" as string]: bracket, borderColor: "color-mix(in srgb, var(--green) 22%, transparent)" }}
+      >
+        {chrome}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -55,30 +182,11 @@ export function VncViewer({ huntId, onClose }: { huntId: string; onClose: () => 
       aria-label="Live hunt view"
     >
       <div
-        className="brackets relative w-full max-w-5xl overflow-hidden rounded-xl border border-green/25 shadow-glow-live"
-        style={{ ["--bracket" as string]: err ? "var(--faint)" : "var(--green)" }}
+        className="brackets relative w-full max-w-5xl overflow-hidden rounded-xl border shadow-glow-live"
+        style={{ ["--bracket" as string]: bracket, borderColor: "color-mix(in srgb, var(--green) 25%, transparent)" }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between border-b border-line bg-surface2/95 px-4 py-2.5">
-          {err ? (
-            <span className="hud flex items-center gap-2 text-[11px] uppercase tracking-[0.16em] text-faint">
-              <span className="h-1.5 w-1.5 rounded-full bg-faint" /> signal lost
-            </span>
-          ) : (
-            <span className="hud flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-green">
-              <span className="live-dot" /> live · operator browser
-            </span>
-          )}
-          <button type="button" onClick={onClose} className="label rounded-md px-2.5 py-1 text-muted transition-colors hover:bg-white/5 hover:text-fg">
-            Close <span aria-hidden>✕</span>
-          </button>
-        </div>
-        <div ref={ref} className="h-[70vh] w-full bg-black" />
-        {err && (
-          <p className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 to-transparent px-4 pb-4 pt-10 text-center text-sm text-muted">
-            {err}
-          </p>
-        )}
+        {chrome}
       </div>
     </div>
   );
