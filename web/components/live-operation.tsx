@@ -248,7 +248,24 @@ function Viewport({ hunt, art }: { hunt: Hunt; art: HuntArtifacts | null }) {
   const [control, setControl] = useState(false);
   const [stream, setStream] = useState<StreamPhase>("loading");
   const [reconnect, setReconnect] = useState(0);
+  const [full, setFull] = useState(false);
+  const figRef = useRef<HTMLElement>(null);
   const running = hunt.status === "running";
+
+  // Fullscreen the viewport so the operator can actually see/click the page when
+  // driving. Uses the native Fullscreen API on the figure (the same noVNC canvas
+  // scales up via scaleViewport — no second stream).
+  useEffect(() => {
+    const onFs = () => setFull(document.fullscreenElement === figRef.current);
+    document.addEventListener("fullscreenchange", onFs);
+    return () => document.removeEventListener("fullscreenchange", onFs);
+  }, []);
+  const toggleFull = () => {
+    const el = figRef.current;
+    if (!el) return;
+    if (document.fullscreenElement === el) document.exitFullscreen().catch(() => {});
+    else el.requestFullscreen?.().catch(() => {});
+  };
 
   // The agent's current action, projected onto the glass. Prefer the live log tail.
   const action = useMemo(() => {
@@ -262,7 +279,8 @@ function Viewport({ hunt, art }: { hunt: Hunt; art: HuntArtifacts | null }) {
 
   return (
     <figure
-      className="viewport brackets relative overflow-hidden rounded-xl border bg-black"
+      ref={figRef}
+      className={`viewport brackets relative overflow-hidden border bg-black ${full ? "flex h-screen w-screen flex-col rounded-none" : "rounded-xl"}`}
       style={{ ["--bracket" as string]: edge, borderColor: `color-mix(in srgb, ${edge} 30%, transparent)` }}
     >
       {/* top rail — what the operator is looking at + control affordance */}
@@ -292,11 +310,22 @@ function Viewport({ hunt, art }: { hunt: Hunt; art: HuntArtifacts | null }) {
             <button type="button" onClick={() => { setStream("connecting"); setReconnect((r) => r + 1); }}
               className="label rounded-md bg-white/5 px-2.5 py-1 text-[10px] text-fg transition-colors hover:bg-white/10">Reconnect</button>
           )}
+          {stream === "live" && (
+            <button type="button" onClick={toggleFull} aria-label={full ? "Exit fullscreen" : "Maximize live view"}
+              title={full ? "Exit fullscreen (Esc)" : "Maximize — fill the screen so you can see and click the page"}
+              className="grid h-6 w-6 place-items-center rounded-md bg-white/5 text-fg transition-colors hover:bg-white/10">
+              {full ? (
+                <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" aria-hidden><path d="M6 2v2.5a1.5 1.5 0 0 1-1.5 1.5H2M10 2v2.5A1.5 1.5 0 0 0 11.5 6H14M6 14v-2.5A1.5 1.5 0 0 0 4.5 10H2M10 14v-2.5a1.5 1.5 0 0 1 1.5-1.5H14" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>
+              ) : (
+                <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" aria-hidden><path d="M2 6V3.5A1.5 1.5 0 0 1 3.5 2H6M14 6V3.5A1.5 1.5 0 0 0 12.5 2H10M2 10v2.5A1.5 1.5 0 0 0 3.5 14H6M14 10v2.5a1.5 1.5 0 0 1-1.5 1.5H10" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>
+              )}
+            </button>
+          )}
         </div>
       </figcaption>
 
       {/* the glass */}
-      <div className="relative aspect-[16/10] w-full bg-black">
+      <div className={`relative w-full bg-black ${full ? "min-h-0 flex-1" : "aspect-[16/10]"}`}>
         {running ? (
           <VncViewer huntId={hunt.hunt_id} bare control={control} onControlChange={setControl} onStatus={setStream} reconnectSignal={reconnect} />
         ) : (
