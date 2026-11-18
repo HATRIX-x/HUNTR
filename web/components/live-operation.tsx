@@ -14,6 +14,7 @@
    ────────────────────────────────────────────────────────────────────────── */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { sanitizeModels, sevKey, isInfo, isRealFinding } from "@/lib/display";
 import {
   getHunt, getHuntArtifacts, listHuntFindings, creditsBalance,
   type Hunt, type HuntArtifacts, type HuntFinding,
@@ -35,15 +36,21 @@ const IcExploit = () => (<svg viewBox="0 0 24 24" fill="none" aria-hidden stroke
 const IcVerify = () => (<svg viewBox="0 0 24 24" fill="none" aria-hidden strokeLinecap="round" strokeLinejoin="round"><path d="M12 2.8l2.1 1.5 2.5-.2.8 2.4 2.2 1.3-.7 2.5.9 2.4-1.9 1.7-.3 2.6-2.6.3-1.6 2-2.4-.9-2.4.9-1.6-2-2.6-.3-.3-2.6-1.9-1.7.9-2.4-.7-2.5 2.2-1.3.8-2.4 2.5.2z" fill="currentColor" fillOpacity=".14" stroke="currentColor" strokeWidth="1.4" /><path d="M8.7 12.1l2.2 2.2 4.4-4.5" stroke="currentColor" strokeWidth="1.7" /></svg>);
 const IcCheck = () => (<svg viewBox="0 0 24 24" fill="none" aria-hidden><path d="M20 6.5 9.5 17 4.5 12" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" /></svg>);
 const IcReport = () => (<svg viewBox="0 0 24 24" fill="none" aria-hidden strokeLinecap="round" strokeLinejoin="round"><path d="M6 3h7l5 5v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" fill="currentColor" fillOpacity=".12" stroke="currentColor" strokeWidth={S} /><path d="M13 3v4a1 1 0 0 0 1 1h4" stroke="currentColor" strokeWidth="1.5" /><path d="M8 13.5h7M8 16.8h4.5M8 10.2h3" stroke="currentColor" strokeWidth="1.5" /></svg>);
+const IcChain = () => (<svg viewBox="0 0 24 24" fill="none" aria-hidden strokeLinecap="round" strokeLinejoin="round"><path d="M9.5 14.5l5-5" stroke="currentColor" strokeWidth={S} /><path d="M7 12l-1.6 1.6a3.1 3.1 0 0 0 4.4 4.4L11.4 16" stroke="currentColor" strokeWidth={S} /><path d="M17 12l1.6-1.6a3.1 3.1 0 0 0-4.4-4.4L12.6 8" stroke="currentColor" strokeWidth={S} /></svg>);
+const IcEcon = () => (<svg viewBox="0 0 24 24" fill="none" aria-hidden strokeLinecap="round" strokeLinejoin="round"><path d="M4 19V5M4 19h16" stroke="currentColor" strokeWidth={S} /><rect x="7.5" y="12" width="3" height="5" rx=".6" fill="currentColor" fillOpacity=".18" stroke="currentColor" strokeWidth="1.4" /><rect x="13.5" y="8" width="3" height="9" rx=".6" fill="currentColor" fillOpacity=".18" stroke="currentColor" strokeWidth="1.4" /></svg>);
+const IcTriage = () => (<svg viewBox="0 0 24 24" fill="none" aria-hidden strokeLinecap="round" strokeLinejoin="round"><path d="M4 5h16l-6 7v6l-4 2v-8L4 5z" fill="currentColor" fillOpacity=".14" stroke="currentColor" strokeWidth={S} /></svg>);
 
 const PHASES: Phase[] = [
-  { key: "scope",   name: "Scope lock",     intent: "Locking the authorized target surface", match: ["scope"], Icon: IcScope },
-  { key: "recon",   name: "Recon",          intent: "Enumerating hosts, assets and tech",     match: ["recon", "source", "fingerprint", "boot", "mobile"], Icon: IcRadar },
-  { key: "surface", name: "Map surface",    intent: "Crawling the app, mapping endpoints",    match: ["surface", "spa", "discover", "capture", "api-test", "auth+spa"], Icon: IcMap },
-  { key: "plan",    name: "Model & plan",   intent: "Modeling entities, planning attacks",    match: ["plan", "biz", "model"], Icon: IcPlan },
-  { key: "exploit", name: "Exploit",        intent: "Probing endpoints for real bugs",        match: ["exploit", "authed", "hunt", "ai-direct", "llm-led", "oob", "param"], Icon: IcExploit },
-  { key: "verify",  name: "Verify & chain", intent: "Proving findings, chaining impact",      match: ["verify", "validate", "judge", "adversarial", "chain", "scenario", "econom"], Icon: IcVerify },
-  { key: "report",  name: "Report",         intent: "Triaging and writing up what's real",    match: ["supervisor", "triager", "polish", "report", "done"], Icon: IcReport },
+  { key: "scope",   name: "Scope lock",   intent: "Locking the authorized target surface", match: ["scope"], Icon: IcScope },
+  { key: "recon",   name: "Recon",        intent: "Enumerating hosts, assets and tech",     match: ["recon", "intel", "source", "fingerprint", "boot", "mobile"], Icon: IcRadar },
+  { key: "surface", name: "Map surface",  intent: "Crawling the app, mapping endpoints",    match: ["surface", "spa", "discover", "capture", "api-test", "auth+spa"], Icon: IcMap },
+  { key: "plan",    name: "Model & plan", intent: "Modeling entities, planning attacks",    match: ["plan", "biz", "model"], Icon: IcPlan },
+  { key: "exploit", name: "Exploit",      intent: "Probing endpoints for real bugs",        match: ["exploit", "authed", "hunt", "ai-direct", "llm-led", "oob", "param"], Icon: IcExploit },
+  { key: "verify",  name: "Verify",       intent: "Proving each finding is real",           match: ["verify", "validate", "judge", "adversarial"], Icon: IcVerify },
+  { key: "chain",   name: "Chain",        intent: "Chaining findings into real impact",     match: ["chain", "scenario", "postexploit", "post-exploit"], Icon: IcChain },
+  { key: "econom",  name: "Rank & value", intent: "EV-ranking what's worth submitting",     match: ["econom", "supervisor", "dispatch", "ev-rank"], Icon: IcEcon },
+  { key: "triage",  name: "Triage",       intent: "Hard-triaging real bugs from noise",     match: ["triage", "triager", "novelty", "dedup"], Icon: IcTriage },
+  { key: "report",  name: "Report",       intent: "Writing up and scoring what's real",     match: ["report", "polish", "done"], Icon: IcReport },
 ];
 
 function phaseIndex(stage?: string, status?: string): number {
@@ -85,7 +92,10 @@ function phaseResult(key: string, h: Hunt, a: HuntArtifacts | null): string {
     case "surface": return endpoints ? `${endpoints} endpoints mapped` : "—";
     case "plan":    return graphNodes ? `${graphNodes} entities${flows ? `, ${flows} flows` : ""}` : flows ? `${flows} attack flows` : "modeled";
     case "exploit": return n ? `${n} candidate${n === 1 ? "" : "s"}` : cov ? `${cov.tested}/${cov.total} tested` : "probing";
-    case "verify":  return n ? `${n} confirmed` : "verified";
+    case "verify":  return n ? `${n} proven` : "verified";
+    case "chain":   return "impact chained";
+    case "econom":  return "EV-ranked";
+    case "triage":  return "triaged";
     case "report":  return `${n} finding${n === 1 ? "" : "s"}`;
     default:        return "";
   }
@@ -104,6 +114,9 @@ function phaseLive(key: string, h: Hunt, a: HuntArtifacts | null): string {
     case "plan":    return "modeling entities & attack flows";
     case "exploit": return cov ? `${cov.tested}/${cov.total} tested · ${n} candidate${n === 1 ? "" : "s"}` : n ? `${n} candidate${n === 1 ? "" : "s"}` : "probing endpoints";
     case "verify":  return n ? `${n} finding${n === 1 ? "" : "s"} under review` : "proving impact";
+    case "chain":   return "chaining findings into impact";
+    case "econom":  return "ranking by expected value";
+    case "triage":  return "triaging real bugs from noise";
     case "report":  return h.status === "done" ? `${n} finding${n === 1 ? "" : "s"}` : "writing up what's real";
     default:        return "";
   }
@@ -199,23 +212,26 @@ function FindingsFeed({ huntId, live, count }: { huntId: string; live: boolean; 
     return () => { alive = false; clearInterval(t); };
   }, [huntId, live]);
 
-  const pending = Math.max(0, count - items.length);
+  // info-severity findings carry no triage value — never surface them.
+  const visible = items.filter((f) => !isInfo(f.severity));
+  const headCount = live ? count : visible.filter(isRealFinding).length;
+  const pending = live ? Math.max(0, count - visible.length) : 0;
   return (
     <div className="panel flex min-h-0 flex-col overflow-hidden">
       <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
         <span className="label text-[10px] text-faint">Findings feed</span>
-        <span className="hud flex items-center gap-1.5 text-[10px] uppercase tracking-[0.14em]" style={{ color: count ? "var(--green)" : "var(--faint)" }}>
-          {live && count > 0 && <span className="live-dot !h-1.5 !w-1.5" />}{count} {live ? "candidate" : "confirmed"}{count === 1 ? "" : "s"}
+        <span className="hud flex items-center gap-1.5 text-[10px] uppercase tracking-[0.14em]" style={{ color: headCount ? "var(--green)" : "var(--faint)" }}>
+          {live && headCount > 0 && <span className="live-dot !h-1.5 !w-1.5" />}{headCount} {live ? "candidate" : "verified"}{headCount === 1 ? "" : "s"}
         </span>
       </div>
       <ul className="min-h-0 flex-1 divide-y divide-line overflow-auto" aria-live={live ? "polite" : undefined}>
-        {items.length === 0 && pending === 0 && (
+        {visible.length === 0 && pending === 0 && (
           <li className="px-4 py-6 text-center text-[12px] text-faint">
             {live ? "No candidates yet — HUNTR is still working the surface." : "No findings."}
           </li>
         )}
-        {items.map((f, i) => {
-          const sev = (f.severity || "info").toLowerCase();
+        {visible.map((f, i) => {
+          const sev = sevKey(f.severity);
           return (
             <li key={`${f.title}-${i}`} className="feed-row flex items-start gap-3 px-4 py-2.5">
               <span aria-hidden className="mt-1.5 h-2 w-2 shrink-0 rounded-full" style={{ background: SEV_COL[sev] ?? "var(--cyan)", boxShadow: `0 0 10px -1px ${SEV_COL[sev] ?? "var(--cyan)"}` }} />
@@ -270,7 +286,7 @@ function Viewport({ hunt, art }: { hunt: Hunt; art: HuntArtifacts | null }) {
   // The agent's current action, projected onto the glass. Prefer the live log tail.
   const action = useMemo(() => {
     const last = (hunt.logs ?? []).map((l) => (l ?? "").trim()).filter(Boolean).slice(-1)[0] ?? "";
-    return last;
+    return sanitizeModels(last);
   }, [hunt.logs]);
 
   const cur = phaseIndex(hunt.stage, hunt.status);

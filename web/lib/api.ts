@@ -335,8 +335,32 @@ export interface AllFinding extends HuntFinding {
   hunt_created_at?: string;
 }
 
-export function listAllFindings() {
-  return req<{ findings: AllFinding[]; count: number }>("/v1/findings", { method: "GET" }, true);
+// Aggregate every finding across the user's hunts for the console Findings view.
+// We build this client-side from the per-hunt endpoint (which reads the hunt's
+// findings_json — where findings actually live) instead of the server's
+// /v1/findings, because that route is shadowed by a stale handler reading an
+// always-empty Finding table, so it returns nothing. Mirrors what the backend's
+// `all_findings` would return, using only endpoints that work.
+export async function listAllFindings(): Promise<{ findings: AllFinding[]; count: number }> {
+  const { hunts } = await listHunts();
+  const ordered = [...hunts].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+  const per = await Promise.all(
+    ordered.map((h) =>
+      listHuntFindings(h.hunt_id)
+        .then((r) =>
+          (r.findings ?? []).map((f): AllFinding => ({
+            ...f,
+            hunt_id: h.hunt_id,
+            target: h.target,
+            program: h.program,
+            hunt_created_at: h.created_at,
+          })),
+        )
+        .catch(() => [] as AllFinding[]),
+    ),
+  );
+  const findings = per.flat();
+  return { findings, count: findings.length };
 }
 
 export interface SurfaceHost { host?: string; scheme?: string; status?: string }

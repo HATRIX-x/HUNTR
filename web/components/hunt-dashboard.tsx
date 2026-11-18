@@ -10,6 +10,7 @@ import {
 } from "@/lib/api";
 import { VncViewer } from "@/components/vnc-viewer";
 import { LiveOperation } from "@/components/live-operation";
+import { sanitizeModels, sevKey, isInfo, isRealFinding } from "@/lib/display";
 import { CapabilityGraph3D } from "@/components/capability-graph-3d";
 
 type ConsoleView = "ops" | "findings" | "map" | "coverage" | "surface";
@@ -31,7 +32,7 @@ function ago(iso?: string) {
 
 // Instant, offline hint only — counts host-like tokens and splits on an
 // "out of scope" heading. The authoritative in/out/ambiguous classification is
-// done by Haiku 5.5 on the worker (tools/scope_ingest.py) before the hunt runs,
+// done by HUNTR's triage model on the worker (tools/scope_ingest.py) before the hunt runs,
 // so this stays deliberately rough and never blocks a launch.
 function scopeAtAGlance(text: string): { inN: number; outN: number } | null {
   const raw = (text || "").trim();
@@ -49,7 +50,7 @@ function scopeAtAGlance(text: string): { inN: number; outN: number } | null {
 }
 
 // A provisional `target` host pulled from a pasted scope page, just so the API
-// has one — the worker's triage model (Haiku 5.5) does the authoritative
+// has one — the worker's triage model does the authoritative
 // in/out-of-scope split and names the program server-side. We scan the WHOLE
 // paste (scope sorting is the worker's job, not ours) and prefer a real web
 // domain over a reverse-DNS mobile app id (e.g. com.acme.app) when both appear.
@@ -119,7 +120,7 @@ function LogTail({ huntId, live }: { huntId: string; live: boolean }) {
       >
         {logs.map((l, i) => (
           <div key={i} className="ln whitespace-pre-wrap">
-            <span className={i === logs.length - 1 && live ? "text-fg" : undefined}>{l}</span>
+            <span className={i === logs.length - 1 && live ? "text-fg" : undefined}>{sanitizeModels(l)}</span>
           </div>
         ))}
       </div>
@@ -211,21 +212,22 @@ function FindingsList({ huntId }: { huntId: string }) {
         {[0, 1].map((i) => <div key={i} className="skeleton h-10" />)}
       </div>
     );
-  if (items.length === 0)
+  const shown = items.filter((f) => !isInfo(f.severity));
+  if (shown.length === 0)
     return <p className="px-5 py-6 text-sm text-muted">No findings yet. Validated findings appear here as the hunt confirms them.</p>;
-  const verified = items.filter((f) => f.poc_verified).length;
+  const verified = shown.filter((f) => f.poc_verified).length;
   return (
     <div>
       <div className="flex items-center justify-between px-5 pb-1 pt-4">
         <span className="label text-faint">Findings</span>
         <span className="font-mono text-[11px] text-muted">
-          <span className="text-fg">{items.length}</span> reported
+          <span className="text-fg">{shown.length}</span> reported
           {verified > 0 && <> · <span className="text-green">{verified} verified</span></>}
         </span>
       </div>
       <ul className="divide-y divide-line">
-        {items.map((f, i) => {
-          const sev = f.severity?.toLowerCase();
+        {shown.map((f, i) => {
+          const sev = sevKey(f.severity);
           const isOpen = open === i;
           return (
             <li key={i} className="relative">
@@ -241,7 +243,7 @@ function FindingsList({ huntId }: { huntId: string }) {
                   aria-expanded={isOpen}
                   className="group flex w-full flex-wrap items-start gap-x-3 gap-y-2 text-left sm:flex-nowrap"
                 >
-                  <span className={`chip mt-0.5 ${SEV[sev] ?? "info"}`}>{f.severity}</span>
+                  <span className={`chip mt-0.5 ${SEV[sev] ?? "info"}`}>{sev}</span>
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-medium leading-snug text-fg transition-colors group-hover:text-brand-200">{f.title}</p>
                     <p className="mt-1 truncate font-mono text-[11px] text-muted">
@@ -311,8 +313,24 @@ function HuntRow({ h, onWatch, onCancel, onControl }: {
   const [open, setOpen] = useState(false);
   const running = h.status === "running";
   const paused = h.status === "paused";
+  const done = h.status === "done";
   const st = STATUS[h.status];
   const pct = Math.max(3, Math.min(100, h.pct ?? 0));
+
+  // For a finished hunt, show the count of REAL verified findings (not raw
+  // candidates, which include false-positives and info noise). Fetched once.
+  const [verifiedCount, setVerifiedCount] = useState<number | null>(null);
+  useEffect(() => {
+    if (!done) { setVerifiedCount(null); return; }
+    let alive = true;
+    listHuntFindings(h.hunt_id)
+      .then((r) => { if (alive) setVerifiedCount((r.findings ?? []).filter(isRealFinding).length); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [done, h.hunt_id]);
+
+  const count = done ? (verifiedCount ?? h.findings) : h.findings;
+  const countLabel = running || paused ? "candidates" : "verified";
   return (
     <div
       className={`panel enter overflow-hidden transition-[border-color,box-shadow] duration-500 ${running ? "is-live" : ""}`}
@@ -402,8 +420,8 @@ function HuntRow({ h, onWatch, onCancel, onControl }: {
             </button>
           )}
           <div className="min-w-[3.5rem] text-right">
-            <p className={`numeral text-2xl ${h.findings > 0 ? "text-green" : "text-fg/60"}`}>{h.findings}</p>
-            <p className="label mt-0.5 text-[9.5px] text-faint" title={running || paused ? "Candidate findings the engine is still validating — confirmed ones move to the Findings tab when the hunt finishes." : "Validated findings — see the Findings tab for full reports."}>{running || paused ? "candidates" : "findings"}</p>
+            <p className={`numeral text-2xl ${count > 0 ? "text-green" : "text-fg/60"}`}>{count}</p>
+            <p className="label mt-0.5 text-[9.5px] text-faint" title={running || paused ? "Candidate findings the engine is still validating — confirmed ones move to the Findings tab when the hunt finishes." : "Verified findings (false-positives and info-noise excluded) — see the Findings tab for full reports."}>{countLabel}</p>
           </div>
           <StatusPill s={h.status} />
         </div>
@@ -663,9 +681,11 @@ function FindingsView() {
       .catch(() => { if (alive) setErr(true); });
     return () => { alive = false; };
   }, []);
-  const counts = tallyFindings(items);
-  const shown = (items ?? []).filter((f) =>
-    (!sev || (f.severity?.toLowerCase() ?? "info") === sev) && (!verifiedOnly || f.poc_verified));
+  // Drop info-severity findings entirely — they carry no triage value.
+  const real = (items ?? []).filter((f) => !isInfo(f.severity));
+  const counts = tallyFindings(real);
+  const shown = real.filter((f) =>
+    (!sev || sevKey(f.severity) === sev) && (!verifiedOnly || f.poc_verified));
   return (
     <div className="space-y-6">
       <ViewHeader title="Findings" sub="Every validated finding across your hunts. Verified ones carry a live proof." />
@@ -673,32 +693,32 @@ function FindingsView() {
         <div className="space-y-2">{[0, 1, 2].map((i) => <div key={i} className="skeleton h-16" />)}</div>
       )}
       {err && <EmptyArt state="error" label="Findings" />}
-      {items !== null && items.length === 0 && (
+      {items !== null && real.length === 0 && (
         <div className="tile-locked flex flex-col items-center px-6 py-14 text-center">
           <p className="display text-xl text-fg">No findings yet</p>
           <p className="mt-2 max-w-sm text-sm text-muted">Launch a hunt from Ops. Validated findings land here as they&apos;re confirmed.</p>
         </div>
       )}
-      {items !== null && items.length > 0 && (
+      {items !== null && real.length > 0 && (
         <>
           <div className="flex flex-wrap items-center gap-2">
-            <button type="button" onClick={() => setSev(null)} className={`chip ${!sev ? "val" : "info"}`}>All {items.length}</button>
+            <button type="button" onClick={() => setSev(null)} className={`chip ${!sev ? "val" : "info"}`}>All {real.length}</button>
             {SEV_ORDER.filter((s) => counts[s]).map((s) => (
               <button key={s} type="button" onClick={() => setSev(sev === s ? null : s)}
-                className={`chip ${sev === s ? SEV[s] ?? "info" : "info"}`}>{s} {counts[s]}</button>
+                className={`chip ${sev === s ? SEV[s] ?? "info" : "mute"}`}>{s} {counts[s]}</button>
             ))}
             <button type="button" onClick={() => setVerifiedOnly((v) => !v)}
               className={`chip ml-auto ${verifiedOnly ? "val" : "info"}`}>✓ verified {counts.verified}</button>
           </div>
           <ul className="space-y-2">
             {shown.map((f, i) => {
-              const s = f.severity?.toLowerCase() ?? "info";
+              const s = sevKey(f.severity);
               const isOpen = open === i;
               return (
                 <li key={i} className="panel overflow-hidden">
                   <button type="button" onClick={() => setOpen(isOpen ? null : i)} aria-expanded={isOpen}
                     className="group flex w-full items-start gap-3 p-4 text-left transition-colors hover:bg-white/[0.015]">
-                    <span className={`chip mt-0.5 ${SEV[s] ?? "info"}`}>{f.severity}</span>
+                    <span className={`chip mt-0.5 ${SEV[s] ?? "info"}`}>{s}</span>
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium leading-snug text-fg transition-colors group-hover:text-brand-200">{f.title}</p>
                       <p className="mt-1 truncate font-mono text-[11px] text-muted">
@@ -725,7 +745,7 @@ function FindingsView() {
 function tallyFindings(items: AllFinding[] | null) {
   const c: Record<string, number> = { verified: 0 };
   for (const f of items ?? []) {
-    const s = f.severity?.toLowerCase() ?? "info";
+    const s = sevKey(f.severity);
     c[s] = (c[s] ?? 0) + 1;
     if (f.poc_verified) c.verified += 1;
   }
@@ -1209,7 +1229,7 @@ export function HuntDashboard() {
           </div>
 
           {/* ── scope page — the single source of truth for a hunt ──────────
-             Paste the program's scope block; the worker's triage model (Haiku
+             Paste the program's scope block; the worker's triage model (the engine
              5.5) names the program and splits in-scope from out-of-scope. */}
           <div className="mt-7">
             <label className="block">
