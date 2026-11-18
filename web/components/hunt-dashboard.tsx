@@ -670,9 +670,10 @@ function EmptyArt({ state, label }: { state: string; label: string }) {
 const SEV_ORDER = ["critical", "high", "medium", "low", "info"];
 
 /* ── per-finding submission status (CRM) — a styled popover, not a native select ── */
-function StatusSelect({ value, onChange }: { value: Stage; onChange: (s: Stage) => void }) {
+function StatusSelect({ value, onChange, onOpenChange }: { value: Stage; onChange: (s: Stage) => void; onOpenChange?: (open: boolean) => void }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => { onOpenChange?.(open); }, [open, onOpenChange]);
   useEffect(() => {
     if (!open) return;
     const onDoc = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
@@ -761,6 +762,9 @@ function FindingsView({ hunts }: { hunts: Hunt[] }) {
   const [huntSel, setHuntSel] = useState<string | null>(null);
   const [crm, setCrm] = useState<ReturnType<typeof readCrm>>({});
   const [open, setOpen] = useState<string | null>(null);
+  // which card's status dropdown is open — that card is lifted above its siblings
+  // so the popover isn't occluded (each .panel is its own stacking context).
+  const [statusOpen, setStatusOpen] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
     listAllFindings()
@@ -784,7 +788,7 @@ function FindingsView({ hunts }: { hunts: Hunt[] }) {
     const k = fkey(f);
     const isOpen = open === k;
     return (
-      <li key={k} className="panel">
+      <li key={k} className={`panel ${statusOpen === k ? "z-30" : ""}`}>
         <div className="flex w-full flex-wrap items-start gap-3 p-4 sm:flex-nowrap">
           <button type="button" onClick={() => setOpen(isOpen ? null : k)} aria-expanded={isOpen}
             className="group flex min-w-0 flex-1 items-start gap-3 text-left">
@@ -800,7 +804,7 @@ function FindingsView({ hunts }: { hunts: Hunt[] }) {
             {f.bounty_est ? <span className="font-mono text-xs font-semibold text-green tabular">~${f.bounty_est.toLocaleString()}</span> : null}
             {typeof f.cvss === "number" && <span className="font-mono text-[11px] text-muted tabular">CVSS {f.cvss.toFixed(1)}</span>}
             {f.poc_verified ? <span className="verified"><CheckIcon /> verified</span> : null}
-            <StatusSelect value={stageOf(crm, k)} onChange={(st) => setCrm((c) => setStage(c, k, st))} />
+            <StatusSelect value={stageOf(crm, k)} onChange={(st) => setCrm((c) => setStage(c, k, st))} onOpenChange={(o) => setStatusOpen(o ? k : (p) => (p === k ? null : p))} />
           </div>
         </div>
         {isOpen && <div className="border-t border-line px-4 pb-4"><FindingDetail f={f} /></div>}
