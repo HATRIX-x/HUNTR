@@ -354,7 +354,7 @@ function HuntRow({ h, onWatch, onCancel, onControl }: {
             >
               <path d="M4 2.5 8 6l-4 3.5" stroke="currentColor" strokeWidth="1.6" fill="none" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
-            <span className="truncate font-mono text-[15px] font-medium text-fg">{h.target}</span>
+            <span className="truncate font-mono text-[15px] font-medium text-fg">{sanitizeModels(h.target)}</span>
             <span className="chip info hidden sm:inline">{h.mode}</span>
           </div>
           <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 pl-6 font-mono text-[11px] text-faint">
@@ -565,7 +565,7 @@ function HuntPicker({ hunts, sel, setSel }: { hunts: Hunt[]; sel: string | null;
   if (hunts.length === 0 || !cur) return null;
 
   const label = (h: Hunt) =>
-    `${h.target} · ${STATUS[h.status]?.label ?? h.status}${h.findings ? ` · ${h.findings} finding${h.findings === 1 ? "" : "s"}` : ""}`;
+    `${sanitizeModels(h.target)} · ${STATUS[h.status]?.label ?? h.status}${h.findings ? ` · ${h.findings} finding${h.findings === 1 ? "" : "s"}` : ""}`;
 
   const choose = (i: number) => { const h = hunts[i]; if (h) { setSel(h.hunt_id); setOpen(false); } };
 
@@ -619,7 +619,7 @@ function HuntPicker({ hunts, sel, setSel }: { hunts: Hunt[]; sel: string | null;
                 >
                   <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: st?.rail ?? "var(--faint)" }} />
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate font-mono text-[12.5px] text-fg">{h.target}</span>
+                    <span className="block truncate font-mono text-[12.5px] text-fg">{sanitizeModels(h.target)}</span>
                     <span className={`block truncate text-[11px] ${st?.cls ?? "text-faint"}`}>
                       {st?.label ?? h.status}{h.findings ? ` · ${h.findings} finding${h.findings === 1 ? "" : "s"}` : ""}
                     </span>
@@ -703,7 +703,7 @@ function FindingsView() {
           <div className="min-w-0 flex-1">
             <p className="text-sm font-medium leading-snug text-fg transition-colors group-hover:text-brand-200">{f.title}</p>
             <p className="mt-1 truncate font-mono text-[11px] text-muted">
-              {!groupByProgram && <><span className="text-faint">{f.target}</span> · </>}{f.cls} <span className="text-faint">→</span> {f.endpoint}
+              {!groupByProgram && <><span className="text-faint">{sanitizeModels(f.target)}</span> · </>}{f.cls} <span className="text-faint">→</span> {f.endpoint}
             </p>
           </div>
           <div className="flex shrink-0 flex-col items-end gap-1.5 sm:flex-row sm:items-center sm:gap-2.5">
@@ -765,7 +765,7 @@ function FindingsView() {
                 return (
                   <section key={prog}>
                     <div className="mb-2 flex items-center gap-3 px-1">
-                      <h3 className="font-mono text-[13px] font-semibold text-fg">{prog}</h3>
+                      <h3 className="font-mono text-[13px] font-semibold text-fg">{sanitizeModels(prog)}</h3>
                       <span className="h-px flex-1 bg-line" />
                       <span className="font-mono text-[11px] text-muted">
                         {list.length} finding{list.length === 1 ? "" : "s"}

@@ -454,7 +454,7 @@ export function LiveOperation({ hunt: initial }: { hunt: Hunt }) {
         <span className="hud flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-fg">
           <span className={running ? "live-dot" : ""} />{done ? "operation complete" : hunt.status === "queued" ? "operation arming" : "operation live"}
         </span>
-        <span className="font-mono text-xs text-faint">· {hunt.target}</span>
+        <span className="font-mono text-xs text-faint">· {sanitizeModels(hunt.target)}</span>
         {hunt.mode && <span className="chip mute">{hunt.mode}</span>}
         <span className="ml-auto flex items-center gap-2">
           <span className="hud text-[10px] uppercase tracking-[0.14em] text-faint">phase {Math.min(cur, PHASES.length - 1) + 1}/{PHASES.length}</span>
