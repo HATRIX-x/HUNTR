@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { me, registerAgent, checkout, clearToken, getToken, ApiError, type Me, type AgentToken, type Profile } from "@/lib/api";
+import { me, checkout, clearToken, getToken, ApiError, type Me, type Profile } from "@/lib/api";
 import { TwoFactor } from "@/components/two-factor";
 import { Onboarding } from "@/components/onboarding";
 import { ProfileSettings } from "@/components/profile-settings";
@@ -26,52 +26,9 @@ const CREDIT_PACKS = [
   { slug: "takedown", name: "Takedown", price: "$300", credits: "360 credits" },
 ];
 
-// ── crafted icons (no emoji) ──────────────────────────────────────────────
-function LockIcon({ className = "" }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
-      <rect x="4.5" y="10.5" width="15" height="10" rx="2.4" stroke="currentColor" strokeWidth="1.6" />
-      <path d="M8 10.5V7.8A4 4 0 0 1 16 7.8v2.7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-      <circle cx="12" cy="15.3" r="1.5" fill="currentColor" />
-      <path d="M12 16.4v1.8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-    </svg>
-  );
-}
-function KeyIcon({ className = "" }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
-      <circle cx="8" cy="8" r="4.2" stroke="currentColor" strokeWidth="1.6" />
-      <path d="M11 11l8 8M16 16l2-2M18.5 18.5l2-2" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function Copy({ text }: { text: string }) {
-  const [done, setDone] = useState(false);
-  return (
-    <button
-      type="button"
-      onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(text);
-          setDone(true);
-          setTimeout(() => setDone(false), 1500);
-        } catch {
-          /* clipboard blocked */
-        }
-      }}
-      className={`label shrink-0 rounded-md border px-3 py-1.5 transition-colors ${done ? "border-green/40 text-green" : "border-line text-muted hover:border-brand hover:text-brand"}`}
-    >
-      {done ? "Copied" : "Copy"}
-    </button>
-  );
-}
-
 export function AccountPanel() {
   const [state, setState] = useState<"loading" | "ready" | "signedout">("loading");
   const [user, setUser] = useState<Me | null>(null);
-  const [token, setToken] = useState<AgentToken | null>(null);
-  const [provisioning, setProvisioning] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [buying, setBuying] = useState<string | null>(null);
 
@@ -107,18 +64,6 @@ export function AccountPanel() {
         }
       });
   }, []);
-
-  const provision = async () => {
-    setErr(null);
-    setProvisioning(true);
-    try {
-      setToken(await registerAgent("default"));
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "Couldn't create an agent token.");
-    } finally {
-      setProvisioning(false);
-    }
-  };
 
   const signOut = () => {
     clearToken();
@@ -231,69 +176,6 @@ export function AccountPanel() {
         <Link href="/pricing/" className="relative mt-5 inline-block label ulink text-muted hover:text-fg">
           See all packs
         </Link>
-      </div>
-
-      {/* ── connect your operator ── */}
-      <div className="panel p-7 sm:p-8">
-        <div className="flex items-center gap-3">
-          <span className="icon-badge h-10 w-10 text-brand"><KeyIcon className="h-5 w-5" /></span>
-          <h2 className="display text-xl text-fg">Connect your operator</h2>
-        </div>
-        <p className="mt-4 max-w-2xl text-sm leading-relaxed text-muted">
-          HUNTR runs every hunt for you on our infrastructure — no API key, no setup. Generate an
-          agent token to connect the operator to your account, so your hunts, findings, and funnel all
-          sync here.
-        </p>
-
-        {!isPaid ? (
-          <div className="tile-locked mt-6 flex flex-col items-center gap-4 rounded-xl px-6 py-8 text-center">
-            <span className="icon-badge icon-badge-pulse h-12 w-12 text-brand">
-              <LockIcon className="h-6 w-6" />
-            </span>
-            <div>
-              <p className="label text-brand">Paid plan required</p>
-              <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted">
-                Load credits to start hunting — HUNTR runs every hunt for you, no API key or setup
-                required.
-              </p>
-            </div>
-            <Link href="/pricing/" className="btn-brand mt-1">Choose a plan</Link>
-          </div>
-        ) : !token ? (
-          <button
-            type="button"
-            onClick={provision}
-            disabled={provisioning}
-            className="btn-brand mt-6 disabled:opacity-60"
-          >
-            {provisioning ? "Generating…" : "Generate agent token"}
-          </button>
-        ) : (
-          <div className="mt-6 space-y-4">
-            <div>
-              <span className="label text-faint">Agent token — shown once</span>
-              <div className="mt-2 flex items-center gap-3 rounded-lg border border-line bg-bg px-4 py-3">
-                <code className="min-w-0 flex-1 break-all font-mono text-xs text-green">
-                  {token.agent_token}
-                </code>
-                <Copy text={token.agent_token} />
-              </div>
-              <p className="mt-2 text-xs text-faint">
-                Store it somewhere safe now — for security it isn&apos;t shown again. You can always
-                generate a new one.
-              </p>
-            </div>
-            <div>
-              <span className="label text-faint">Then, in the HUNTR app</span>
-              <div className="mt-2 flex items-center gap-3 rounded-lg border border-line bg-bg px-4 py-3">
-                <code className="min-w-0 flex-1 break-all font-mono text-xs text-fg">
-                  huntr link --token {token.agent_token}
-                </code>
-                <Copy text={`huntr link --token ${token.agent_token}`} />
-              </div>
-            </div>
-          </div>
-        )}
       </div>
 
       <TwoFactor enabled={!!user?.twofa_enabled} />

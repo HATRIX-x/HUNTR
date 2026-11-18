@@ -82,11 +82,6 @@ export function isTwoFAChallenge(r: AuthResult | TwoFAChallenge): r is TwoFAChal
   return (r as TwoFAChallenge).twofa_required === true;
 }
 
-export interface AgentToken {
-  agent_id: string;
-  agent_token: string; // raw — shown once
-}
-
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -391,11 +386,3 @@ export function controlHunt(huntId: string, action: "pause" | "resume" | "cancel
   );
 }
 
-// ── agents ────────────────────────────────────────────────────────────────
-export function registerAgent(name = "default") {
-  return req<AgentToken>(
-    "/v1/agents/register",
-    { method: "POST", body: JSON.stringify({ name }) },
-    true,
-  );
-}
