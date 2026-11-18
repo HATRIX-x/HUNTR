@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   getToken, me, listHunts, startHunt, getHunt, listHuntFindings, cancelHunt,
   controlHunt, listAllFindings, getHuntArtifacts, ApiError,
@@ -672,25 +673,50 @@ const SEV_ORDER = ["critical", "high", "medium", "low", "info"];
 /* ── per-finding submission status (CRM) — a styled popover, not a native select ── */
 function StatusSelect({ value, onChange, onOpenChange }: { value: Stage; onChange: (s: Stage) => void; onOpenChange?: (open: boolean) => void }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const popRef = useRef<HTMLUListElement>(null);
   useEffect(() => { onOpenChange?.(open); }, [open, onOpenChange]);
+
+  // Portal the menu to <body> so it escapes the card's clipping + backdrop-filter
+  // stacking context (otherwise sibling cards paint over it). Position it under the
+  // button, right-aligned, and close on outside-click / scroll / resize.
+  const place = () => {
+    const b = btnRef.current?.getBoundingClientRect();
+    if (b) setPos({ top: b.bottom + 6, right: Math.max(8, window.innerWidth - b.right) });
+  };
   useEffect(() => {
     if (!open) return;
-    const onDoc = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    place();
+    const onDoc = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!btnRef.current?.contains(t) && !popRef.current?.contains(t)) setOpen(false);
+    };
+    const onScroll = () => setOpen(false);
     document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onScroll);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onScroll);
+    };
   }, [open]);
+
   const cur = STAGE_MAP[value];
   return (
-    <div ref={ref} className="relative" onClick={(e) => e.stopPropagation()}>
-      <button type="button" onClick={() => setOpen((v) => !v)} aria-haspopup="listbox" aria-expanded={open}
+    <div className="relative" onClick={(e) => e.stopPropagation()}>
+      <button ref={btnRef} type="button" onClick={() => setOpen((v) => !v)} aria-haspopup="listbox" aria-expanded={open}
         title={cur.hint}
         className={`chip ${cur.chip} inline-flex items-center gap-1.5 !normal-case`}>
         <span className="h-1.5 w-1.5 rounded-full" style={{ background: cur.dot }} />{cur.label}
         <svg viewBox="0 0 16 16" className="h-3 w-3 opacity-70" fill="none" aria-hidden><path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
       </button>
-      {open && (
-        <ul role="listbox" className="hunt-pop enter absolute right-0 z-40 mt-1.5 w-56 max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-[10px] border border-line-2 bg-surface2/98 p-1.5 shadow-2 backdrop-blur">
+      {open && pos && typeof document !== "undefined" && createPortal(
+        <ul ref={popRef} role="listbox"
+          style={{ top: pos.top, right: pos.right }}
+          className="hunt-pop enter fixed z-[90] w-56 max-w-[calc(100vw-1rem)] overflow-hidden rounded-[10px] border border-line-2 bg-surface2/98 p-1.5 shadow-2 backdrop-blur"
+          onClick={(e) => e.stopPropagation()}>
           {STAGES.map((s) => (
             <li key={s.key} role="option" aria-selected={s.key === value}
               onClick={() => { onChange(s.key); setOpen(false); }}
@@ -703,7 +729,8 @@ function StatusSelect({ value, onChange, onOpenChange }: { value: Stage; onChang
               {s.key === value && <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0 text-brand" fill="none" aria-hidden><path d="M3.5 8.5 6.5 11.5 12.5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>}
             </li>
           ))}
-        </ul>
+        </ul>,
+        document.body,
       )}
     </div>
   );
