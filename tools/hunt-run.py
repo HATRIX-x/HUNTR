@@ -4408,6 +4408,48 @@ def _run_phase_agent(phase_name, stage_label, stage_pct, brief, budget_sec, resu
     return True
 
 
+def _recon_enumeration_floor(deadline=None):
+    """ENUMERATION FLOOR under the agentic recon phase (2026-11-18).
+
+    _phase_recon_surface_agent used to be the SOLE source of attack surface whenever "recon_surface"
+    is agentic — the deterministic enumeration (phase_recon/phase_mobile/phase_surface/phase_discover)
+    only ran on the legacy else-branch in main(). That meant the mapped surface was only ever as
+    complete as the AGENT decided to be: an agent that concluded "surface covered" after a shallow
+    pass left the rest undiscovered, and nothing underneath it could prove the surface was actually
+    incomplete. That is precisely the failure that has cost real bugs in this project — Shiji: 50+
+    live bugs lived under /system/v1/* that HUNTR never mapped; a silently-dead CDP making SPA
+    discovery return nothing looked identical to a genuinely clean "surface covered".
+
+    subfinder/httpx/katana/dnsx (via recon.py/surface.py/phase_discover) are third-party ENUMERATION
+    binaries, not HUNTR's own scripted vuln judgment — _phase_recon_surface_agent's own docstring
+    already blesses the agent driving them by hand. Running them as a guaranteed FLOOR, before the
+    agent, does not contradict the full-agentic principle: the agent still decides what is worth
+    DIGGING INTO, it just can no longer make the surface itself smaller than what enumeration found.
+    The agent's own _merge only ADDS to STATE (it dedups against what is already there), so the final
+    surface is floor ∪ agent-additions — the agent physically cannot shrink the denominator, only
+    extend it.
+
+    Resumable + idempotent: recon.py/surface.py checkpoint to their own state files, so re-entry on
+    resume (including from the resume setup-healing loop in main(), which calls this phase too) skips
+    everything already resolved. Records STATE["recon_floor"] as the coverage denominator so "surface
+    covered" becomes a computed baseline a human or later phase can check, not an agent assertion.
+    Kept as its own helper (not inlined) so BOTH call sites of _phase_recon_surface_agent — the
+    fresh-run path and the resume-healing loop — get the floor identically."""
+    phase_recon()             # DNS + HTTP probe + S3 buckets + GitHub dork (resumable via recon-state.json)
+    phase_mobile()            # mobile scope — APK backend hosts/endpoints/secrets (self-skips if no mobile asset)
+    phase_surface()           # endpoint crawl (resumable via surface-state.json)
+    phase_discover(deadline)  # ACTIVE discovery — unlinked paths + OpenAPI/Swagger walk + BFS
+    STATE["recon_floor"] = {
+        "hosts": len(STATE.get("hosts", [])),
+        "endpoints": len(STATE.get("endpoints", [])),
+        "source": "deterministic enumeration (recon.py/surface.py/phase_discover)",
+    }
+    log("out", "→ enumeration floor: " + str(STATE["recon_floor"]["hosts"]) + " host(s) · " +
+        str(STATE["recon_floor"]["endpoints"]) + " endpoint(s) mapped before the agent runs — "
+        "the agent extends this surface, it cannot shrink it")
+    flush()
+
+
 def _phase_recon_surface_agent(deadline=None):
     """PILOT of the full-agentic rewrite (see HUNTR full-agentic plan, 2026-10-25) — Phase 2:
     Recon + Surface Mapping. Replaces phase_recon()/phase_mobile()/phase_surface()/phase_recon_agent()
@@ -4421,8 +4463,10 @@ def _phase_recon_surface_agent(deadline=None):
     scripted phases remain the default, reverted by removing the env var alone, no code revert needed.
     Lowest-risk pilot: worst case is an incomplete endpoint list, never a corrupted finding or a
     destructive write."""
-    budget = _phase_budget("recon_surface", deadline)
+    _recon_enumeration_floor(deadline)   # guaranteed enumeration FLOOR before the agent — see its docstring
+    budget = _phase_budget("recon_surface", deadline)   # computed AFTER the floor, so it reflects remaining time
     scope_summary = ", ".join(WEB_ASSETS)[:400] or TARGET
+    floor = STATE.get("recon_floor") or {}
     denyf = HUNT_DIR / "scope.deny"
     deny_text = denyf.read_text(errors="ignore")[:800] if denyf.exists() else "(none written)"
     brief = (
@@ -4432,14 +4476,23 @@ def _phase_recon_surface_agent(deadline=None):
         f"## Explicitly OUT OF SCOPE — never send a request here\n{deny_text}\n"
         "There is no technical enforcement behind this. You are the only thing stopping an "
         "out-of-scope request. Treat the deny list as a hard operational boundary, not a suggestion.\n\n"
-        "## Your job\n"
-        "Map this target's real attack surface the way a human recon specialist would: find live "
-        "subdomains/hosts, then crawl/enumerate real endpoints on each (including any mobile-app "
-        "backend API if an APK/mobile asset is in scope). You have real Bash access — subfinder, dnsx, "
-        "httpx, katana, gau, whatweb are installed if useful; use them, curl, or anything else you "
-        "judge is the right tool, and read/interpret the raw output yourself. There is no scripted "
-        "parser behind you — your own judgment decides what counts as a real, live host or endpoint "
-        "worth recording, not a hardcoded status-code rule.\n\n"
+        f"## A deterministic enumeration pass has ALREADY run — this is your FLOOR, not a blank slate\n"
+        f"subfinder/httpx/katana/dnsx already mapped {floor.get('hosts', 0)} host(s) and "
+        f"{floor.get('endpoints', 0)} endpoint(s) into the working surface below, and that set is "
+        "already recorded whether or not you touch it. 'Surface covered' is therefore not a judgment "
+        "you get to make early: the floor is the minimum, and an empty result from you asserts that "
+        "'enumeration already found everything reachable', which is rarely true.\n\n"
+        + _surface_brief(60) + "\n"
+        "## Your job — PRIORITIZE and EXTEND the floor\n"
+        "The floor above is what linked-crawling + DNS can reach. Your value is the surface it CANNOT "
+        "reach and the judgment it does not have:\n"
+        "- EXTEND: find what enumeration misses — auth-walled SPA routes, unlinked admin/debug panels, "
+        "guessed API paths (/api/v*/…, /system/*, /internal/*), a mobile-app backend API if an APK/"
+        "mobile asset is in scope, version and alternate-host pivots. You have real Bash access — "
+        "subfinder, dnsx, httpx, katana, gau, whatweb, curl, anything — and you read/interpret the raw "
+        "output yourself; your own judgment decides what counts as a real, live host or endpoint, not "
+        "a hardcoded status-code rule.\n"
+        "- PRIORITIZE: flag which hosts/endpoints look highest-value to attack next.\n\n"
         f"## Output — append as you go, not all at the end\n"
         f"Write one JSON object per line to {HUNT_DIR}/agent-surface.jsonl as you discover things "
         "(create it if missing; if you run out of time partway through, whatever is already written "
@@ -4473,7 +4526,10 @@ def _phase_recon_surface_agent(deadline=None):
     ok = _run_phase_agent("recon+surface agent", "Recon+Surface (agentic)", 50, brief, budget,
                            HUNT_DIR / "agent-surface.jsonl", _merge)
     if not ok:
-        log("warn", "→ agentic recon+surface produced nothing — hunt will have little/no surface this run")
+        fh = (STATE.get("recon_floor") or {}).get("hosts", 0)
+        fe = (STATE.get("recon_floor") or {}).get("endpoints", 0)
+        log("out", "→ agentic recon+surface added nothing on top of the enumeration floor (" +
+            str(fh) + " host(s) · " + str(fe) + " endpoint(s)) — hunting proceeds on the floor surface")
     stage("Recon+Surface (agentic)", 52)
 
 
