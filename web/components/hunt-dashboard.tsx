@@ -36,26 +36,40 @@ function ago(iso?: string) {
 function scopeAtAGlance(text: string): { inN: number; outN: number } | null {
   const raw = (text || "").trim();
   if (raw.length < 4) return null;
-  const HOST = /(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}/gi;
+  const count = (s: string) => scopeHosts(s).length;
   const cut = raw.search(/out[\s-]?of[\s-]?scope|exclusion|excluded|not in scope/i);
-  const inPart = cut >= 0 ? raw.slice(0, cut) : raw;
-  const outPart = cut >= 0 ? raw.slice(cut) : "";
-  const count = (s: string) => new Set((s.match(HOST) || []).map((h) => h.toLowerCase())).size;
-  const inN = count(inPart);
-  if (inN === 0) return null;
-  return { inN, outN: count(outPart) };
+  const total = count(raw);
+  if (total === 0) return null;
+  // Rough split only — the worker re-classifies for real. If we can't find an
+  // out-of-scope heading, treat every detected host as in-scope rather than hide.
+  if (cut < 0) return { inN: total, outN: 0 };
+  const inN = count(raw.slice(0, cut));
+  const outN = count(raw.slice(cut));
+  return inN === 0 ? { inN: total, outN: 0 } : { inN, outN };
 }
 
-// First in-scope host in a pasted scope page — used as the provisional `target`
-// for the API while the worker's triage model (Haiku 5.5) does the authoritative
-// in/out-of-scope split and derives the program name server-side.
+// A provisional `target` host pulled from a pasted scope page, just so the API
+// has one — the worker's triage model (Haiku 5.5) does the authoritative
+// in/out-of-scope split and names the program server-side. We scan the WHOLE
+// paste (scope sorting is the worker's job, not ours) and prefer a real web
+// domain over a reverse-DNS mobile app id (e.g. com.acme.app) when both appear.
+const COMMON_TLD = /\.(com|net|org|io|co|dev|app|xyz|sh|shop|ai|cloud|me|gg|eu|us|uk|de|fr|ca|au|nl|es|it|info|biz|tech|site|online|store|run)$/i;
+function scopeHosts(text: string): string[] {
+  const raw = text || "";
+  const HOST = /(?:\*\.)?((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,})/gi;
+  const out: string[] = [];
+  const seen = new Set<string>();
+  let m: RegExpExecArray | null;
+  while ((m = HOST.exec(raw))) {
+    const h = m[1].toLowerCase(); // group 1 = host without the leading "*."
+    if (!seen.has(h)) { seen.add(h); out.push(h); }
+  }
+  return out;
+}
 function firstScopeHost(text: string): string {
-  const raw = (text || "").trim();
-  const HOST = /(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}/i;
-  const cut = raw.search(/out[\s-]?of[\s-]?scope|exclusion|excluded|not in scope/i);
-  const inPart = cut >= 0 ? raw.slice(0, cut) : raw;
-  const m = inPart.match(HOST);
-  return m ? m[0].toLowerCase() : "";
+  const hosts = scopeHosts(text);
+  if (!hosts.length) return "";
+  return hosts.find((h) => COMMON_TLD.test(h)) ?? hosts[0];
 }
 
 function CheckIcon() {
@@ -1025,10 +1039,13 @@ export function HuntDashboard() {
       return;
     }
     // Provisional target from the paste; the worker's triage model does the real
-    // in/out-of-scope split and names the program server-side.
-    const t = firstScopeHost(sp);
+    // in/out-of-scope split and names the program server-side. If we can't spot a
+    // host at all, fall back to the first meaningful line so a valid paste is never
+    // blocked by our rough client-side guess — the worker still parses scope_text.
+    const firstLine = sp.split(/[\r\n]+/).map((l) => l.trim()).find((l) => l.length > 1) ?? "";
+    const t = firstScopeHost(sp) || firstLine.slice(0, 120);
     if (!t) {
-      setErr("No valid host found in that scope page. Paste the program's in-scope hosts or the whole scope block.");
+      setErr("That scope page looks empty. Paste the program's in-scope hosts or the whole scope block.");
       return;
     }
     setBusy(true);
