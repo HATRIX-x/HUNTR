@@ -784,7 +784,7 @@ function FindingsView({ hunts }: { hunts: Hunt[] }) {
     const k = fkey(f);
     const isOpen = open === k;
     return (
-      <li key={k} className="panel overflow-hidden">
+      <li key={k} className="panel">
         <div className="flex w-full flex-wrap items-start gap-3 p-4 sm:flex-nowrap">
           <button type="button" onClick={() => setOpen(isOpen ? null : k)} aria-expanded={isOpen}
             className="group flex min-w-0 flex-1 items-start gap-3 text-left">
