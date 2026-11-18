@@ -988,6 +988,7 @@ export function HuntDashboard() {
   const [authHeader, setAuthHeader] = useState("");
   const [ua, setUa] = useState("");
   const [showCreds, setShowCreds] = useState(false);
+  const [showLaunch, setShowLaunch] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [watching, setWatching] = useState<string | null>(null);
@@ -1064,6 +1065,7 @@ export function HuntDashboard() {
       setSession("");
       setAuthHeader("");
       setUa("");
+      setShowLaunch(false); // step the form aside; the new operation is now the focus
       await refresh();
       // reflect the spent-credit estimate optimistically
       loadUser();
@@ -1160,7 +1162,23 @@ export function HuntDashboard() {
                 return live ? <LiveOperation hunt={live} /> : null;
               })()}
 
-      {/* launch form — arming an operation */}
+      {/* launch form — arming an operation. While a hunt is live it steps aside
+          into a slim "launch another" teaser so the operation stays the focus. */}
+      {active.length > 0 && !showLaunch ? (
+        <button
+          type="button"
+          onClick={() => setShowLaunch(true)}
+          className="panel is-hoverable group flex w-full items-center gap-3 px-5 py-4 text-left"
+        >
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-line-2 text-brand transition-colors group-hover:border-brand/60">
+            <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none" aria-hidden><path d="M8 3.5v9M3.5 8h9" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /></svg>
+          </span>
+          <span className="min-w-0">
+            <span className="block text-sm font-semibold text-fg">Launch another hunt</span>
+            <span className="block truncate text-xs text-muted">{active.length} operation{active.length === 1 ? "" : "s"} in progress — start another on a different scope.</span>
+          </span>
+        </button>
+      ) : (
       <form onSubmit={onLaunch} className="panel brackets overflow-hidden">
         <div
           className="pointer-events-none absolute inset-0"
@@ -1176,10 +1194,18 @@ export function HuntDashboard() {
                 <span className="text-fg"> Authorized targets only.</span>
               </p>
             </div>
-            <span className="hud flex items-center gap-1.5 text-[10.5px] uppercase tracking-[0.14em] text-brand">
-              <svg viewBox="0 0 12 12" className="h-2.5 w-2.5" aria-hidden><rect x="2" y="5.5" width="8" height="5.5" rx="1" fill="currentColor" /><path d="M4 5.5V4a2 2 0 0 1 4 0v1.5" stroke="currentColor" strokeWidth="1.3" fill="none" /></svg>
-              scope-locked
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="hud flex items-center gap-1.5 text-[10.5px] uppercase tracking-[0.14em] text-brand">
+                <svg viewBox="0 0 12 12" className="h-2.5 w-2.5" aria-hidden><rect x="2" y="5.5" width="8" height="5.5" rx="1" fill="currentColor" /><path d="M4 5.5V4a2 2 0 0 1 4 0v1.5" stroke="currentColor" strokeWidth="1.3" fill="none" /></svg>
+                scope-locked
+              </span>
+              {active.length > 0 && (
+                <button type="button" onClick={() => setShowLaunch(false)}
+                  className="label rounded-md px-2 py-1 text-[10px] text-muted transition-colors hover:bg-white/5 hover:text-fg" aria-label="Collapse launch form">
+                  Collapse <span aria-hidden>✕</span>
+                </button>
+              )}
+            </div>
           </div>
 
           {/* ── scope page — the single source of truth for a hunt ──────────
@@ -1336,6 +1362,7 @@ export function HuntDashboard() {
           </div>
         </div>
       </form>
+      )}
 
       {/* hunts — the mission board */}
       <section>
