@@ -153,6 +153,56 @@ def mark_tested(ep, cls):
 SEVMAP = {"critical": "c", "high": "h", "medium": "m", "low": "l", "info": "i", "unknown": "i"}
 SEVLABEL = {"c": "CRITICAL", "h": "HIGH", "m": "MEDIUM", "l": "LOW", "i": "INFO"}
 
+# ── Bounty economics: CVSS → payout, interpolated within the program's per-severity range ──
+# CVSS v3.1 band cutoffs. The band's hi anchor is its TOP score so the top of a band maps to that
+# band's MAX bounty and the bottom to its MIN — e.g. 10.0→crit-max, 9.0→crit-min, 8.9→high-max,
+# 7.0→high-min. This is exactly the user-specified mapping (10.0=€1200, 9.0=8.9=€600, 7.0=€300).
+_CVSS_BANDS = {"c": (9.0, 10.0), "h": (7.0, 8.9), "m": (4.0, 6.9), "l": (0.1, 3.9)}
+# Fallback ranges [min,max] when a program exposes no reward table. The economics math still runs.
+_DEFAULT_REWARD_RANGE = {"c": [600, 1200], "h": [300, 600], "m": [50, 100], "l": [50, 50]}
+
+def _reward_ranges():
+    """Per-severity [min,max] payout ranges from program intel (manual or auto-captured), else the
+    default ladder. A bare single amount is read as the band MAX, with MIN at half (the program
+    paid that for the strongest bug in the band; weaker ones in the band pay proportionally less)."""
+    rt = (STATE.get("program_intel") or {}).get("reward_table") or {}
+    out = {}
+    for s in ("c", "h", "m", "l"):
+        v = rt.get(s)
+        if isinstance(v, (list, tuple)) and len(v) == 2:
+            lo, hi = float(v[0]), float(v[1])
+            out[s] = [min(lo, hi), max(lo, hi)]
+        elif isinstance(v, (int, float)) and v > 0:
+            out[s] = [float(v) / 2.0, float(v)]
+        else:
+            out[s] = [float(x) for x in _DEFAULT_REWARD_RANGE[s]]
+    return out
+
+def _band_for_cvss(cvss):
+    if cvss >= 9.0: return "c"
+    if cvss >= 7.0: return "h"
+    if cvss >= 4.0: return "m"
+    return "l"
+
+def bounty_from_cvss(cvss, sev="", ranges=None):
+    """Linear-interpolate a payout from a CVSS score within its severity band's [min,max] range.
+    With no CVSS (cvss<=0) fall back to the midpoint of the severity band's range."""
+    ranges = ranges or _reward_ranges()
+    try: cvss = float(cvss)
+    except Exception: cvss = 0.0
+    if cvss > 0:
+        band = _band_for_cvss(cvss)
+    else:
+        band = (sev or "m").lower()[:1]
+        if band not in _CVSS_BANDS: band = "m"
+    bmin, bmax = ranges.get(band, _DEFAULT_REWARD_RANGE.get(band, [50, 100]))
+    if cvss <= 0:
+        return int(round((bmin + bmax) / 2.0))
+    lo_c, hi_c = _CVSS_BANDS[band]
+    frac = 0.0 if hi_c <= lo_c else (cvss - lo_c) / (hi_c - lo_c)
+    frac = max(0.0, min(1.0, frac))
+    return int(round(bmin + frac * (bmax - bmin)))
+
 # Model routing — Claude via OAuth (llm_auth.py) or API key.
 # Tool-use agentic loop requires Anthropic — falls back to NVIDIA JSON-action loop
 # only when no Anthropic credential is available at all.
@@ -170,32 +220,66 @@ def _resolve_claude_available():
         return False
 
 _have_claude = _resolve_claude_available()
-# HARD POLICY (operator choice, 2026-10-09; REVERTED 2026-10-22 after a same-day round-trip): hunt
-# ONLY on Anthropic — Opus 4.8 (strong) + Sonnet 4.6 (lead/cheap). No Groq, no NVIDIA, no Haiku for
-# the hunt tiers. Env-overridable via HUNT_MODEL_STRONG/_MID/_CHEAP.
+# HARD POLICY (operator choice, 2026-10-09; REVERTED 2026-10-22; RE-REVISED 2026-11-02): hunt on
+# Anthropic — Opus 5.5 (strong) + Sonnet 5.5 (lead/mid), Sonnet 4.6 for the cheap tier. No Groq, no
+# NVIDIA, no Haiku for the hunt tiers. Env-overridable via HUNT_MODEL_STRONG/_MID/_CHEAP.
 #
-# Earlier the same day these were bumped to opus-5-5/sonnet-5-5 on the theory that a newer model
-# reasons better. It does, but under this account's CLI-subscription auth (see cli-mode-identity-leak
-# memory — raw OAuth API calls 429, so every call goes through `claude -p`, which carries Claude
-# Code's own real identity/safety-reasoning underneath whatever persona the hunt prompt asks for),
-# the newer 5.x generation's sharper injection/autonomous-action caution makes it refuse that persona
-# far more often. Live-tested side by side, 10 trials each, same exact prompt: sonnet-4-6 10/10,
-# opus-4-8 10/10, sonnet-5-5 ~75% (1 refusal in an early batch of 4). A model that reasons 10% better
-# but runs 25%+ less often is a net loss for an unattended loop with no human present to vouch for
-# the request each time — reliability beats marginal quality here. Revert to 4.6/4.8.
-_M_STRONG = os.environ.get("HUNT_MODEL_STRONG", "claude-opus-4-8")
-_M_MID    = os.environ.get("HUNT_MODEL_MID", "claude-sonnet-4-6")
-_M_CHEAP  = os.environ.get("HUNT_MODEL_CHEAP", "claude-sonnet-4-6")
-MODEL_LEAD   = {"provider": "anthropic", "model": _M_MID}
-MODEL_STRONG = {"provider": "anthropic", "model": _M_STRONG}
+# 2026-10-22: these were reverted from opus-5-5/sonnet-5-5 to opus-4-8/sonnet-4-6 after live-testing
+# found that, under this account's CLI-subscription auth (see cli-mode-identity-leak memory — raw
+# OAuth API calls 429, so every call goes through `claude -p`, which carries Claude Code's own real
+# identity/safety-reasoning underneath whatever persona the hunt prompt asks for), the 5.x
+# generation's sharper injection/autonomous-action caution makes it refuse that persona far more
+# often: sonnet-4-6 10/10, opus-4-8 10/10, sonnet-5-5 ~75% (1 refusal in an early batch of 4).
+#
+# 2026-11-02: briefly tried defaulting STRONG/MID back to 5.5 with a per-call refusal-retry onto the
+# 4.x pin as a safety net. 2026-11-03 (operator directive "remove opus5.5 and sonnet5.5 from HUNTR"):
+# reverted — the 5.x generation is no longer a default anywhere in the hunt tiers. The defaults are
+# the 4.x models that live-tested 10/10 above. The _FALLBACK fields + _run_claude_cli_fallback()
+# refusal-retry stay wired so that IF an operator deliberately env-pins a 5.x model
+# (HUNT_MODEL_STRONG=claude-opus-5-5), a refusal still auto-retries on the 4.x net — but nothing
+# selects 5.x on its own anymore.
+_M_STRONG          = os.environ.get("HUNT_MODEL_STRONG", "claude-opus-4-8")
+_M_STRONG_FALLBACK = os.environ.get("HUNT_MODEL_STRONG_FALLBACK", "claude-opus-4-8")
+_M_MID             = os.environ.get("HUNT_MODEL_MID", "claude-sonnet-4-6")
+_M_MID_FALLBACK    = os.environ.get("HUNT_MODEL_MID_FALLBACK", "claude-sonnet-4-6")
+_M_CHEAP           = os.environ.get("HUNT_MODEL_CHEAP", "claude-sonnet-4-6")
+MODEL_LEAD   = {"provider": "anthropic", "model": _M_MID, "fallback": _M_MID_FALLBACK}
+MODEL_STRONG = {"provider": "anthropic", "model": _M_STRONG, "fallback": _M_STRONG_FALLBACK}
 MODEL_CHEAP  = {"provider": "anthropic", "model": _M_CHEAP}
+# PROVIDER OVERRIDE (benchmark / bring-your-own-model): if HUNT_LLM_PROVIDER names a non-Anthropic
+# provider the engine actually supports (e.g. moonshot/Kimi, nvidia, openai), point ALL hunt tiers at
+# it. This flips phase_llm_lead off the Anthropic-only native tool-use path onto the provider-aware
+# JSON-action loop (_phase_llm_lead_json → call_llm), and every call_llm reasoning phase then runs on
+# that provider. Model id comes from HUNT_LLM_MODEL (one id for all tiers) or the provider's default.
+# NOTE: the full-agentic _phase_*_agent phases shell out to the `claude` CLI and are NOT provider-
+# swappable — run with HUNT_AGENTIC_PHASES unset so the scripted, call_llm-routed pipeline is used.
+_prov_override = (os.environ.get("HUNT_LLM_PROVIDER", "").strip().lower())
+if _prov_override and _prov_override != "anthropic":
+    try:
+        _ov_model = (os.environ.get("HUNT_LLM_MODEL", "").strip()
+                     or llm_client._default_model(_prov_override))
+        MODEL_LEAD   = {"provider": _prov_override, "model": _ov_model}
+        MODEL_STRONG = {"provider": _prov_override, "model": _ov_model}
+        MODEL_CHEAP  = {"provider": _prov_override, "model": _ov_model}
+        MODEL_REPORT = {"provider": _prov_override, "model": _ov_model}
+        print(f"[hunt-run] provider override active → {_prov_override} / {_ov_model} "
+              f"(all tiers; JSON-action lead loop)", file=sys.stderr)
+    except Exception as _e:
+        print(f"[hunt-run] provider override failed ({_e}); staying on Anthropic", file=sys.stderr)
 if os.environ.get("HUNT_LLM") == "haiku" or "--llm-light" in sys.argv:
     MODEL_LEAD = MODEL_STRONG = MODEL_CHEAP   # light mode → all tiers on the cheap (Sonnet) model
 # Report drafting is prose-shaping over evidence the hunt already proved — not new reasoning about
 # the target — so it's carved out of the "no Haiku" policy above (operator choice, 2026-10-15):
 # Haiku 5.5 is fast/cheap and, held to the same report STRUCTURE contract as report-draft.py, matches
 # the stronger tiers on this specific job. Independent of HUNT_LLM/--llm-light.
-MODEL_REPORT = {"provider": "anthropic", "model": os.environ.get("HUNT_MODEL_REPORT", "claude-haiku-5-5")}
+if _prov_override and _prov_override != "anthropic":
+    # pure-provider benchmark: draft reports on the same provider as the hunt
+    MODEL_REPORT = {"provider": _prov_override,
+                    "model": os.environ.get("HUNT_MODEL_REPORT", "").strip()
+                             or (os.environ.get("HUNT_LLM_MODEL", "").strip()
+                                 or llm_client._default_model(_prov_override))}
+else:
+    MODEL_REPORT = {"provider": "anthropic", "model": os.environ.get("HUNT_MODEL_REPORT", "claude-haiku-5-5")}
 
 
 # rate-limit state: set when the provider returns 429 (rate limit reached).
@@ -221,6 +305,79 @@ class RateLimitPause(Exception):
     pass
 
 
+# Centralized persona-refusal detection — was previously duplicated ad hoc at each `claude -p` call
+# site (phase_recon_agent, _run_phase_agent, _phase_claude_code_hunt), each with a slightly different
+# regex and no shared action. One pattern, one place, so _run_claude_cli_fallback() below has a single
+# thing to check and every call site's retry behavior stays in sync.
+_REFUSAL_RE = re.compile(
+    r"i won'?t|i'm not going to|i don'?t have a way to verify|safety classifier|"
+    r"prompt.?injection|i can'?t (proceed|continue|help)|i won'?t continue", re.I)
+
+
+def _is_refusal(text):
+    return bool(_REFUSAL_RE.search((text or "")[:400]))
+
+
+def _cli_result_text(raw):
+    """Unwraps a `claude -p --output-format json` envelope down to the agent's actual prose, same
+    shape _run_phase_agent later parses for cost capture ({"result": "...", "total_cost_usd": ...}).
+    Needed before refusal-checking that output: the envelope puts duration_api_ms/session_id/usage/
+    modelUsage/etc. BEFORE "result" in the JSON, routinely pushing the real text past _is_refusal's
+    400-char window — a refusal buried in there was silently invisible to the regex. Call sites that
+    don't use --output-format json (raw prose on stdout) safely fall through the except unchanged."""
+    try:
+        obj = json.loads(raw)
+        if isinstance(obj, dict):
+            return str(obj.get("result") or obj.get("error") or "").strip() or raw
+    except Exception:
+        pass
+    return raw
+
+
+def _record_refusal(phase_name, model, fallback_model):
+    """Surfaces a detected persona refusal + the fallback retry in STATE["llm_refusals"] (visible on
+    /api/hunt/status) — the operator's only way to see how often the 5.x generation is actually
+    flagging, since each fallback otherwise just looks like a normal, slightly slower phase."""
+    with _STATE_LOCK:
+        STATE.setdefault("llm_refusals", []).append({
+            "ts": time.time(), "model": model, "fallback": fallback_model,
+            "phase": phase_name,
+        })
+    log("warn", "⚠ " + phase_name + " refused on " + model +
+        ((" — retrying with " + fallback_model) if fallback_model else " — no fallback configured, giving up"))
+
+
+def _run_claude_cli_fallback(cmd, model, fallback_model, phase_name, cwd, timeout, env):
+    """Runs a `claude -p ... --model <model> ...` subprocess; on a detected persona refusal (see
+    _REFUSAL_RE), retries ONCE with fallback_model substituted in for --model, same cmd otherwise.
+    Never retries on a timeout (that's a budget problem, not a refusal) or when fallback_model is
+    the same model / not configured. Returns (CompletedProcess-or-None, summary, raw, used_model,
+    timed_out) — summary/raw follow subprocess.run's own stdout-or-stderr convention so every
+    existing call site's post-processing (JSON-result parsing, CLI-limit detection, etc.) keeps
+    working unchanged on whichever of the two attempts actually produced the returned text."""
+    def _exec(cmd_):
+        try:
+            r = subprocess.run(cmd_, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env)
+            return r, (r.stdout or r.stderr or "").strip(), False
+        except subprocess.TimeoutExpired as e:
+            raw = (e.stdout or b"").decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+            return None, raw, True
+
+    r, summary, timed_out = _exec(cmd)
+    used_model = model
+    if (not timed_out) and fallback_model and fallback_model != model and _is_refusal(_cli_result_text(summary)):
+        _record_refusal(phase_name, model, fallback_model)
+        cmd2 = list(cmd)
+        try:
+            cmd2[cmd2.index("--model") + 1] = fallback_model
+        except ValueError:
+            pass
+        else:
+            r, summary, timed_out = _exec(cmd2)
+            used_model = fallback_model
+    return r, summary, timed_out, used_model
+
+
 def check_pause():
     """Raise if the account rate limit has been reached, so main() can pause the hunt for resume."""
     if _RL["hit"]:
@@ -243,6 +400,18 @@ _CLI_LIMIT_RE = re.compile(
     r"reset[s]?\s+(?:at\s+)?\d{1,2}:\d{2}|please run /login|"
     r"invalid api key|credit balance is too low|out of credit|\bquota\b", re.I)
 _CLI_RESET_RE = re.compile(r"resets?\s+(\d{1,2}:\d{2}\s*[ap]m)\s*(?:\(([^)]+)\))?", re.I)
+# DEAD LLM AUTH — the hunting account's `claude` login is expired/logged-out, as opposed to a usage
+# limit (which _CLI_LIMIT_RE owns and which clears on a reset clock). _CLI_LIMIT_RE did NOT match the
+# OAuth-expired phrasing the CLI actually prints, so "Failed to authenticate: OAuth session expired
+# and could not be refreshed" slipped straight through to "produced nothing" and let the whole hunt
+# finish "done · 0 findings" on a dead account (live incident 2026-11-03, SecureW2). This needs a
+# human RE-LOGIN, not a wait — routed to _pause_for_auth, checked BEFORE the limit block so these
+# auth-shaped notices get the re-login UX instead of a never-moving reset clock.
+_CLI_AUTH_DEAD_RE = re.compile(
+    r"failed to authenticate|(?:oauth|session|token|login|credential)s?[^.\n]{0,30}expired|"
+    r"could not be refreshed|please run /login|invalid api key|not logged ?in|"
+    r"authentication[_ ]error|re-?authenticate|log ?in again|"
+    r"your credentials?[^.\n]{0,30}(?:invalid|missing|not found)", re.I)
 
 
 def _parse_cli_reset(text):
@@ -276,7 +445,8 @@ def _parse_cli_reset(text):
 # is in play. Under the subscription (HUNT_LLM_VIA_CLI=1) there is no per-call billing at all, so
 # llm_client._LAST_USAGE comes back {} and _record_llm_cost() correctly adds nothing but a call count.
 _MODEL_PRICE = {
-    "claude-opus-5-5": (5.00, 25.00), "claude-sonnet-5-5": (3.00, 15.00),
+    # opus-5-5 / sonnet-5-5 removed 2026-11-03 (operator directive) — no hunt tier selects them.
+    # haiku-5-5 stays: it's the intake/scope-classifier model (HUNT_MODEL_INTAKE), still in use.
     "claude-haiku-5-5": (1.00, 5.00), "claude-sonnet-5": (3.00, 15.00),
     # older generations kept so a hunt resumed/override-pinned to them still prices correctly
     "claude-opus-4-8": (5.00, 25.00), "claude-sonnet-4-6": (3.00, 15.00),
@@ -346,8 +516,14 @@ def llm_call(system, user, max_tokens=1600, timeout=100, _model=None):
     if NO_LLM:
         return None   # deterministic-only run: every LLM call fast-returns; phases degrade gracefully
     m = _model or {}
+    _prov = (m.get("provider") or os.environ.get("HUNT_LLM_PROVIDER", "") or "anthropic").lower()
+    _non_anthropic = bool(_prov) and _prov != "anthropic"
+    # Anthropic's 429 is the account's multi-hour usage wall → pause the hunt and resume later. A 3rd-
+    # party provider's 429 (e.g. Moonshot/Kimi voucher tier) is a short per-minute/concurrency throttle
+    # that clears on its own → retry patiently and NEVER pause the whole hunt on it.
+    _max_attempts = 8 if _non_anthropic else 4
     text, err = None, None
-    for attempt in range(4):
+    for attempt in range(_max_attempts):
         try:
             text, err = llm_client.call_llm(
                 system, user, max_tokens=max_tokens, timeout=timeout,
@@ -363,14 +539,18 @@ def llm_call(system, user, max_tokens=1600, timeout=100, _model=None):
         if err:
             _LLM_LAST_ERR["e"] = err
         if err and "429" in err:
-            if attempt < 3:
-                # rate limited but the account may still serve — back off and retry rather than
-                # burning an agentic round; only a 429 that survives every retry pauses the hunt.
-                time.sleep(5.0 * (attempt + 1))
+            if attempt < _max_attempts - 1:
+                # rate limited but it may still serve — back off and retry rather than burning the round.
+                # 3rd-party throttles need real patience (10,20,…,70s, capped) vs Anthropic's courtesy wait.
+                time.sleep(min(90.0, (10.0 if _non_anthropic else 5.0) * (attempt + 1)))
                 continue
+            if _non_anthropic:
+                # a 3rd-party 429 that survived every retry is still just a throttle — let THIS call
+                # degrade (return None) and let the loop continue; do NOT pause the whole hunt.
+                return None
             _RL["hit"] = True
             return None
-        if attempt < 3:
+        if attempt < _max_attempts - 1:
             # 5xx overload needs a real pause, not a courtesy one — the provider serves the
             # same 503 if you come back a second later. 3.5 → 7 → 14s rides out a busy window.
             time.sleep((3.5 * (2 ** attempt)) if re.search(r"\b5\d\d\b", err or "") else (1.5 * (attempt + 1)))
@@ -623,9 +803,36 @@ def add_finding(sev, title, detail, endpoint, cvss="", cls="", verdict="", det=N
             f["_det"] = True
     # a caller that already ran the deterministic oracle (scan_cell) passes its result straight through,
     # so the finding carries authoritative proof without the stamp re-running the oracle.
+    #
+    # BUG (found live 2026-11-04, same incident as _proven()'s exploitation-gate tightening above):
+    # this used to stamp f["_det"]=True UNCONDITIONALLY whenever proof.get("proven") is True —
+    # completely ignoring the caller's own `det` argument. phase5-agent/phase9-deep/phase10-zeroday
+    # ALL explicitly pass det=False alongside a proof dict they construct from their own free-text
+    # verdict (see those call sites' own comments: "an agent's own free-text 'confirmed' is not a
+    # deterministic oracle hit... or _proven()'s evidence cross-check never gets a chance to run on
+    # this claim") — and this block silently defeated that explicit intent every single time, by
+    # auto-promoting the finding to _det=True the instant ANY proof dict carried proven=True, real
+    # oracle or pure LLM prose alike. That re-opened the exact self-report loophole _proven() was
+    # tightened to close, one code path over — caught live on SecureW2: 8 of 21 findings had _det=True
+    # with proof.method="agent-verify"/"phase9-deep", none of them ever actually exploited.
+    # Only auto-stamp _det here when the caller did NOT say det=False; the proof text is still kept
+    # either way (so a caller that passed det=False still gets to see/reuse its own evidence text —
+    # it's just no longer "undroppable" and _proven() actually gets to scrutinize it, which was the
+    # entire reason those phases bothered passing det=False in the first place).
     if isinstance(proof, dict) and proof.get("proven") is True:
-        f["proof"] = {"proven": True, "method": str(proof.get("method", ""))[:60], "evidence": str(proof.get("evidence", ""))[:300]}
-        f["_det"] = True
+        # OPERATOR CAUGHT LIVE, SAME HUNT, THIRD TIME (2026-11-04): fixing _det above wasn't enough —
+        # this line was STILL writing f["proof"]["proven"]=True verbatim for det=False self-report
+        # callers, so the raw field the dashboard's PROVEN badge reads directly kept flickering back
+        # to True every time a self-report phase (re-)confirmed a finding, even though _det correctly
+        # stayed unset and _proven()/hard_triage correctly refused to trust it. The badge only looked
+        # right for the few minutes right after hard_triage's writeback ran, then went stale again on
+        # the very next verify/active-hunt/deep-questions/zero-day pass — because THIS write-site kept
+        # putting the lie back. A self-reported claim must never be written as proven=True, full stop;
+        # det is not False still controls the (unrelated) _det stamp as before.
+        f["proof"] = {"proven": bool(det is not False), "method": str(proof.get("method", ""))[:60],
+                      "evidence": str(proof.get("evidence", ""))[:300]}
+        if det is not False:
+            f["_det"] = True
     # ── 0-token deterministic proof stamp (survives a later rate-limit pause) ──
     if not f.get("proof") and f.get("verdict") != "confirmed" and (cls or "").lower() not in HYGIENE_CLASSES \
             and os.environ.get("HUNTR_DET_PROOF", "1") != "0":
@@ -654,6 +861,11 @@ def add_finding(sev, title, detail, endpoint, cvss="", cls="", verdict="", det=N
             return
         STATE["findings"].append(f)
         STATE["stats"]["findings"] = len(STATE["findings"])
+    # A finding at endpoint E for class C definitionally means (E,C) was tested. Agentic hunts emit
+    # findings without going through scan_cell->mark_tested, which left the coverage ledger empty
+    # even after real bugs landed; recording the cell here keeps coverage honest for every path.
+    if endpoint and cls:
+        mark_tested(endpoint, (cls or "").lower())
     sevw = SEVLABEL[sev]
     log("warn" if sev in ("c", "h", "m") else "out", "⚑ " + sevw + "  " + title + (" · " + endpoint if endpoint else ""))
 
@@ -795,6 +1007,18 @@ def _pause_for_cdp(msg):
     _self_pause("cdp-required", msg)
 
 
+def _pause_for_auth(msg):
+    """Self-pause when the hunting account's `claude` login is dead (expired/revoked OAuth, logged
+    out, invalid key). Same silent-degradation class as _pause_for_creds/_pause_for_cdp but for the
+    LLM auth itself: with a dead login EVERY agentic phase (intel, recon+surface, active hunt, …)
+    returns nothing, so the hunt discovers zero surface and 'finishes' in seconds looking like a
+    clean target. Caught live 2026-11-03 (SecureW2): both pre-hunt phases logged 'OAuth session
+    expired and could not be refreshed' and the run completed 'done · 0 findings' in 23s. Pausing
+    (not finishing) is the whole point — the operator re-logs-in the hunting account and resumes, and
+    the phase that paused is RETRIED with working auth (see _run_phase_agent's auth-dead branch)."""
+    _self_pause("llm-auth-required", msg)
+
+
 def _check_session_health():
     """Without this, an expired/revoked token or cookie causes NO error, NO exception, NO status
     change — the hunt just keeps running every authenticated scan unauthenticated for hours, and
@@ -874,6 +1098,54 @@ def stage(name, pct):
     STATE["stage"] = name
     STATE["pct"] = pct
     flush()
+
+
+# ── per-phase outcome tracking (2026-11-01) ─────────────────────────────────────────────────────
+# stage()/STATE["stage"] only records WHICH phase the pointer is at, not whether that phase actually
+# accomplished anything — so the dashboard's pipeline spine (which paints every row before the
+# frontier green) showed "Verify ✓ done" even on a run where the verify agent was rate-limited and
+# emitted ZERO verdicts, leaving every finding UNVERIFIED. phase_outcomes decouples the two: each
+# agentic phase records ok|empty|rate_limited|skipped here, so (a) renderOps can paint a ran-but-
+# empty phase amber "needs rerun" instead of a lying green, and (b) resume can tell a phase that
+# genuinely finished from one that needs re-running. Keys match HUNT_AGENTIC_PHASES exactly.
+_PHASE_KEY_MAP = {
+    "recon+surface agent": "recon_surface", "auth+spa agent": "auth_spa", "intel agent": "intel",
+    "plan agent": "plan", "active-hunt agent": "active_hunt", "deep-questions agent": "deep_questions",
+    "zero-day agent": "zero_day", "verify agent": "verify", "chain+economics agent": "chain_econ",
+}
+
+
+def _phase_key(phase_name):
+    n = (phase_name or "").strip().lower()
+    return _PHASE_KEY_MAP.get(n) or re.sub(r"[^a-z0-9]+", "_", n).strip("_")
+
+
+def _record_phase_outcome(phase_name, status, note=""):
+    """status: 'ok' (did real work) | 'empty' (ran, produced nothing usable) | 'rate_limited'
+    (account/provider limit hit before it could finish) | 'skipped' (never really ran)."""
+    with _STATE_LOCK:
+        STATE.setdefault("phase_outcomes", {})[_phase_key(phase_name)] = {
+            "status": status, "ts": time.time(), "note": str(note)[:200], "label": phase_name,
+        }
+
+
+# verdicts the verify agent assigns — a non-noise finding carrying anything else (e.g. the 'agent'
+# placeholder active-hunt stamps on a fresh find, or no verdict at all) has never been through verify.
+_VERIFY_VERDICTS = ("confirmed", "likely", "false_positive", "needs_review")
+
+
+def _verify_unsatisfied():
+    """True when the findings we currently hold have NOT all been through a successful verify pass —
+    either verify's last recorded outcome isn't 'ok', or some non-noise finding still carries a
+    pre-verification verdict. Drives the resume catch-up verify so a prior rate-limit pause that
+    stranded findings as UNVERIFIED gets healed before budget is spent hunting for more."""
+    for f in STATE.get("findings", []):
+        if f.get("noise"):
+            continue
+        if f.get("verdict") not in _VERIFY_VERDICTS:
+            return True
+    po = STATE.get("phase_outcomes", {}).get("verify")
+    return not po or po.get("status") != "ok"
 
 
 def sh(cmd, timeout=120):
@@ -965,14 +1237,34 @@ def phase_program_intel():
     gh_token = os.environ.get("GITHUB_TOKEN", "").strip()
     if gh_token and (HERE / "github-recon.py").exists():
         log("cmd", "$ github-recon — org secrets + staging hosts + CI/CD misconfig")
-        gr_args = ["--org", prog_handle, "--token", gh_token, "--json"]
+        # --verify-domain + org_verified gate added 2026-11-06 (audit finding): prog_handle is a
+        # bare keyword-slug with no prior ownership check — an unrelated, same-named org's leaked
+        # secrets could get reported as "confirmed" findings ON THIS PROGRAM. github-recon.py now
+        # best-effort-checks the org's own metadata against the real target domain; an unverified
+        # org's findings are recorded only as a low-severity "needs manual ownership check" lead,
+        # never auto-confirmed, so they can't silently reach submit-ready.
+        gr_args = ["--org", prog_handle, "--token", gh_token, "--verify-domain", apex(TARGET) or TARGET, "--json"]
         grd, _, _ = sh([sys.executable, str(HERE / "github-recon.py")] + gr_args, timeout=180)
         try:
             grd_j = json.loads(grd.strip().splitlines()[-1]) if grd.strip() else {}
+            org_ok = bool(grd_j.get("org_verified"))
+            if grd_j.get("findings") and not org_ok:
+                log("warn", "⚠ github-recon: org '" + prog_handle + "' ownership UNVERIFIED (" +
+                    str(grd_j.get("org_verify_reason", ""))[:150] + ") — findings recorded as "
+                    "unconfirmed leads only, NOT auto-attributed to this program")
             for f in grd_j.get("findings", []):
-                add_finding(f.get("severity", "c"), "GitHub — " + (f.get("name") or f.get("type", "secret")),
-                            f.get("detail") or f.get("description") or "", f.get("url") or f.get("file") or "",
-                            cls="Secret/credential leak", verdict="confirmed")
+                title = "GitHub — " + (f.get("name") or f.get("type", "secret"))
+                detail = f.get("detail") or f.get("description") or f.get("snippet") or ""
+                ep = f.get("url") or f.get("file") or ""
+                if org_ok:
+                    add_finding(f.get("severity", "c"), title, detail, ep,
+                                cls="Secret/credential leak", verdict="confirmed")
+                else:
+                    add_finding("l", "[UNVERIFIED ORG] " + title,
+                                "Org ownership not confirmed — " + str(grd_j.get("org_verify_reason", ""))[:200] +
+                                ". Manually verify this repo actually belongs to the target program before "
+                                "trusting or reporting this. Raw finding: " + detail, ep,
+                                cls="Secret/credential leak", verdict="needs_review")
             STATE["program_intel"]["github"] = grd_j
             if grd_j.get("findings"):
                 log("ok", "✓ github-recon · " + str(len(grd_j["findings"])) + " finding(s)")
@@ -1036,32 +1328,74 @@ def phase_program_intel():
         log("out", "→ wayback · " + str(_we)[:80])
 
     # ── 5. Reward table parsing ───────────────────────────────────────────────────────────────
-    # Read the scope file for bounty amounts so attack-planner.py can rank by dollar value.
-    scope_f = HUNT_DIR / "scope.md"
-    scope_j = HUNT_DIR / "scope.json"
+    # Build per-severity [min,max] payout RANGES so the economics phase can price each finding by
+    # CVSS (bounty_from_cvss). Three sources, most authoritative first:
+    #   a) program.json reward_ranges  — explicit {min,max} from the new-hunt page (manual/auto)
+    #   b) program.json severity_rewards — [{severity,amount}] from the scope-intake LLM enrich
+    #   c) scope.md / scope.json       — "$X - $Y" or "€X" rows pasted into the scope file
     reward_table = {}
-    for sf in (scope_j, scope_f):
+
+    def _amt(s):
+        try: return float(re.sub(r"[,\s]", "", str(s)))
+        except Exception: return 0.0
+
+    # (a)+(b) the persisted program meta
+    try:
+        pj = HUNT_DIR / "program.json"
+        if pj.exists():
+            pm = json.loads(pj.read_text(errors="ignore"))
+            rr = pm.get("reward_ranges")
+            if isinstance(rr, dict):
+                for k, v in rr.items():
+                    s = SEVMAP.get(str(k).lower(), str(k).lower()[:1])
+                    if isinstance(v, (list, tuple)) and len(v) == 2 and (_amt(v[0]) or _amt(v[1])):
+                        reward_table[s] = [_amt(v[0]), _amt(v[1])]
+                    elif _amt(v) > 0:
+                        reward_table[s] = _amt(v)
+            for row in (pm.get("severity_rewards") or []):
+                if not isinstance(row, dict): continue
+                s = SEVMAP.get(str(row.get("severity", "")).lower(), "")
+                a = _amt(row.get("amount"))
+                if s and s not in reward_table and a > 0:
+                    reward_table[s] = a            # single amount → _reward_ranges reads it as band max
+    except Exception:
+        pass
+
+    # (c) scope files — ranges ("X - Y") or single amounts, in $/€/£ and with comma/space grouping
+    for sf in (HUNT_DIR / "scope.json", HUNT_DIR / "scope.md"):
         if not sf.exists():
             continue
         try:
             raw = sf.read_text(errors="ignore")
-            # JSON: look for "rewards", "bounties", "bounty" keys
             if sf.suffix == ".json":
                 sd = json.loads(raw)
-                for key in ("rewards", "bounties", "bounty", "reward_table"):
+                for key in ("reward_ranges", "rewards", "bounties", "bounty", "reward_table"):
                     if isinstance(sd.get(key), dict):
-                        reward_table.update(sd[key])
+                        for k, v in sd[key].items():
+                            s = SEVMAP.get(str(k).lower(), str(k).lower()[:1])
+                            if s in reward_table: continue
+                            if isinstance(v, (list, tuple)) and len(v) == 2:
+                                reward_table[s] = [_amt(v[0]), _amt(v[1])]
+                            elif _amt(v) > 0:
+                                reward_table[s] = _amt(v)
             else:
-                # Markdown: parse rows like "| Critical | $5,000 - $10,000 |"
-                for m in re.finditer(r"\|\s*(Critical|High|Medium|Low|Informational)\s*\|.*?\$([\d,]+)", raw, re.I):
-                    sev = m.group(1).lower()[:1]
-                    amt = int(re.sub(r"[,.]", "", m.group(2)))
-                    reward_table[sev] = amt
+                cur = r"[$€£]?\s?[\d][\d,\s]*"
+                rng = re.compile(r"(Critical|High|Medium|Low|Informational)\b[^\n]*?(" + cur +
+                                 r")\s*(?:-|–|—|to)\s*(" + cur + r")", re.I)
+                one = re.compile(r"(Critical|High|Medium|Low|Informational)\b[^\n]*?(" + cur + r")", re.I)
+                for m in rng.finditer(raw):
+                    s = m.group(1).lower()[:1]
+                    reward_table.setdefault(s, [_amt(re.sub(r"[$€£]", "", m.group(2))),
+                                                _amt(re.sub(r"[$€£]", "", m.group(3)))])
+                for m in one.finditer(raw):
+                    s = m.group(1).lower()[:1]
+                    reward_table.setdefault(s, _amt(re.sub(r"[$€£]", "", m.group(2))))
         except Exception:
             pass
+
     if reward_table:
         STATE["program_intel"]["reward_table"] = reward_table
-        log("ok", "✓ reward table · " + str(reward_table))
+        log("ok", "✓ reward table · " + json.dumps({k: STATE["program_intel"]["reward_table"][k] for k in reward_table}))
 
     flush()
 
@@ -3174,7 +3508,12 @@ def scan_cell(ep, cls, tok, tok2, method="GET"):
             # NO_TOOL instead of being logged as "errored" — `None in (True, False)` evaluates to the
             # Python bool False (via __eq__), which makes `ran is False` true and triggers a misleading
             # "errored (unknown)" warning for every oracle-not-applicable cell.
-            ran = True if ov is True else (False if ov is False else None)
+            # ov is False means the oracle RAN and proved the endpoint is NOT vulnerable — a valid
+            # negative test, so the cell IS covered (mark_tested), NOT an error. Mapping False→ran=False
+            # previously logged "cell errored — not counted as tested" for every non-vulnerable endpoint
+            # (incl. all the 404 guessed /api/admin/* paths), flooding the UI and under-counting coverage
+            # so the ledger never reached "exhausted". Only ov is None (oracle not applicable) → ran=None.
+            ran = True if ov in (True, False) else None
             if ov is True:
                 sev, lab = _ORACLE_CELL[cls]
                 add_finding(sev, lab + (" — " + om if om else ""), oe, ep, cls=cls, verdict="confirmed",
@@ -3202,10 +3541,52 @@ def scan_cell(ep, cls, tok, tok2, method="GET"):
     return ran
 
 
+_LEAD_SESSION_HDRS = {"v": None}
+def _lead_session_headers():
+    """The authenticated session headers for the JSON-action loop, mirroring what the native tool-use
+    path (exec-http.py / the 'session' identity) injects. Source of truth: .hunt/identities.json's
+    'session' entry (cookieHeader + authorization + headers), falling back to creds.json. Cached.
+
+    WHY: _lead_fetch previously sent only a default UA + whatever headers the model typed, so every
+    authed route 401'd and the model reported "untestable without a session" — the authenticated
+    surface was hunted ANONYMOUSLY. A provider swapped onto the JSON-action loop (e.g. Kimi) was
+    therefore blind to every authed bug the native (Claude) path found. This closes that asymmetry."""
+    if _LEAD_SESSION_HDRS["v"] is not None:
+        return _LEAD_SESSION_HDRS["v"]
+    h = {}
+    try:
+        idf = HUNT_DIR / "identities.json"
+        sess = {}
+        if idf.exists():
+            sess = (json.loads(idf.read_text()) or {}).get("session") or {}
+        h.update({str(k): str(v) for k, v in (sess.get("headers") or {}).items()})
+        ck = (sess.get("cookieHeader") or "").strip()
+        az = (sess.get("authorization") or "").strip()
+        if not ck or not az:
+            c = _creds()
+            if not az and c.get("session_token"):
+                t = c["session_token"].strip()
+                az = t if t.lower().startswith("bearer ") else ("Bearer " + t)
+            if not h:
+                h.update(_auth_headers())
+        if ck:
+            h["Cookie"] = ck
+        if az:
+            h["Authorization"] = az if az.lower().startswith("bearer ") else ("Bearer " + az)
+    except Exception:
+        pass
+    _LEAD_SESSION_HDRS["v"] = h
+    return h
+
+
 def _lead_fetch(url, method="GET", body=None, headers=None, timeout=10):
     """Scope-gated request for the LLM-led loop. Returns a COMPACT result — status, redirect, title,
     a small text snippet and any error signal — because the model has to re-read every round: a full
-    body would blow the context window and actually make the agent dumber, not better informed."""
+    body would blow the context window and actually make the agent dumber, not better informed.
+
+    Requests carry the authenticated session (see _lead_session_headers) by default so the loop hunts
+    AUTHENTICATED; model-supplied headers override per-key (e.g. a 2nd identity for IDOR, or an
+    Authorization/Cookie the model sets itself)."""
     import urllib.request, urllib.error
     import json as _js
     if not url.startswith("http"):
@@ -3225,6 +3606,12 @@ def _lead_fetch(url, method="GET", body=None, headers=None, timeout=10):
     except Exception as _e:
         return {"ok": False, "err": "scope-check failed: " + str(_e)[:80]}
     hdrs = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) HUNTR/1.0", "Accept": "*/*"}
+    # auto-inject the authenticated session (grey/white-box) so the loop isn't blind to authed surface
+    try:
+        if MODE != "black":
+            hdrs.update(_lead_session_headers())
+    except Exception:
+        pass
     for k, v in (headers or {}).items():
         if str(k).lower() not in ("host", "content-length"):
             hdrs[str(k)] = str(v)
@@ -3808,6 +4195,7 @@ def phase_recon_agent(budget_sec=600):
     if cdir:
         env["CLAUDE_CONFIG_DIR"] = os.path.expanduser(cdir)
     model = MODEL_LEAD.get("model") or "claude-sonnet-4-6"
+    fallback_model = MODEL_LEAD.get("fallback") or ""
     log("ok", "◆ recon-agent · model=" + model + " · budget=" + str(budget_sec) + "s")
     cmd = [cli, "-p", brief,
            "--model", model,
@@ -3816,15 +4204,13 @@ def phase_recon_agent(budget_sec=600):
            "--allowedTools", "Bash", "Read", "Write",
            "--no-session-persistence"]
     try:
-        r = subprocess.run(cmd, cwd=str(HUNT_DIR), capture_output=True, text=True,
-                           timeout=budget_sec, env=env)
-        summary = (r.stdout or r.stderr or "").strip()
-    except subprocess.TimeoutExpired:
-        summary = ""
-        log("warn", "⏱ recon-agent hit its time budget — reading whatever it found so far")
+        r, summary, timed_out, used_model = _run_claude_cli_fallback(
+            cmd, model, fallback_model, "recon-agent", str(HUNT_DIR), budget_sec, env)
     except Exception as e:
         log("warn", "→ recon-agent failed to launch: " + str(e)[:200])
         return
+    if timed_out:
+        log("warn", "⏱ recon-agent hit its time budget — reading whatever it found so far")
 
     rpath = HUNT_DIR / "agent-recon.json"
     if not rpath.exists():
@@ -3865,7 +4251,7 @@ def phase_recon_agent(budget_sec=600):
     stage("Recon-agent", 50)
 
 
-def _run_phase_agent(phase_name, stage_label, stage_pct, brief, budget_sec, result_file, merge_fn, model=None):
+def _run_phase_agent(phase_name, stage_label, stage_pct, brief, budget_sec, result_file, merge_fn, model=None, _auth_attempt=0):
     """Generic full-agentic phase runner (operator directive, 2026-10-25: "only agents for each phase,
     no scripted scanners or any scripted things"). One real `claude -p` call — Claude-Code-native, real
     Bash/Read/Write, no fictional persona — replaces a scripted phase's judgment entirely with the
@@ -3890,8 +4276,21 @@ def _run_phase_agent(phase_name, stage_label, stage_pct, brief, budget_sec, resu
     cli = _shu.which("claude") or os.path.expanduser("~/.local/bin/claude")
     if not cli or not os.path.exists(cli):
         log("warn", "→ " + phase_name + " skipped — claude CLI not found")
+        _record_phase_outcome(phase_name, "skipped", "claude CLI not found")
         return False
     model = model or MODEL_LEAD.get("model") or "claude-sonnet-4-6"
+    fallback_model = MODEL_LEAD.get("fallback") or ""
+    # Start every invocation with a clean result file. merge_fn matches lines by positional index
+    # ("i") into enumerate(findings[:120]) AT THIS CALL — on a resume/catch-up rerun of the same
+    # phase, findings grow/reorder between calls, so a leftover line from a PRIOR call's indexing
+    # would silently overwrite a different, unrelated finding's verdict in this call's merge (bug
+    # found 2026-11-03: a resume's catch-up verify flipped two already-confirmed, submit-ready
+    # findings to false_positive this way — no new verdict line for their index was ever written,
+    # a stale line from the earlier pass just got replayed against the new index mapping).
+    try:
+        result_file.unlink()
+    except FileNotFoundError:
+        pass
     log("ok", "◆ " + phase_name + " · model=" + model + " · budget=" + str(int(budget_sec)) + "s")
     cmd = [cli, "-p", brief,
            "--model", model,
@@ -3906,21 +4305,21 @@ def _run_phase_agent(phase_name, stage_label, stage_pct, brief, budget_sec, resu
     if cdir:
         env["CLAUDE_CONFIG_DIR"] = os.path.expanduser(cdir)
     try:
-        r = subprocess.run(cmd, cwd=str(HUNT_DIR), capture_output=True, text=True,
-                           timeout=budget_sec, env=env)
-        summary = (r.stdout or r.stderr or "").strip()
-    except subprocess.TimeoutExpired as e:
-        summary = ((e.stdout or b"").decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or ""))
-        log("warn", "⏱ " + phase_name + " hit its budget — reading whatever it wrote so far")
+        r, summary, timed_out, model = _run_claude_cli_fallback(
+            cmd, model, fallback_model, phase_name, str(HUNT_DIR), budget_sec, env)
     except Exception as e:
         log("warn", "→ " + phase_name + " failed to launch: " + str(e)[:200])
+        _record_phase_outcome(phase_name, "empty", "failed to launch: " + str(e)[:120])
         return False
+    if timed_out:
+        log("warn", "⏱ " + phase_name + " hit its budget — reading whatever it wrote so far")
 
     # --output-format json → stdout is one JSON result object: {"result": "<text>", "total_cost_usd":
     # 0.42, "usage": {...}}. Parse it so (a) the limit/summary detection below sees the agent's text,
     # and (b) we record the TRUE API-equivalent $ this phase cost (the flat-fee subscription hides
     # this, which is why the cost meter used to read $0). On a timeout / limit notice the output may
-    # not be valid JSON — keep the raw text for detection and simply skip cost capture.
+    # not be valid JSON — keep the raw text for detection and simply skip cost capture. `model` is
+    # whichever one actually produced this output (the fallback, if a refusal triggered a retry).
     raw = summary
     try:
         _obj = json.loads(raw)
@@ -3929,6 +4328,32 @@ def _run_phase_agent(phase_name, stage_label, stage_pct, brief, budget_sec, resu
             _record_cli_cost(_obj.get("total_cost_usd"), _obj.get("usage"), model, phase_name)
     except Exception:
         pass
+
+    # DEAD LLM AUTH (checked before the limit block below): the hunting account's `claude` login is
+    # expired/logged-out, so this phase's `claude -p` returned an auth notice, not real work. Unlike a
+    # usage limit (wait for a reset) this needs a human to RE-LOGIN — so pause via _self_pause (an
+    # operator-resumable, re-login UX), then RETRY the phase once resumed, with the now-fixed auth.
+    # Without this, the OAuth-expired notice fell straight through to "produced nothing" below and the
+    # whole hunt cascaded to "done · 0 findings" on a dead account (live 2026-11-03, SecureW2: intel +
+    # recon+surface both failed to authenticate → 0 surface → 23s "clean" hunt). Same short-output
+    # guard as the limit check so a long real agent response that merely discusses an expired-token
+    # finding never trips it. Capped retries so a resume-without-actually-fixing-it can't recurse forever.
+    if (len(summary) < 500 and _CLI_AUTH_DEAD_RE.search(summary)) or \
+       (len(raw) < 600 and _CLI_AUTH_DEAD_RE.search(raw)):
+        _record_phase_outcome(phase_name, "auth_dead", (summary[:160] or raw[:160]))
+        if _auth_attempt >= 5:
+            log("warn", "→ " + phase_name + " still can't authenticate after re-login + resume — "
+                "skipping this phase (fix the hunting account's `claude` login, then re-run)")
+            return False
+        _login_dir = os.path.expanduser(cdir or "~/.claude")
+        _pause_for_auth(
+            "The hunting account's Claude login is dead — " +
+            (summary[:120] or raw[:120]).replace("\n", " ").strip() +
+            ". Re-login:  CLAUDE_CONFIG_DIR=" + _login_dir + " claude  → run /login, then press Resume. "
+            "The hunt is FROZEN here (not finished) and will retry " + phase_name + " the moment you resume.")
+        # resumed (SIGCONT) → auth should be live now; retry the whole phase from scratch.
+        return _run_phase_agent(phase_name, stage_label, stage_pct, brief, budget_sec,
+                                result_file, merge_fn, model=model, _auth_attempt=_auth_attempt + 1)
 
     # This subprocess is raw `claude -p`, not routed through llm_client/llm_call — the account's
     # 5-hour session limit (or a dead/auth-less CLI) prints its notice to stdout/stderr here and
@@ -3950,12 +4375,14 @@ def _run_phase_agent(phase_name, stage_label, stage_pct, brief, budget_sec, resu
                 _RL["retry_after"] = max(0, int(reset_epoch - time.time()))
                 STATE["rate_limit_reset"] = reset_epoch
             STATE["rate_limit_notice"] = summary[:200]
+        _record_phase_outcome(phase_name, "rate_limited", summary[:160])
         log("warn", "⏸ " + phase_name + " hit the account limit — pausing the hunt · " +
             summary[:160].replace("\n", " "))
         raise RateLimitPause()
 
     if not result_file.exists():
         log("out", "→ " + phase_name + " produced nothing · " + summary[:160].replace("\n", " "))
+        _record_phase_outcome(phase_name, "empty", "no result file written")
         return False
     lines = []
     for line in result_file.read_text(errors="ignore").splitlines():
@@ -3967,15 +4394,16 @@ def _run_phase_agent(phase_name, stage_label, stage_pct, brief, budget_sec, resu
         except Exception:
             continue
     if not lines:
-        refused = bool(re.search(r"i won'?t|safety classifier|prompt.?injection|i can'?t (proceed|continue|help)",
-                                  summary[:400], re.I))
+        refused = _is_refusal(summary)
         log("warn" if refused else "out",
             ("→ refused — " if refused else "→ ") + phase_name + " wrote no usable result lines · " +
             summary[:160].replace("\n", " "))
+        _record_phase_outcome(phase_name, "empty", ("refused" if refused else "no usable lines"))
         return False
     with _STATE_LOCK:
         merge_fn(lines)
     flush()
+    _record_phase_outcome(phase_name, "ok", str(len(lines)) + " result line(s)")
     log("ok", "✓ " + phase_name + " · " + str(len(lines)) + " result line(s)")
     return True
 
@@ -3993,9 +4421,7 @@ def _phase_recon_surface_agent(deadline=None):
     scripted phases remain the default, reverted by removing the env var alone, no code revert needed.
     Lowest-risk pilot: worst case is an incomplete endpoint list, never a corrupted finding or a
     destructive write."""
-    budget = 1200.0
-    if deadline:
-        budget = max(120.0, min(budget, deadline - time.time()))
+    budget = _phase_budget("recon_surface", deadline)
     scope_summary = ", ".join(WEB_ASSETS)[:400] or TARGET
     denyf = HUNT_DIR / "scope.deny"
     deny_text = denyf.read_text(errors="ignore")[:800] if denyf.exists() else "(none written)"
@@ -4070,9 +4496,7 @@ def _phase_auth_spa_agent(deadline=None):
         return
     _auto_cdp()
     c = _creds()
-    budget = 1500.0
-    if deadline:
-        budget = max(180.0, min(budget, deadline - time.time()))
+    budget = _phase_budget("auth_spa", deadline)
     cookie = (c.get("cookie") or "").strip()
     tok = (c.get("session_token") or "").strip()
     ua = (c.get("ua") or "").strip()
@@ -4209,9 +4633,7 @@ def _phase_intel_agent(deadline=None):
     Flag-gated: only called from main() when "intel" is in HUNT_AGENTIC_PHASES. Low risk — this phase
     is informational context for later phases plus the occasional leaked-secret finding, never a
     destructive action."""
-    budget = 600.0
-    if deadline:
-        budget = max(90.0, min(budget, deadline - time.time()))
+    budget = _phase_budget("intel", deadline)
     prog = (PROGRAM or apex(TARGET) or TARGET).strip()
     scope_summary = ", ".join(WEB_ASSETS)[:400] or TARGET
     gh_token_note = ("A GITHUB_TOKEN is set in this environment if you want to use the gh CLI or git "
@@ -4315,9 +4737,7 @@ def _phase_plan_agent(deadline=None):
     Flag-gated: only called from main() when "plan" is in HUNT_AGENTIC_PHASES."""
     if NO_LLM or not STATE.get("endpoints"):
         return
-    budget = 900.0
-    if deadline:
-        budget = max(120.0, min(budget, deadline - time.time()))
+    budget = _phase_budget("plan", deadline)
     c = _creds()
     tok = (c.get("session_token") or "").strip()
     has_session = bool(tok or (c.get("cookie") or "").strip())
@@ -4425,6 +4845,120 @@ def _phase_plan_agent(deadline=None):
     flush()
 
 
+def _decayed_hunt_budget(base, stale, floor=600.0, cap=4):
+    """Re-hunt budget after `stale` consecutive active-hunt passes that added no new finding:
+    halve per stale pass (capped exponent), never below `floor`. stale=0 → full base. Pure so it's
+    unit-testable without standing up STATE/endpoints. See _phase_active_hunt_agent's budget block."""
+    if stale <= 0:
+        return base
+    return max(floor, base / (2 ** min(stale, cap)))
+
+
+# Per-phase default ("one size") budgets in seconds, and each phase's hard floor (its old inline
+# deadline-cap minimum). _size_budgets() scales these per target; _phase_budget() is the single place
+# every phase reads its budget from, so there are no scattered hardcoded literals to drift.
+_PHASE_BASE = {
+    "recon_surface": 1200.0, "auth_spa": 1500.0, "intel": 600.0, "plan": 900.0,
+    "active_hunt": 5400.0, "verify": 1800.0, "chain_economics": 900.0,
+    "deep_questions": 2400.0, "zeroday": 2400.0,
+}
+_PHASE_FLOOR = {
+    "recon_surface": 120.0, "auth_spa": 180.0, "intel": 90.0, "plan": 120.0,
+    "active_hunt": 600.0, "verify": 180.0, "chain_economics": 120.0,
+    "deep_questions": 300.0, "zeroday": 300.0,
+}
+# Phases that re-run every resume cycle → their budget ALSO decays as the hunt plateaus.
+_DECAYING_PHASES = ("active_hunt", "deep_questions", "zeroday", "chain_economics")
+
+
+def _budget_scale(name):
+    """The per-target multiplier _size_budgets chose for this phase, clamped [0.25, 2.5]; 1.0 default."""
+    s = (STATE.get("budget_scale") or {}).get(name)
+    if s is None:
+        return 1.0
+    try:
+        return max(0.25, min(2.5, float(s)))
+    except Exception:
+        return 1.0
+
+
+def _phase_budget(name, deadline=None):
+    """THE single place every phase gets its time budget. In order: phase BASE × per-target SCALE
+    (the dynamic cost lever from _size_budgets: small/simple target <1, large/rich >1) × plateau
+    DECAY (only the re-running hunt-loop phases), then clamped to [phase floor, 2.5×base] and the
+    overall hunt deadline. Replaces nine scattered hardcoded `budget = N` literals."""
+    base = _PHASE_BASE.get(name, 900.0)
+    floor = _PHASE_FLOOR.get(name, 300.0)
+    b = base * _budget_scale(name)
+    if name in _DECAYING_PHASES:
+        stale = (STATE.get("stats") or {}).get("stale_hunt_passes", 0)
+        b = _decayed_hunt_budget(b, stale, floor=floor)
+    b = max(floor, min(b, 2.5 * base))
+    if deadline:
+        b = max(floor, min(b, deadline - time.time()))
+    return b
+
+
+def _size_budgets():
+    """One cheap LLM call that sizes the per-phase budget SCALE to THIS target — the dynamic,
+    cost-reducing lever the operator asked for: a small/simple target (few endpoints, single host,
+    low/no bounty) should not burn the same multi-hour budget as a huge wildcard. Runs ONCE on a
+    fresh run after the surface is mapped; the chosen scale persists in run.json
+    (STATE["budget_scale"]) and is reused on every resume (self-guards, so it's never re-paid for).
+    Deterministic surface-size fallback when the LLM is unavailable; EVERY value is clamped [0.25,
+    2.5] in _budget_scale so a bad/hallucinated number can neither blow up cost nor stall a phase."""
+    if STATE.get("budget_scale"):
+        return   # already sized (resume reloaded it from run.json, or a prior call this run)
+    eps = len(STATE.get("endpoints") or [])
+    hosts = len(STATE.get("hosts") or [])
+    pintel = STATE.get("program_intel") or {}
+    wildcard = any("*" in a for a in (WEB_ASSETS or []))
+    # deterministic default: scale the heavy hunt-loop phases by surface size (small → cheaper).
+    if eps <= 8:        ds = 0.4
+    elif eps <= 30:     ds = 0.6
+    elif eps <= 80:     ds = 0.85
+    elif eps <= 200:    ds = 1.2
+    else:               ds = 1.8
+    scale = {k: ds for k in _DECAYING_PHASES}
+    scale["recon_surface"] = 1.0 if (wildcard or hosts > 20) else 0.6
+    scale["plan"] = 1.0 if eps > 30 else 0.7
+    scale["intel"] = 0.8 if pintel else 0.5
+    scale["auth_spa"] = 1.0
+    scale["verify"] = 1.0
+    reason = "deterministic (surface size)"
+    sys_p = ("You tune a bug-bounty engine's per-phase time-budget multipliers for ONE target, to cut "
+             "cost on small/simple targets and spend more on large/rich ones. 1.0 = default budget; "
+             "<1 shorter, >1 longer. Return STRICT JSON only: {\"scale\":{\"active_hunt\":n,"
+             "\"deep_questions\":n,\"zeroday\":n,\"chain_economics\":n,\"recon_surface\":n,"
+             "\"verify\":n},\"reason\":\"one short clause\"}, each n in 0.25..2.5. Scale DOWN for few "
+             "endpoints / single host / low or absent bounty / simple stack; UP for a big wildcard, "
+             "many endpoints, a high max bounty, or a rich authenticated surface.")
+    user_p = json.dumps({
+        "endpoints": eps, "hosts": hosts, "mode": MODE, "scope_types": list(SCOPE_TYPES),
+        "wildcard_scope": wildcard, "reward_table": pintel.get("reward_table") or {},
+        "program": str(STATE.get("program") or TARGET)[:60],
+    })[:1500]
+    try:
+        txt = llm_call(sys_p, user_p, _model=MODEL_CHEAP, max_tokens=400, timeout=60)
+    except Exception:
+        txt = None
+    obj = _extract_json_from_text(txt) if txt else None
+    if isinstance(obj, dict) and isinstance(obj.get("scale"), dict):
+        for k, v in obj["scale"].items():
+            if k in _PHASE_BASE:
+                try:
+                    scale[k] = max(0.25, min(2.5, float(v)))
+                except Exception:
+                    pass
+        reason = (str(obj.get("reason", "")).strip() or reason)[:160]
+    STATE["budget_scale"] = scale
+    STATE["budget_reason"] = reason
+    log("ok", "◆ budgets sized to target · active-hunt×%.2f deep×%.2f zeroday×%.2f · %s" % (
+        scale.get("active_hunt", 1.0), scale.get("deep_questions", 1.0),
+        scale.get("zeroday", 1.0), reason))
+    flush()
+
+
 def _phase_active_hunt_agent(deadline=None):
     """Stage 5 of the full-agentic rewrite (see HUNTR full-agentic plan, 2026-10-25) — Phase 5:
     Core Vulnerability-Hunting Loop (largest budget share). Replaces phase_active()/
@@ -4447,9 +4981,41 @@ def _phase_active_hunt_agent(deadline=None):
     Flag-gated: only called from main() when "active_hunt" is in HUNT_AGENTIC_PHASES."""
     if NO_LLM or not STATE.get("endpoints"):
         return
-    budget = 5400.0
-    if deadline:
-        budget = max(600.0, min(budget, deadline - time.time()))
+    # ── credit gate (approach A) ──
+    # Charge the hunt's estimated credits before the largest spend. Non-breaking:
+    # credits_gate is a no-op unless this engine is connected to a cloud account
+    # (managed mode); idempotent per workspace so a resume never double-charges;
+    # fail-open on any error EXCEPT an explicit 402 (insufficient credits), which
+    # skips this phase rather than giving away compute.
+    try:
+        import sys as _sys
+        if str(HERE) not in _sys.path:
+            _sys.path.insert(0, str(HERE))
+        import credits_gate as _cg
+        # ref MUST be the hunt's unique id — the backend dedups charges on
+        # (user, ref, reason), so a non-unique ref makes every hunt after the first
+        # look like an idempotent retry and charge 0. HUNT_DIR.name is always
+        # ".hunt" (the dir is targets/<hunt_id>/.hunt), so use HUNT_ID.
+        _hunt_ref = (os.environ.get("HUNT_ID") or "").strip() or HUNT_DIR.parent.name
+        _g = _cg.charge(_hunt_ref, endpoints=len(STATE.get("endpoints") or []))
+        if _g.get("ok") is False and _g.get("status") == 402:
+            log("out", "⏸ insufficient credits — skipping the core hunt phase. "
+                "Top up at huntr.run to run this hunt.")
+            STATE.setdefault("stats", {})["credit_blocked"] = True
+            return
+        if _g.get("charged"):
+            log("out", f"✓ {_g['charged']} credits charged for this hunt "
+                f"({_g.get('tier', '')}) · balance {_g.get('balance', '?')}")
+    except Exception as _e:
+        log("out", f"credit gate skipped ({_e})")   # never block a hunt on a gate error
+    # Budget sized to the target (_size_budgets) AND decayed as the hunt plateaus — both via
+    # _phase_budget. A flat 5400s re-hunt every converged resume cycle otherwise burns a whole
+    # account window + tokens re-exploring an exhausted surface (operator-flagged 2026-11-04).
+    budget = _phase_budget("active_hunt", deadline)
+    _stale = (STATE.get("stats") or {}).get("stale_hunt_passes", 0)
+    if _stale > 0:
+        log("out", "→ re-hunt budget trimmed to " + str(int(budget)) + "s · " + str(_stale) +
+            " prior pass(es) added no new finding (surface looks exhausted)")
     c = _creds()
     tok = (c.get("session_token") or "").strip()
     tok2 = (c.get("token2") or "").strip()
@@ -4557,14 +5123,26 @@ def _phase_active_hunt_agent(deadline=None):
             evidence = str(r.get("evidence", ""))[:300]
             if verdict == "confirmed" and evidence:
                 proof = {"proven": True, "method": "phase5-agent", "evidence": evidence}
+            # det=False (was det=(verdict=="confirmed") — an agent's own free-text "confirmed" is
+            # not a deterministic oracle hit; _det="undroppable" must stay reserved for a REAL tool
+            # that ran actual HTTP, or _proven()'s evidence cross-check below never gets a chance to
+            # run on this claim. See _real_evidence_backs' docstring for the live incident this closes.
             add_finding(sev, title, detail, endpoint, cls=str(r.get("cls", "")),
-                        verdict=verdict, det=(verdict == "confirmed"), proof=proof,
+                        verdict=verdict, det=False, proof=proof,
                         source="phase5-agent")
             n += 1
         log("out", "→ active-hunt agent · +" + str(n) + " finding(s)")
 
+    _before = len(STATE.get("findings") or [])
     ok = _run_phase_agent("active-hunt agent", "Hunt (agentic)", 75, brief, budget,
                            HUNT_DIR / "agent-hunt.jsonl", _merge)
+    # Plateau tracking for the diminishing re-hunt budget above: a pass that added no new finding of
+    # its OWN bumps the stale counter (the NEXT pass gets half the budget); any productive pass resets
+    # it. Measured as a delta on STATE["findings"] around this call so chain/verify additions elsewhere
+    # don't mask a genuinely unproductive active-hunt pass.
+    _added = len(STATE.get("findings") or []) - _before
+    _st = STATE.setdefault("stats", {})
+    _st["stale_hunt_passes"] = 0 if _added > 0 else _st.get("stale_hunt_passes", 0) + 1
     if not ok:
         log("warn", "→ agentic active-hunt produced nothing — this run will have little/no new findings")
     stage("Hunt (agentic)", 90)
@@ -4599,9 +5177,7 @@ def _phase_verify_agent(deadline=None):
     findings = STATE.get("findings", [])
     if not findings:
         return
-    budget = 1800.0
-    if deadline:
-        budget = max(180.0, min(budget, deadline - time.time()))
+    budget = _phase_budget("verify", deadline)
     # one line per finding, truncated — the agent gets the real evidence/detail, not just a title
     f_sample = []
     for i, f in enumerate(findings[:120]):
@@ -4687,14 +5263,19 @@ def _phase_verify_agent(deadline=None):
                 if reco in ("submit", "needs-work"):
                     f["reco"] = reco
                 f["agent_verify_note"] = str(r.get("note", ""))[:300]
-                # _proven(f) (checked by the legacy phase_hard_triage backstop still running after this —
-                # see its call site comment) only looks at proof.proven/_det, neither of which this agent
-                # sets anywhere else — without this, a "confirmed" verdict here gets silently flipped back
-                # to "likely" and capped at medium by that backstop's RULE 2, undermining this phase's own
-                # judgment the moment it runs. Setting proof.proven=True on a genuine confirm keeps the
-                # two cooperating instead of the legacy floor fighting the agent that's supposed to replace it.
+                # OPERATOR DIRECTIVE (2026-11-04), caught live on THIS exact code path: "still not
+                # exploited to be proven" — this used to write proof.proven=True on every "confirmed"
+                # re-verify, which is exactly the raw field the dashboard's PROVEN badge reads
+                # directly with no cross-check. _proven()/hard_triage no longer trust proof.proven at
+                # all (they require poc_verified — see _proven()'s docstring), so the old rationale
+                # here (keeping a legacy RULE-2 floor from fighting this phase's own judgment) is
+                # obsolete; writing proven=True now serves no purpose except re-lying to the badge on
+                # every single verify pass, which is precisely what kept undoing hard_triage's
+                # writeback a few minutes after each correction. Record the claim (method/evidence,
+                # still useful context for a human or agent-exploit.py reading it) WITHOUT ever
+                # writing proven=True from pure self-report prose.
                 if v == "confirmed":
-                    f["proof"] = {"proven": True, "method": "agent-verify", "evidence": f["agent_verify_note"]}
+                    f["proof"] = {"proven": False, "method": "agent-verify", "evidence": f["agent_verify_note"]}
                 f["noise"] = f.get("verdict") in ("false_positive",) or f.get("sev") == "i" and f.get("reco") != "submit"
                 verdicts += 1
             elif t == "dup":
@@ -4737,9 +5318,7 @@ def _phase_chain_economics_agent(deadline=None):
         STATE["chains"] = []
         STATE["stats"]["chains"] = 0
         return
-    budget = 900.0
-    if deadline:
-        budget = max(120.0, min(budget, deadline - time.time()))
+    budget = _phase_budget("chain_economics", deadline)
     prog_intel = STATE.get("program_intel") or {}
     f_sample = []
     for i, f in enumerate(finds):
@@ -4747,13 +5326,20 @@ def _phase_chain_economics_agent(deadline=None):
             continue
         f_sample.append({"i": i, "title": f.get("title", ""), "cls": f.get("cls", ""),
                           "endpoint": f.get("endpoint", ""), "sev": f.get("label", ""),
-                          "verdict": f.get("verdict", ""), "detail": str(f.get("detail", ""))[:300]})
+                          "verdict": f.get("verdict", ""), "detail": str(f.get("detail", ""))[:300],
+                          "proven": _proven(f)})
 
     brief = (
         "# Chain-to-Impact + Economics — full agentic phase\n\n"
         f"Target: {TARGET}\nProgram: {PROGRAM or TARGET}\n\n"
-        f"## {len(f_sample)} non-noise finding(s)\n{json.dumps(f_sample, default=str)[:8000]}\n\n"
-        + (f"## Reward table\n{json.dumps(prog_intel['reward_table'])[:400]}\n\n" if prog_intel.get("reward_table") else "")
+        f"## {len(f_sample)} non-noise finding(s) — \"proven\":true means it's ACTUALLY eligible as a "
+        f"chain step (live-verified exploit or a real deterministic oracle); \"proven\":false findings "
+        f"can still be scored in part 2 but CANNOT be used as a chain step no matter how well the "
+        f"narrative reads — the engine will reject any chain that tries\n"
+        f"{json.dumps(f_sample, default=str)[:8000]}\n\n"
+        + (f"## Reward ranges (per-severity min..max payout, this program)\n{json.dumps(_reward_ranges())}\n"
+           "Bounty is interpolated deterministically from your CVSS score within the matching band, so the\n"
+           "CVSS you assign drives the payout — score carefully.\n\n")
         + "## Your job (two parts)\n"
         "1. **Chain findings into bigger impact, only where every hop is real.** Look for cases where "
         "two or more CONFIRMED findings combine into something worse than either alone (e.g. an "
@@ -4763,18 +5349,18 @@ def _phase_chain_economics_agent(deadline=None):
         "finding above — never invent or assume an unconfirmed step just because the story sounds good. "
         "If nothing genuinely chains, say so; a hunt with zero chains is an honest result, not a "
         "failure.\n"
-        "2. **Estimate real value/priority for each confirmed finding** (and each chain): how likely is "
-        "a triager to accept it, roughly what would it realistically pay on this program (use the "
-        "reward table if given, otherwise reason from severity and how major bug-bounty programs "
-        "typically price this class of bug), and whether it's likely a near-duplicate of another "
-        "finding already in this list.\n\n"
+        "2. **Score and value each confirmed finding** (and each chain): assign a realistic CVSS 3.1 "
+        "base score (0.1–10.0) — this is what sets the payout via the reward ranges above, so be "
+        "honest, not generous. Also judge how likely a triager is to accept it and whether it's "
+        "likely a near-duplicate of another finding already in this list.\n\n"
         f"## Output — append as you go\n"
         f"Write one JSON object per line to {HUNT_DIR}/agent-chain.jsonl (create it if missing). Two "
         "line shapes:\n"
         '  {"type":"chain","name":"...","sev":"critical|high|medium|low","steps":[{"i":3,"note":"what '
         'this step contributes"},{"i":7,"note":"..."}],"impact":"one line describing the end result"}\n'
-        '  {"type":"value","i":3,"ev_band":"high|med|low","bounty_est":2000,"reco":"submit|needs-work|'
-        'hold-duplicate","note":"why"}\n\n'
+        '  {"type":"value","i":3,"cvss":9.3,"ev_band":"high|med|low","reco":"submit|needs-work|'
+        'hold-duplicate","note":"why"}\n'
+        "  (cvss is required — the payout is computed from it; ev_band is a coarse accept-likelihood hint.)\n\n"
         "Begin now: look for genuine chains first, then value each finding. Stop once you've covered "
         "everything or you're repeating yourself."
     )
@@ -4782,6 +5368,7 @@ def _phase_chain_economics_agent(deadline=None):
     def _merge(lines):
         chains = []
         valued = 0
+        _rr = _reward_ranges()
         for r in lines:
             t = r.get("type")
             if t == "chain":
@@ -4794,6 +5381,19 @@ def _phase_chain_economics_agent(deadline=None):
                 for s in steps_in:
                     i = s.get("i")
                     if not isinstance(i, int) or i < 0 or i >= len(finds):
+                        ok_chain = False
+                        break
+                    # OPERATOR DIRECTIVE (2026-11-06): a chain step must be confirmed AND exploited
+                    # (_proven() — live-verified PoC or a real deterministic oracle), not merely
+                    # verdict=="confirmed". Caught live: finding #17 "CORS+SSRF → Account Takeover"
+                    # chained off a step whose own proof oracle (cors_wildcard) directly CONTRADICTS
+                    # the chain's credentials-theft mechanism, and the engine had nothing enforcing
+                    # that a cited step was actually proven, only a prose instruction the agent could
+                    # (and did) ignore. "Every hop real" now means every hop literally can't be used
+                    # unless _proven() agrees — one unproven/unexploited hop voids the WHOLE chain,
+                    # since a chain's claimed impact depends on every step actually holding.
+                    step_f = finds[i]
+                    if step_f.get("verdict") != "confirmed" or not _proven(step_f):
                         ok_chain = False
                         break
                     steps.append({"st": "done", "t": finds[i].get("cls", "") or finds[i].get("title", "")[:30],
@@ -4815,11 +5415,17 @@ def _phase_chain_economics_agent(deadline=None):
                 band = str(r.get("ev_band", "")).strip().lower()
                 if band in ("high", "med", "low"):
                     f["ev_band"] = band
-                    f["ev"] = {"high": 2500, "med": 700, "low": 150}[band]
+                # Payout is interpolated from the agent's CVSS within the program's reward range —
+                # a 10.0 pays the band max, a 7.0 the band min, etc. No CVSS → band-midpoint fallback.
                 try:
-                    f["bounty_est"] = int(r.get("bounty_est") or 0)
+                    cv = float(r.get("cvss") or 0)
                 except Exception:
-                    pass
+                    cv = 0.0
+                if cv > 0:
+                    f["cvss"] = round(cv, 1)
+                est = bounty_from_cvss(cv, f.get("sev", ""), _rr)
+                f["ev"] = est
+                f["bounty_est"] = est
                 reco = str(r.get("reco", "")).strip()
                 if reco in ("submit", "needs-work", "hold-duplicate"):
                     f["reco"] = reco
@@ -4828,11 +5434,20 @@ def _phase_chain_economics_agent(deadline=None):
         chains.sort(key=lambda c: SEVRANK.get(c["sev"], 9))
         STATE["chains"] = chains
         STATE["stats"]["chains"] = len(chains)
-        submit_now = [f for f in STATE["findings"] if f.get("reco") == "submit"]
+        # OPERATOR DIRECTIVE (2026-11-04): "another idiot section... calculates 7 submit ready and
+        # there's none is ready" — f["reco"]="submit" a few lines up is set directly from THIS agent's
+        # OWN self-report (r.get("reco","")), same self-report pattern as every other loophole closed
+        # today; the $ panel then trusted that raw reco with no cross-check, same lie as the PROVEN
+        # badge wore, just in a dollar figure instead of a green pill. _proven(f) is the one
+        # authoritative gate everything else now goes through — require it here too, so "submit-ready"
+        # can't count a finding nothing has actually exploited.
+        submit_now = [f for f in STATE["findings"] if f.get("reco") == "submit" and _proven(f)]
         total_ev = sum(f.get("ev", 0) for f in submit_now)
         STATE["economics"] = {"pipeline_ev": total_ev, "submit_now": len(submit_now),
+                               "reward_ranges": _rr,
                                "top": sorted(({"title": f["title"], "sev": f["sev"], "ev": f.get("ev", 0),
-                                                "endpoint": f.get("endpoint", "")} for f in submit_now),
+                                                "cvss": f.get("cvss", 0), "endpoint": f.get("endpoint", "")}
+                                               for f in submit_now),
                                               key=lambda x: -x["ev"])[:5]}
         STATE["stats"]["pipeline_ev"] = total_ev
         log("out", "→ chain+economics agent · " + str(len(chains)) + " chain(s) · " + str(valued) +
@@ -4879,9 +5494,7 @@ def _phase_deep_questions_agent(deadline=None):
     Flag-gated: only called from main() when "deep_questions" is in HUNT_AGENTIC_PHASES."""
     if NO_LLM or not STATE.get("endpoints"):
         return
-    budget = 2400.0
-    if deadline:
-        budget = max(300.0, min(budget, deadline - time.time()))
+    budget = _phase_budget("deep_questions", deadline)   # target-sized + plateau-decayed
     ep_sample = [e["url"] for e in STATE["endpoints"][:200]]
     finds = [f for f in STATE.get("findings", []) if not f.get("noise")]
     find_titles = [{"title": f.get("title", ""), "endpoint": f.get("endpoint", ""),
@@ -4968,16 +5581,17 @@ def _phase_deep_questions_agent(deadline=None):
             evidence = str(r.get("evidence", ""))[:300]
             proof = {"proven": True, "method": "phase9-deep", "evidence": evidence} \
                 if verdict == "confirmed" and evidence else None
+            # det=False — see the identical comment at the phase5-agent add_finding() call above.
             add_finding(str(r.get("sev", "medium")).strip().lower(), title, detail, endpoint,
-                        cls=str(r.get("cls", "")), verdict=verdict, det=(verdict == "confirmed"),
+                        cls=str(r.get("cls", "")), verdict=verdict, det=False,
                         proof=proof, source="phase9-deep")
             n += 1
-        log("out", "→ deep-questions agent · " + str(q) + " question(s) tried · +" + str(n) + " finding(s)")
+        log("out", "→ interrogate agent · " + str(q) + " question(s) tried · +" + str(n) + " finding(s)")
 
-    ok = _run_phase_agent("deep-questions agent", "Deep Questions (agentic)", 89, brief, budget,
+    ok = _run_phase_agent("deep-questions agent", "Interrogate (agentic)", 89, brief, budget,
                            HUNT_DIR / "agent-deep.jsonl", _merge)
     if not ok:
-        log("out", "→ deep-questions agent produced nothing new — surface looks genuinely covered this pass")
+        log("out", "→ interrogate agent produced nothing new — surface looks genuinely covered this pass")
     flush()
 
 
@@ -4995,9 +5609,7 @@ def _phase_zeroday_agent(deadline=None):
     Flag-gated: only called from main() when "zero_day" is in HUNT_AGENTIC_PHASES."""
     if NO_LLM or not STATE.get("endpoints"):
         return
-    budget = 2400.0
-    if deadline:
-        budget = max(300.0, min(budget, deadline - time.time()))
+    budget = _phase_budget("zeroday", deadline)   # target-sized + plateau-decayed
     ep_sample = [e["url"] for e in STATE["endpoints"][:220]]
     scope_block = _scope_block()
 
@@ -5038,8 +5650,12 @@ def _phase_zeroday_agent(deadline=None):
         "composes its pieces. Form a specific hypothesis, test it for real, prove it with the exact "
         "request/response.\n\n"
         "Proof bar is the same as the rest of the hunt: a concrete observed effect, never 'this looked "
-        "unusual'. A bypass is only real with the before(blocked)→after(allowed) pair captured. A "
-        "verify pass runs after you.\n\n"
+        "unusual'. A bypass is only real with the before(blocked)→after(allowed) pair captured — AND "
+        "the 'after' must return real protected DATA, not just a 200 with an empty/trivial body. A bare "
+        "status flip (403→200 with no content) proves the gate moved, not that anything sensitive was "
+        "exposed, and gets rejected downstream. So aim your bypass attempts at endpoints that actually "
+        "return sensitive data (records, PII, tokens, another tenant's content) — not status-only "
+        "health/ping/action endpoints where a flip to 200 shows nothing. A verify pass runs after you.\n\n"
         f"## Output — append as you go, not all at the end\n"
         f"Write one JSON object per line to {HUNT_DIR}/agent-zeroday.jsonl (create it if missing):\n"
         '  {"type":"finding","sev":"critical|high|medium|low|info","title":"...","detail":"what you '
@@ -5071,9 +5687,10 @@ def _phase_zeroday_agent(deadline=None):
             evidence = str(r.get("evidence", ""))[:300]
             proof = {"proven": True, "method": "phase10-zeroday", "evidence": evidence} \
                 if verdict == "confirmed" and evidence else None
+            # det=False — see the identical comment at the phase5-agent add_finding() call above.
             add_finding(str(r.get("sev", "medium")).strip().lower(), title, detail, endpoint,
                         cls=str(r.get("cls", "")) or "bypass", verdict=verdict,
-                        det=(verdict == "confirmed"), proof=proof, source="phase10-zeroday")
+                        det=False, proof=proof, source="phase10-zeroday")
             n += 1
         log("out", "→ zero-day agent · +" + str(n) + " bypass/novel finding(s)")
 
@@ -6408,6 +7025,7 @@ def _phase_claude_code_hunt(lead_deadline, tok, tok2, authed, max_budget=None):
         pass   # non-fatal — it's only kept for the operator to inspect what was sent
 
     model = MODEL_LEAD.get("model") or "claude-sonnet-4-6"
+    fallback_model = MODEL_LEAD.get("fallback") or ""
     budget = max(60.0, lead_deadline - time.time())
     if max_budget:
         budget = min(budget, max_budget)
@@ -6425,15 +7043,13 @@ def _phase_claude_code_hunt(lead_deadline, tok, tok2, authed, max_budget=None):
     if cdir:
         env["CLAUDE_CONFIG_DIR"] = os.path.expanduser(cdir)
     try:
-        r = subprocess.run(cmd, cwd=str(HUNT_DIR), capture_output=True, text=True,
-                           timeout=budget, env=env)
-        summary = (r.stdout or r.stderr or "").strip()
-    except subprocess.TimeoutExpired as e:
-        summary = ((e.stdout or b"").decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or ""))
-        log("warn", "⏱ Claude-Code-native hunt hit its time budget — reading whatever findings it wrote so far")
+        r, summary, timed_out, model = _run_claude_cli_fallback(
+            cmd, model, fallback_model, "Claude-Code-native hunt", str(HUNT_DIR), budget, env)
     except Exception as e:
         log("warn", "→ Claude-Code-native hunt failed to launch: " + str(e)[:200])
         return False
+    if timed_out:
+        log("warn", "⏱ Claude-Code-native hunt hit its time budget — reading whatever findings it wrote so far")
 
     before = len(STATE["findings"])
     fpath = HUNT_DIR / "agent-findings.jsonl"
@@ -6467,9 +7083,7 @@ def _phase_claude_code_hunt(lead_deadline, tok, tok2, authed, max_budget=None):
     # an empty/error result, so `bool(summary)` alone would call it a "success" and skip the JSON
     # fallback for the rest of the budget on zero findings — keep this check regardless of which
     # model is active, since it's a 0-cost safety net against exactly that silent failure mode.
-    _refusal_re = re.compile(r"i won't|i'm not going to|i don't have a way to verify|"
-                              r"safety classifier|prompt.injection|i can't proceed|i won't continue", re.I)
-    refused = bool(_refusal_re.search(summary[:400]))
+    refused = _is_refusal(summary)
     ok = n_lines > 0 and not refused
     STATE.setdefault("lead_log", []).append({
         "step": 0, "act": "claude_code_native", "ok": ok,
@@ -6911,6 +7525,21 @@ def phase_dedup():
             tools = ", ".join(sorted({(o.get("cls") or "").strip() for o in others if o.get("cls")}))[:120]
             if tools:
                 keeper["detail"] = (keeper.get("detail", "") + " · also detected via: " + tools).strip(" ·")
+            # Don't throw away real supervisor work (verify-one.py/agent-exploit.py/agent-report.py
+            # already ran against a duplicate before this merge collapsed it) just because it wasn't
+            # picked as the keeper — found 2026-11-03: a duplicate "Chain" finding that supervisor had
+            # already verified got merged away here, silently discarding its supervisor_verified flag
+            # (and would discard poc/report the same way) with no trail of what happened to it.
+            if not keeper.get("supervisor_verified") and any(o.get("supervisor_verified") for o in others):
+                keeper["supervisor_verified"] = True
+            if not keeper.get("poc"):
+                poc_src = next((o.get("poc") for o in others if o.get("poc")), None)
+                if poc_src:
+                    keeper["poc"] = poc_src
+            if not keeper.get("report"):
+                report_src = next((o.get("report") for o in others if o.get("report")), None)
+                if report_src:
+                    keeper["report"] = report_src
             merged.append(keeper); removed += len(others)
 
         # SECOND pass: same root cause, DIFFERENT endpoint (the above pass only catches same-endpoint
@@ -6934,6 +7563,18 @@ def phase_dedup():
                 n_total = 1 + len(keeper["same_root_cause_endpoints"])
                 if "same root cause at" not in keeper.get("title", ""):
                     keeper["title"] = keeper.get("title", "").rstrip() + f"  — same root cause at {n_total} endpoints, not {n_total} separate bugs"
+            # same rationale as the first pass above: don't drop supervisor's already-done work
+            # just because this instance wasn't picked as the keeper.
+            if not keeper.get("supervisor_verified") and any(o.get("supervisor_verified") for o in others):
+                keeper["supervisor_verified"] = True
+            if not keeper.get("poc"):
+                poc_src = next((o.get("poc") for o in others if o.get("poc")), None)
+                if poc_src:
+                    keeper["poc"] = poc_src
+            if not keeper.get("report"):
+                report_src = next((o.get("report") for o in others if o.get("report")), None)
+                if report_src:
+                    keeper["report"] = report_src
             merged2.append(keeper); removed2 += len(others)
 
         total_removed = removed + removed2
@@ -7170,9 +7811,163 @@ _IMPACT = {"rce", "sqli", "ssti", "ssrf", "idor", "bola", "authz", "auth bypass"
     "deserialization", "xxe", "file-upload", "oauth", "jwt", "nosqli", "lfi", "cmdi", "xss",
     "mass-assignment", "race", "ldap", "xpath", "websocket", "saml", "prototype-pollution",
     "fake-deposit", "fake deposit", "account-takeover", "ato", "chain", "invariant", "sqli-blind"}
+# INFRASTRUCTURE EXPOSURE / DISCLOSURE — info regardless of the class an agent assigns. A dev/default
+# index page, a "WAF origin reachable" claim, or an internal hostname/path/directory disclosure has no
+# security impact by itself (and is explicitly non-qualifying on most programs). Keyed on title+detail,
+# NOT on cls, because the live failure this closes was precisely an agent mislabeling such a page as an
+# _IMPACT class. Deliberately NOT matching real data/auth exposure ("internal admin fields exposed to
+# unauthenticated callers" stays a real finding) — only infrastructure/plumbing/version tells.
+_INFRA_INFO_RE = re.compile(
+    r"\b(develop\w*|debug|static|default|placeholder|sample)\s+(?:static\s+)?index page\b"
+    r"|\bwaf origin\b|\borigin server\b|\bwaf\b[^.]{0,30}\b(exposed|reachable|bypass|publicly)"
+    r"|\b(server|host)name\s+disclos|\binternal\s+(server|host)name\b|\bhostname\s+disclos"
+    r"|\bserver names?\b[^.]{0,30}\b(disclos|expos|leak)|\bload.?balanc\w*\s+(server|node)\b"
+    r"|\bpath disclos|\bdirectory (listing|index)\b",
+    re.I)
+
+
+def _floor_to_info(f, note=""):
+    """Push a finding to INFO and strip EVERY field that could keep it priced or ranked as if it
+    still had impact — not just f['sev']. The economics panel ranks by f['ev'] and shows f['cvss']
+    (see huntr-ui.html's econ-list); the DANA dev-page bug was a finding floored to info that kept
+    its mid-band CVSS (5.8) and ev ($81) and so still rendered #1 in Economics. Clearing them is what
+    makes the cap actually stick downstream, independent of whether economics re-runs after triage."""
+    f["sev"] = "i"; f["verdict"] = "info"; f["reco"] = "needs-work"
+    f.pop("_det", None)
+    f["cvss"] = ""; f["ev"] = 0; f["bounty_est"] = 0; f["ev_band"] = "low"
+    # a demoted finding must not keep residual impact claims from an earlier phase (same cleanup
+    # RULE 2 already does on its own downgrade path).
+    f.pop("impact_proven", None); f.pop("impact_level", None); f.pop("impact_evidence", None)
+    if note:
+        f["triage_note"] = note
+
+
+_EVIDENCE_2XX_CACHE = {"n": -1, "pairs": []}
+
+
+_METHOD_PATH_RE = re.compile(r"\b(GET|POST|PUT|PATCH|DELETE)\s+(https?://\S+|/\S+)", re.I)
+
+
+def _real_evidence_backs(f):
+    """True/False only when there's something to check: does a REAL captured HTTP exchange
+    (evidence/e<N>/request.txt+response.txt, written by exec-http.py over the scope-guarded spine)
+    show a 2xx response for the SAME method+path this finding actually claims? None (not False)
+    when nothing in the finding names a method+path to check — absence of a check is not evidence
+    of nothing, so callers must not treat None the same as a failed check.
+
+    Matches on (method, path), not path alone: a finding's endpoint field is frequently a path ALSO
+    hit by other, unrelated findings with a different method (e.g. a POST-create finding and a
+    GET-list finding on the exact same /system/v1/role URL) — path-only matching would let a real
+    GET capture incorrectly "back" a completely different, never-captured POST claim. Mutating
+    methods are checked preferentially when the finding's own text names one, since that's almost
+    always the actual destructive claim driving the finding's severity (a GET baseline mentioned in
+    passing isn't what makes e.g. "logout doesn't revoke the token" a High).
+
+    Why this exists: the full-agentic verify/zero-day/active-hunt phases give Claude raw Bash/curl
+    access, which does NOT go through exec-http.py — a finding's 'proof.proven=True' set by
+    _phase_verify_agent's merge is set purely because the agent SAID 'confirmed' in its own verdict
+    text, with nothing cross-checking that against what (if anything) actually happened on the wire.
+    Found live 2026-11-03: 4 of 5 'PROVEN, submit-ready' findings in a hunt had their entire claimed
+    proof sequence (POST/DELETE requests, a specific 200 response) completely absent from the
+    evidence/ directory — zero POSTs had EVER been captured anywhere in that hunt. _proven() below
+    is the single chokepoint every submit/confirm decision in the pipeline runs through, so this is
+    where an agent's self-report gets cross-examined against reality instead of trusted outright."""
+    # Checks EVERY mentioned (method, path) pair, not just the first — found live 2026-11-03: a
+    # title phrased generically ("GET /system/v1/role/{role_id}", a template placeholder, not a
+    # real URL) sorted ahead of the finding's own real, specific endpoint, and an earlier version
+    # of this function only ever checked mentioned[0], incorrectly rejecting a finding that had a
+    # real, matching 200 sitting right there in the evidence directory. Also drops placeholders
+    # outright (never a real URL to match against).
+    text = (f.get("title", "") + " " + f.get("detail", ""))[:2000]
+    mentioned = [(m.upper(), p.split("?", 1)[0]) for m, p in _METHOD_PATH_RE.findall(text)
+                 if "{" not in p and "<" not in p]
+    ep = (f.get("endpoint") or "").strip()
+    if ep and "{" not in ep and "<" not in ep:
+        mentioned.append(("GET", ep.split("?", 1)[0]))
+    seen = set(); uniq = []
+    for mp in sorted(mentioned, key=lambda mp: 0 if mp[0] in ("POST", "PUT", "PATCH", "DELETE") else 1):
+        if mp not in seen:
+            seen.add(mp); uniq.append(mp)
+    if not uniq:
+        return None
+
+    ev_dir = HUNT_DIR / "evidence"
+    try:
+        n = sum(1 for _ in ev_dir.iterdir()) if ev_dir.is_dir() else 0
+    except Exception:
+        n = 0
+    if n != _EVIDENCE_2XX_CACHE["n"]:
+        pairs = []
+        if ev_dir.is_dir():
+            for sub in ev_dir.iterdir():
+                if not sub.is_dir():
+                    continue
+                rq, rp = sub / "request.txt", sub / "response.txt"
+                if not (rq.exists() and rp.exists()):
+                    continue
+                try:
+                    req_txt = rq.read_text(errors="ignore")
+                    resp_txt = rp.read_text(errors="ignore")
+                except Exception:
+                    continue
+                m = re.search(r"HTTP/[\d.]+\s+(\d{3})", resp_txt)
+                if m and 200 <= int(m.group(1)) < 300:
+                    m2 = re.match(r"([A-Z]+)\s+(\S+)", req_txt)
+                    if m2:
+                        pairs.append((m2.group(1).upper(), m2.group(2)))
+        _EVIDENCE_2XX_CACHE["n"] = n
+        _EVIDENCE_2XX_CACHE["pairs"] = pairs
+    return any(method == m and path in u for method, path in uniq for m, u in _EVIDENCE_2XX_CACHE["pairs"])
+
 
 def _proven(f):
-    return bool((f.get("proof") or {}).get("proven")) or f.get("_det") is True
+    """THE single authority on whether a finding is actually proven — read by hard_triage (confirmed/
+    submit gating), phase_supervisor's postexploit dispatch, phase_adversarial_verify's candidate
+    list, and (via phase_hard_triage's writeback onto f['proof']['proven'] — see that call site)
+    indirectly by the dashboard's PROVEN badge, which renders that raw field directly.
+
+    OPERATOR DIRECTIVE (2026-11-04), verbatim: "the finding must be proven exploited to be marked as
+    Proven because this is a shitty triaging don't verify anything without exploitation edit the
+    agents." Caught live on SecureW2: a finding showed a green "PROVEN" badge while its OWN
+    "Exploited" pipeline step sat visibly unchecked directly beneath it. Root cause — before this fix
+    a non-oracle finding was "proven" the moment ANY agent's free-text verdict said "confirmed":
+    active-hunt (phase5-agent), the verify agent (agent-verify), deep-questions (phase9-deep), and
+    zero-day (phase10-zeroday) ALL set proof.proven=True purely from their own prose, cross-checked
+    only against whether SOME loosely-matching 2xx response existed somewhere in evidence/ — never
+    against whether the vulnerability's actual impact was demonstrated. That is verification, not
+    exploitation, and the operator is right that calling it "Proven" overstates it.
+
+    Now: a deterministic oracle (_det=True) stays trustworthy as-is — it ran the real HTTP itself, so
+    the oracle's own capture IS the exploitation, nothing further to ask of it. Every other finding
+    is proven ONLY once agent-exploit.py has actually built and LIVE-verified a PoC for it
+    (poc_verified is True) — see agent-exploit.py's tightened check, which now requires a fresh
+    "YES" this run with a real http_request round trip actually made, not "PROVEN (prior evidence)"
+    (the system prompt's fallback for when live replay isn't possible) treated as equally strong.
+    A finding's own self-reported proof.proven text verdict is no longer consulted here at all — it
+    was the thing being gamed. The evidence-directory cross-check stays as an additional veto on top,
+    never a substitute for it.
+
+    _det IMPOSTOR GUARD: found the SAME SecureW2 hunt still showing 8/21 findings "proven" seconds
+    after the fix above was deployed. Root cause was a SECOND bypass, one layer deeper — add_finding()
+    stamped f['_det']=True unconditionally whenever a proof dict carried proven=True, silently
+    ignoring the caller's own explicit det=False (phase5-agent/phase9-deep/phase10-zeroday all pass
+    det=False specifically so this gate would get a chance to scrutinize them — see those call sites'
+    own comments). Fixed at the source (add_finding(), see its own comment) AND defended here too,
+    belt-and-braces: findings already on disk from before that fix still carry the bad _det=True
+    stamp, and any future bug that reintroduces this pattern anywhere else would otherwise walk
+    straight back through this same front door. A proof.method naming one of the agentic self-report
+    phases is never trusted as a real oracle, no matter what _det says — the label on a self-report is
+    still a self-report."""
+    _SELF_REPORT_METHODS = ("agent-verify", "phase5-agent", "phase9-deep", "phase10-zeroday")
+    _is_self_reported = (f.get("proof") or {}).get("method") in _SELF_REPORT_METHODS
+    if f.get("_det") is True and not _is_self_reported:
+        return True   # a deterministic oracle ran the real HTTP itself — the capture IS the exploit
+    if f.get("poc_verified") is not True:
+        return False  # no LIVE, verified exploitation yet — an agent's own "confirmed" prose,
+                       # however confident, is not exploitation and no longer counts on its own
+    if _real_evidence_backs(f) is False:
+        return False  # the claimed request/response still isn't actually backed by anything real
+    return True
 
 
 def phase_adversarial_verify(deadline=None):
@@ -7275,8 +8070,17 @@ def phase_hard_triage():
     for f in STATE["findings"]:
         cls = (f.get("cls") or "").strip().lower()
         title = (f.get("title") or "").lower()
+        detail = (f.get("detail") or "").lower()
         ep = (f.get("endpoint") or "").lower()
         proven = _proven(f)
+        # Write the authoritative, exploitation-gated verdict back onto the finding's OWN proof.proven
+        # field — the raw value the dashboard's PROVEN badge renders directly, with no cross-check of
+        # its own (see _proven()'s docstring for the live incident this closes: a finding showed
+        # "PROVEN" while its own "Exploited" step sat unchecked, because the badge was trusting
+        # whichever agent's self-report had originally set the flag, not this gate's result).
+        if not isinstance(f.get("proof"), dict):
+            f["proof"] = {}
+        f["proof"]["proven"] = proven
         # textual info tells, even if the class string is generic
         looks_info = (cls in _HARD_INFO or title.startswith("note:") or
                       any(k in title for k in ("hidden param", "introspection", "non-idempotent",
@@ -7284,10 +8088,24 @@ def phase_hard_triage():
                       "content-security", "csp", "banner", "verbose error", "stack trace")))
         is_impact = cls in _IMPACT
         is_chainreq = cls in _CHAIN_REQ
+        in_proven_chain = bool(ep) and (ep in chained or any(ce and ce in ep for ce in chained))
+
+        # RULE 0 — INFRASTRUCTURE EXPOSURE / DISCLOSURE is INFO regardless of the class string an
+        # earlier agent stamped on it, and overrides RULE 1's `proven and is_impact` escape. Caught
+        # live on DANA: a benign "development index page" was mislabeled cls=authz (an _IMPACT class)
+        # and rode that escape straight to submit@Medium, with an invented "WAF bypass" impact its OWN
+        # evidence contradicted (the edge's acw_tc cookie was present → the request went THROUGH the
+        # WAF, not around it). A dev/default page, a WAF-origin reachability claim, or an internal
+        # hostname/path disclosure has no security impact on its own — it can exceed info ONLY by
+        # riding a PROVEN chain to real impact (its endpoint is in `chained`), never by self-report.
+        if _INFRA_INFO_RE.search(title + " " + detail) and not in_proven_chain:
+            _floor_to_info(f, "capped to info — infrastructure exposure/disclosure with no "
+                              "demonstrated sensitive-data or access impact (deterministic cap)")
+            kept["info"] += 1; continue
 
         # RULE 1 — HARD_INFO: floor to info, kill confirmed/submit.
         if looks_info and not (proven and is_impact):
-            f["sev"] = "i"; f["verdict"] = "info"; f["reco"] = "needs-work"; f.pop("_det", None)
+            _floor_to_info(f)
             kept["info"] += 1; continue
 
         # RULE 2 — no real proof ⇒ cannot be confirmed; it is a LEAD.
@@ -7297,6 +8115,12 @@ def phase_hard_triage():
             if f.get("sev") in ("c", "h"):
                 f["sev"] = "m"                    # unproven may not claim Critical/High
             f["reco"] = "needs-work"; f.pop("_det", None)
+            # fixed 2026-11-06: this downgrade never cleared impact_proven/impact_level/
+            # impact_evidence — a finding demoted back to a lead here could still display "Impact
+            # Proven: <text>" on the dashboard/report (those fields are only ever SET, never
+            # cleared, elsewhere in the engine) — a residual overclaim surviving past the gate that
+            # was supposed to retract it.
+            f.pop("impact_proven", None); f.pop("impact_level", None); f.pop("impact_evidence", None)
             kept["lead"] += 1; continue
 
         # RULE 3 — proven. Decide submit vs lead by impact + dup + chain.
@@ -7325,6 +8149,55 @@ def phase_hard_triage():
     log("ok", "⚖ hard triage · " + str(kept["submit"]) + " submit · " + str(kept["lead"]) +
         " lead · " + str(kept["info"]) + " info · " + str(len(real)) + " REAL finding(s) counted" +
         (" · " + str(STATE['stats']['noise']) + " non-bug/low-noise uncounted" if STATE["stats"]["noise"] else ""))
+    flush()
+
+
+def phase_hard_triager():
+    """Operator directive (2026-11-03, after a live incident where 4/5 'PROVEN, submit-ready'
+    findings turned out to have zero raw evidence anywhere): "make me a hard ass triager that
+    triages findings and evidence at the end of the hunting session." Runs tools/hard-triager.py as
+    a standalone subprocess (deliberately NOT inlined here — it must stay an independent judge that
+    can't inherit a bug from the exact code that produced the finding) against every verdict=
+    confirmed finding: a non-negotiable deterministic evidence gate first (real 2xx capture on disk
+    or reject, no LLM override), then one skeptical Claude Code pass for whatever survives. Writes
+    .hunt/triage-report.md and downgrades anything that doesn't hold up — see that script's own
+    docstring for the full two-stage design."""
+    if NO_LLM:
+        return
+    check_pause()
+    stage("Hard-triager", 99)
+    flush()
+    tri = HERE / "hard-triager.py"
+    if not tri.exists():
+        return
+    env = dict(os.environ, HUNT_DIR=str(HUNT_DIR))
+    try:
+        r = subprocess.run([sys.executable, str(tri), "--json"], cwd=str(HUNT_DIR),
+                            capture_output=True, text=True, timeout=1800, env=env)
+    except Exception as e:
+        log("warn", "→ hard-triager failed to launch: " + str(e)[:160])
+        return
+    try:
+        res = json.loads((r.stdout or "").strip().splitlines()[-1])
+    except Exception:
+        log("warn", "→ hard-triager produced no usable result · " + (r.stderr or "")[:160])
+        return
+    if not res.get("ok"):
+        log("warn", "→ hard-triager: " + str(res.get("error", ""))[:160])
+        return
+    # hard-triager.py writes run.json directly (same pattern as verify-one.py) — reload so STATE
+    # reflects whatever it downgraded before this process's own next flush() overwrites it back.
+    try:
+        rd = json.loads(RUN.read_text())
+        if isinstance(rd.get("findings"), list):
+            STATE["findings"] = rd["findings"]
+        STATE["stats"]["submit_ready"] = rd.get("stats", {}).get("submit_ready", STATE["stats"].get("submit_ready", 0))
+        STATE["stats"]["findings"] = rd.get("stats", {}).get("findings", STATE["stats"].get("findings", 0))
+    except Exception:
+        pass
+    log("ok", "🔒 hard-triager · " + str(res.get("accepted", 0)) + " accepted · " +
+        str(res.get("downgraded", 0)) + " downgraded · " + str(res.get("rejected", 0)) + " rejected" +
+        " → " + str(res.get("report", "")))
     flush()
 
 
@@ -7394,7 +8267,10 @@ def phase_economics():
             reco = "submit"
         f["ev"] = int(ev); f["bounty_est"] = b; f["reco"] = reco
         f["ev_band"] = "high" if ev >= 1500 else "med" if ev >= 400 else "low"
-    submit_now = [f for f in finds if f.get("reco") == "submit"]
+    # Same gate as the full-agentic chain+economics merge — see its own comment (2026-11-04). This
+    # legacy path's own reco="submit" (just above) is set purely from verdict=="confirmed", with no
+    # proof of exploitation at all; require _proven(f) here too before counting it submit-ready.
+    submit_now = [f for f in finds if f.get("reco") == "submit" and _proven(f)]
     held = [f for f in finds if f.get("reco") == "hold-duplicate"]
     needs = [f for f in finds if f.get("reco") == "needs-work"]
     total_ev = sum(f.get("ev", 0) for f in submit_now)
@@ -7429,7 +8305,19 @@ def _short_ep(ep):
 
 
 def _finding_edges(f, fi, start):
-    """A validated finding → (proven base edge, unproven escalation edge) toward its natural max impact."""
+    """A validated finding → (proven base edge, unproven escalation edge) toward its natural max impact.
+
+    SECURITY FIX (2026-11-06): this used to stamp every matching finding's base edge "proven" from
+    its `cls` alone — no verdict or _proven() check at all. _phase_chain_economics_agent (the
+    agentic chain path) was already hardened to require `verdict=="confirmed" and _proven(step)`
+    per step; this legacy deterministic path (phase_chain(), the fallback used in NO_LLM mode or
+    whenever "chain_econ" isn't in HUNT_AGENTIC_PHASES) was not, so a finding still sitting at
+    verdict=="likely"/"needs_review" — or even "false_positive" — could seed a "PROVEN CHAIN" tier
+    scenario auto-written as a new finding via add_finding() below. Only a genuinely confirmed+
+    exploited finding may seed ANY edge here now — not just the proven-status ones, since the
+    unproven escalation edges downstream of it are only meaningful if the base finding itself is real."""
+    if f.get("verdict") != "confirmed" or not _proven(f):
+        return []
     cls = _cls_key(f.get("cls")); s = _short_ep(f.get("endpoint", "") or TARGET)
     t = (str(f.get("cls", "")) + " " + str(f.get("title", ""))).lower()
     if "takeover" in t and "sub" in t:
@@ -7467,7 +8355,9 @@ def phase_scenario():
     Shells to agent-scenario.py (templates + a gated LLM-creative pass). Writes STATE['scenarios']."""
     if not (HERE / "agent-scenario.py").exists():
         return
-    proven_prims = sum(1 for f in STATE["findings"] if (f.get("proof") or {}).get("proven") or f.get("verdict") == "confirmed")
+    # same self-report shape fixed in agent-scenario.py's own _proven_primitive() today — tightened
+    # here too so this entry gate doesn't spawn the subprocess at all when nothing is genuinely proven
+    proven_prims = sum(1 for f in STATE["findings"] if f.get("verdict") == "confirmed" and _proven(f))
     if proven_prims < 1:
         return
     stage("Scenarios", 97)
@@ -7707,7 +8597,8 @@ def load_resume():
         prior = json.loads(RUN.read_text())
     except Exception:
         return False
-    for k in ("findings", "endpoints", "hosts", "leads", "chains", "api_calls", "economics", "coverage", "invariants", "logs"):
+    for k in ("findings", "endpoints", "hosts", "leads", "chains", "api_calls", "economics", "coverage", "invariants", "logs",
+              "cost_usd", "llm_calls", "llm_input_tokens", "llm_output_tokens", "llm_refusals", "phase_costs"):
         if k in prior:
             STATE[k] = prior[k]
     for ep, cs in (prior.get("tested") or {}).items():
@@ -8468,6 +9359,45 @@ def _sup_run(tool, args=None, stdin_payload=None, timeout=120, fail=None, env=No
     return r2  # None on any failure (already classified into `fail`), else the CompletedProcess
 
 
+def _needs_supervisor_pass(findings):
+    """True when phase_supervisor has real pending work — mirrors _actions()'s own WEAK set/exploit
+    condition inside phase_supervisor, as a small pure function so every call site below is
+    unit-testable without running the whole dispatch loop. Most unproven findings sit at
+    verdict=="likely" (hard_triage already demoted them — same fix that closed the PROVEN-badge bug),
+    not "confirmed", so checking "confirmed" alone would almost never fire. True on EITHER shape of
+    pending work: a WEAK verdict never re-checked by supervisor's own verify-one.py pass, or a
+    confirmed finding with no PoC yet."""
+    weak = ("likely", "needs_triage", "needs_review", "manual", "agent")
+    return any(
+        (f.get("verdict") in weak and not f.get("supervisor_verified"))
+        or (f.get("verdict") == "confirmed" and not f.get("poc"))
+        for f in (findings or []))
+
+
+def _interleaved_supervisor_pass(deadline, cap_sec, label):
+    """Run a BOUNDED phase_supervisor pass right now, if there's anything for it to do — the fix for
+    operator directive (2026-11-05, verbatim): "fix the 10 phases workflow to make it confirm each
+    finding in every loop not just put it in there." Before this, phase_supervisor (the ONLY code path
+    that ever calls agent-exploit.py, the ONLY thing that can set poc_verified=True) ran exactly ONCE,
+    at the very tail of the whole per-cycle sequence (after active_hunt, deep_questions, zeroday,
+    dedup, verify, chain_econ, hard_triage, learn) — so on ANY cycle a rate limit cut short before
+    reaching that point (common on a long hunt), every finding that cycle produced went completely
+    unexploited, and the NEXT cycle just piled on more without ever confirming what was already there.
+    Live-verified on SecureW2: phase_supervisor had run ZERO times across ~15h and 28 findings.
+
+    Now called after EACH finding-producing phase (active_hunt/deep_questions/zeroday) — not just once
+    at the end and not just on resume — so confirming/exploiting what was JUST found is interleaved
+    into every single loop pass, not deferred to a tail position a rate limit can erase. Cheap when
+    there's nothing to do (_needs_supervisor_pass returns False → no subprocess, no cost) and bounded
+    by cap_sec so no single interleaved pass can starve the phase after it."""
+    if NO_LLM or not _needs_supervisor_pass(STATE.get("findings") or []):
+        return
+    log("out", "→ " + label + " — confirming/exploiting what's already found before moving on "
+        "(operator directive: confirm each finding every loop, not just add it)")
+    check_pause()
+    phase_supervisor(min(deadline, time.time() + cap_sec))
+
+
 def phase_supervisor(deadline=None):
     """"Smarter than a loop" piece #2 — an EV-ranked COORDINATOR over HUNTR's specialist agents
     (verify-one/agent-exploit/agent-report/agent-postexploit/agent-chain), reading the SAME
@@ -8530,7 +9460,14 @@ def phase_supervisor(deadline=None):
                 continue
             if _proven(f) and not f.get("impact_proven") and f.get("cls", "").lower() != "info" and ("postexploit", i) not in exhausted:
                 acts.append((ev + 4, "postexploit", i))   # highest single-finding EV: Medium→Critical
-            if not f.get("poc") and ("exploit", i) not in exhausted:
+            # agent-exploit.py writes f["poc"] UNCONDITIONALLY, win or lose (poc_verified carries the
+            # real outcome — see its own update_finding call) — gating retry on "not f.get('poc')"
+            # meant a FAILED attempt wrote a truthy poc string and permanently satisfied this condition,
+            # so a finding whose exploit never verified got exactly ONE attempt ever, then sat at
+            # poc_verified=False/UNVERIFIED forever with no further retry and no "gave up" log line
+            # (MAX_ATTEMPTS below never even got a chance to apply). Gate on poc_verified instead, so a
+            # failed attempt is retried up to MAX_ATTEMPTS and then genuinely (and visibly) exhausted.
+            if f.get("poc_verified") is not True and ("exploit", i) not in exhausted:
                 acts.append((ev + 3, "exploit", i))
             if not f.get("report") and ("report", i) not in exhausted:
                 acts.append((ev + (3 if f.get("poc") else 2), "report", i))  # worth more once a PoC exists
@@ -8588,6 +9525,26 @@ def phase_supervisor(deadline=None):
         # capping unconditionally is simpler and just as safe than trying to detect "no progress."
         new_fail_count = sum(sum(k.values()) for k in fail.values())
         ok = new_fail_count == before_fail_count
+        # CAUGHT LIVE 2026-11-06: the account hit its 5-hour limit mid-dispatch and this loop had NO
+        # IDEA — every verify/exploit/report/postexploit/chain subprocess here runs under the CLI-
+        # subscription path in its OWN separate process (agent-exploit.py etc.), so a rate limit there
+        # can only ever surface back to us as subprocess text, never as hunt-run.py's own `_RL["hit"]`
+        # the way llm_call()'s in-process 429 handling sets it. Before this fix, a limit hit here just
+        # looked like 24+ ordinary tool failures in a row — MAX_ATTEMPTS exhausted every single
+        # remaining finding one by one (burning real wall-clock on dead API calls) instead of pausing
+        # like every OTHER phase in this engine already does on the same condition. Detect the same
+        # "hit your N-hour limit" text check_pause()'s callers already watch for, and pause exactly
+        # the same way: raise RateLimitPause so main()'s own handler does it, instead of grinding on.
+        if not ok:
+            _tool_for_kind = {"verify": "verify-one.py", "exploit": "agent-exploit.py",
+                               "report": "agent-report.py", "postexploit": "agent-postexploit.py",
+                               "chain": "agent-chain.py"}.get(kind)
+            if any(_CLI_LIMIT_RE.search(reason) for reason in fail.get(_tool_for_kind, {})):
+                _RL["hit"] = True
+                log("warn", "⏸ supervisor: account rate limit detected mid-dispatch (" + kind +
+                    " on F" + str(fi) + ") — pausing instead of burning through the rest of the queue")
+                flush()
+                raise RateLimitPause()
         # structured activity log — the dashboard's supervisor feed reads this; log() text alone
         # isn't machine-readable, so "gave up" moments were previously invisible outside the terminal.
         STATE.setdefault("supervisor_log", []).append({
@@ -8693,7 +9650,12 @@ def phase_agentic_polish(deadline):
         for i, f in enumerate(STATE["findings"]):
             if time.time() > deadline:
                 break
-            if f.get("proven") and not f.get("impact_proven") and f.get("cls", "").lower() not in ("info",):
+            # fixed 2026-11-06: was f.get("proven") — a flat, unguarded key verify-one.py's own
+            # proof pass can set with no _det/poc_verified behind it (exactly the self-report shape
+            # _proven() exists to reject). phase_supervisor's equivalent dispatch already used the
+            # authoritative gate; this copy didn't, so postexploit could run (and escalate severity)
+            # on a finding _proven() would refuse.
+            if _proven(f) and not f.get("impact_proven") and f.get("cls", "").lower() not in ("info",):
                 try:
                     pe = _sp.run([sys.executable, str(HERE / "agent-postexploit.py")], input=json.dumps({"finding": f}),
                                  capture_output=True, text=True, timeout=200, env=env)
@@ -8723,7 +9685,7 @@ def phase_agentic_polish(deadline):
     if nconf >= 2 and time.time() < deadline and (HERE / "agent-chain.py").exists():
         _stdin_tool("agent-chain.py", {}, 240); _reload_findings()
 
-    nproven = len([f for f in STATE["findings"] if f.get("proven")])
+    nproven = len([f for f in STATE["findings"] if _proven(f)])
     log("ok", "✓ agentic polish · " + str(len(weak)) + " re-verified · " + str(nconf) +
         " confirmed (" + str(nproven) + " PROVEN) + PoC/report" +
         (" · " + str(len(STATE.get("chains", []))) + " chain(s)" if STATE.get("chains") else ""))
@@ -8764,6 +9726,71 @@ def _find_chrome():
     return None
 
 
+def _resolve_display_env():
+    """Discover the operator's graphical session (DISPLAY/XAUTHORITY/DBUS/WAYLAND) at runtime so a
+    headful Chrome can actually open a VISIBLE window — even when hunt-run was started from a context
+    with no GUI env in it.
+
+    ROOT CAUSE this fixes (caught live 2026-11-13, deriv hunt): the `huntr.service` systemd --user
+    unit does NOT inherit the login session's DISPLAY/XAUTHORITY. So every hunt's auto-launched
+    Chrome was headful with no $DISPLAY → it could not open a window → it never bound the debug port
+    → the hunt logged "CDP not responsive on port 9222 after 8s" and silently degraded (no SPA
+    capture, no session refresh, no auto re-extraction) while still showing 84% "fine". Launching
+    the same Chrome with DISPLAY + the resolved Xwayland auth file brings CDP up in <1s.
+
+    We prefer whatever is already in os.environ, then probe the running session. Wayland/Xwayland
+    rotate the Xauthority path every login (…/.mutter-Xwaylandauth.XXXXXX), so we resolve it fresh
+    each hunt instead of hardcoding it anywhere."""
+    import glob as _glob
+    env = {}
+    disp = os.environ.get("DISPLAY")
+    xauth = os.environ.get("XAUTHORITY")
+    dbus = os.environ.get("DBUS_SESSION_BUS_ADDRESS")
+    wayland = os.environ.get("WAYLAND_DISPLAY")
+    uid = os.getuid()
+    run_user = f"/run/user/{uid}"
+    # DISPLAY: prefer env, else the first live X socket (/tmp/.X11-unix/X0 → ":0")
+    if not disp:
+        try:
+            socks = sorted(p for p in os.listdir("/tmp/.X11-unix") if p.startswith("X"))
+            if socks:
+                disp = ":" + socks[0][1:]
+        except Exception:
+            pass
+    # XAUTHORITY: prefer a valid env value, else the rotating mutter-Xwayland auth file (newest),
+    # else ~/.Xauthority. Only accept a path that actually exists.
+    if not xauth or not os.path.exists(xauth):
+        cand = []
+        try:
+            cand = sorted(_glob.glob(f"{run_user}/.mutter-Xwaylandauth.*"),
+                          key=os.path.getmtime, reverse=True)
+        except Exception:
+            pass
+        cand.append(os.path.join(os.path.expanduser("~"), ".Xauthority"))
+        xauth = next((c for c in cand if c and os.path.exists(c)), None)
+    # DBUS: the standard user bus socket (keeps Chrome from spamming dbus connect errors)
+    if not dbus and os.path.exists(f"{run_user}/bus"):
+        dbus = f"unix:path={run_user}/bus"
+    # WAYLAND: the display socket name (harmless to pass through; Chrome uses X by default)
+    if not wayland:
+        try:
+            wl = sorted(p for p in os.listdir(run_user)
+                        if p.startswith("wayland-") and not p.endswith(".lock"))
+            if wl:
+                wayland = wl[0]
+        except Exception:
+            pass
+    if disp:
+        env["DISPLAY"] = disp
+    if xauth:
+        env["XAUTHORITY"] = xauth
+    if dbus:
+        env["DBUS_SESSION_BUS_ADDRESS"] = dbus
+    if wayland:
+        env["WAYLAND_DISPLAY"] = wayland
+    return env
+
+
 def _auto_cdp():
     """Ensure a debug Chrome is running and cdp_port is written into creds.json.
 
@@ -8772,7 +9799,9 @@ def _auto_cdp():
     3. If none found → launch Chrome with --remote-debugging-port and a persistent profile, write
        the port into creds.json and HUNT_CDP_PORT so every consumer sees it immediately.
 
-    The launched Chrome is headless=false so the operator can log in if needed.  We write a
+    The launched Chrome is VISIBLE (headful) whenever a graphical display can be resolved, so the
+    operator can watch it and log in if needed; it only falls back to headless when no display
+    exists or HUNT_CHROME_HEADLESS=1 is set.  We write a
     sentinel file .hunt/chrome.pid so phase_spa_capture and the shutdown hook can tell our Chrome
     from one the user had already open.  If we fail to launch (no Chrome binary, sandbox issues)
     we log a warning and continue — CDP is an enhancement, not a hard requirement."""
@@ -8803,6 +9832,15 @@ def _auto_cdp():
     # A fresh profile (first run) will show the target's login page instead of a blank tab.
     _lithost = re.sub(r"^\*\.", "", TARGET).split("/")[0].strip()
     _target_url = f"https://{_lithost}/"
+
+    # Resolve the graphical session so Chrome opens a VISIBLE window. If HUNT_CHROME_HEADLESS=1 is
+    # set, or no display can be found at all (e.g. a headless cloud box), we fall back to
+    # --headless=new so CDP/SPA-capture still works — but we say so loudly, because an invisible
+    # browser is the exception here, not the default.
+    disp_env = _resolve_display_env()
+    force_headless = os.environ.get("HUNT_CHROME_HEADLESS") == "1"
+    visible = bool(disp_env.get("DISPLAY") or disp_env.get("WAYLAND_DISPLAY")) and not force_headless
+
     cmd = [
         chrome,
         f"--remote-debugging-port={port}",
@@ -8812,27 +9850,60 @@ def _auto_cdp():
         "--disable-translate", "--disable-extensions",
         "--disable-popup-blocking",
         "--window-size=1280,800",
-        _target_url,   # open directly at the target — operator knows what to log into
     ]
+    if not visible:
+        cmd += ["--headless=new", "--disable-gpu"]
+        if force_headless:
+            log("ok", "◆ CDP: launching Chrome headless (HUNT_CHROME_HEADLESS=1)")
+        else:
+            log("warn", "⚠ CDP: no graphical display found — launching Chrome HEADLESS (SPA capture "
+                "still works, but you won't see the browser). To make it visible, ensure the engine "
+                "runs with DISPLAY set (the huntr.service unit now sets DISPLAY=:0).")
+    cmd.append(_target_url)   # open directly at the target — operator knows what to log into
+
+    launch_env = {**os.environ, **disp_env}
+    errlog = HUNT_DIR / "chrome-launch.err"
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # start_new_session=True: the visible browser is its own session leader, so a hunt
+        # SIGSTOP/pause (creds/cdp) never freezes or kills the window the operator is watching;
+        # teardown still targets it precisely via chrome.pid.
+        _errfh = open(errlog, "wb")
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=_errfh,
+                                env=launch_env, start_new_session=True)
     except Exception as e:
         log("warn", f"⚠ CDP: could not launch Chrome — {e}. SPA capture unauthenticated.")
         return
 
-    # Wait up to 8s for CDP to become responsive
-    for _ in range(16):
+    # Wait up to ~25s for CDP to become responsive. A fresh profile's first-run init (and a cold
+    # Xwayland window) can exceed the old 8s budget, which previously produced a false
+    # "not responsive" failure on a browser that would have come up a few seconds later.
+    alive = False
+    for _ in range(50):
         time.sleep(0.5)
         if _cdp_alive(port):
+            alive = True
             break
-    else:
-        log("warn", f"⚠ CDP: Chrome launched (PID {proc.pid}) but CDP not responsive on port {port} after 8s")
+    if not alive:
+        # Surface the ACTUAL cause (from Chrome's own stderr) instead of a generic timeout — e.g.
+        # "Missing X server or $DISPLAY" / "cannot open display" points straight at the env, not Chrome.
+        cause = ""
+        try:
+            _errfh.flush()
+            tail = [ln for ln in errlog.read_text(errors="replace").strip().splitlines() if ln.strip()]
+            cause = (" · ".join(tail[-3:]))[-320:]
+        except Exception:
+            pass
+        log("warn", f"⚠ CDP: Chrome launched (PID {proc.pid}) but CDP not responsive on port {port} "
+            f"after 25s{(' — ' + cause) if cause else ' (no stderr captured)'}")
         return
 
     # Persist PID so shutdown hook can kill only our Chrome, not one the user had open
     (HUNT_DIR / "chrome.pid").write_text(str(proc.pid))
 
-    log("ok", f"✓ CDP: launched Chrome (PID {proc.pid}) on port {port} — log in to the target in the browser window, then the scan will use your real session")
+    vis = "VISIBLE window" if visible else "headless"
+    log("ok", f"✓ CDP: launched {vis} Chrome (PID {proc.pid}) on port {port}"
+        + (f" (DISPLAY={disp_env.get('DISPLAY')})" if visible else "")
+        + " — log in to the target in the browser window; the scan uses your real session")
     _write_cdp_port(port)
 
 
@@ -8876,6 +9947,183 @@ def _write_cdp_port(port):
         log("warn", f"⚠ CDP: could not save cdp_port to creds.json — {e}")
 
 
+def _jwt_exp_seconds_left(value):
+    """Decode a JWT's own `exp` claim (no signature check — we only need what it CLAIMS, same trick
+    creds-test.py uses) and return seconds remaining, or None if value isn't JWT-shaped / has no exp."""
+    try:
+        parts = (value or "").strip().split(".")
+        if len(parts) != 3:
+            return None
+        import base64
+        p = parts[1]
+        p += "=" * (-len(p) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(p))
+        exp = payload.get("exp")
+        return (float(exp) - time.time()) if exp else None
+    except Exception:
+        return None
+
+
+def _auth_header_jwt(ah):
+    """Return (header_name, value) for the first JWT-shaped line in a raw auth_header blob, or
+    (None, None)."""
+    for ln in str(ah or "").replace("\\n", "\n").splitlines():
+        if ":" in ln:
+            k, v = ln.split(":", 1)
+            v = v.strip()
+            if v.count(".") == 2:
+                return k.strip(), v
+    return None, None
+
+
+_SESSION_REFRESH_LOCK = threading.Lock()
+
+
+def _session_refresh_watchdog():
+    """Background daemon (grey/white-box only): keeps the live session fresh off the operator's
+    already-logged-in CDP browser via cdp-session-refresh.py. For a JWT-`exp` token it refreshes
+    when the token is within REFRESH_MARGIN of expiry; for a cookie session (no readable expiry,
+    e.g. deriv's ory_session) it re-pulls the cookie on a slow COOKIE_REFRESH cadence.
+
+    WHY this exists: _phase_auth_spa_agent establishes/confirms a session exactly ONCE per hunt
+    cycle and never writes what it observed back to creds.json (see its own docstring) — so a
+    target issuing a short-lived token (one real case: an ~8-minute-lived Telegram mini-app JWT)
+    goes dead minutes into a multi-hour hunt and nothing re-arms it until an operator notices and
+    manually re-pastes one. cdp-keepalive.py (separate, systemd-run) only keeps the Chrome
+    *process*/CDP port reachable, never the session itself — this is the piece that actually
+    re-extracts a live token. A no-op (near-zero cost) for the common case of a normal-lived
+    session: it only ever shells out to cdp-session-refresh.py once the current token is within
+    REFRESH_MARGIN seconds of its own claimed expiry.
+
+    Caveat this CANNOT fix: if the authenticated session lives somewhere this engine's CDP browser
+    never had it in the first place (e.g. a token hand-extracted from the operator's own separate
+    Telegram desktop/mobile client, never the CDP-controlled Chrome) there is nothing here to
+    re-extract FROM — cdp-session-refresh.py will just come back with nothing and this stays a
+    harmless no-op. It only helps when the live, logged-in session actually lives in the same
+    CDP-attached browser the engine controls."""
+    CHECK_EVERY = 30
+    REFRESH_MARGIN = 90
+    COOKIE_REFRESH = 600   # cookie sessions carry no readable expiry, so we can't watch a clock —
+                            # instead re-pull the live cookie off the CDP browser on a slow cadence
+                            # (every 10 min) so a rotating/short-lived cookie (e.g. deriv's ory_session,
+                            # which has NO JWT exp) is actually kept fresh. Previously this watchdog
+                            # only ever acted on JWT-exp tokens, so a cookie session was a permanent
+                            # no-op — nothing "kept the session valid" (caught live, deriv 2026-11-13).
+    WARN_EVERY = 300   # throttle: once a token is stuck expired, every 30s check would otherwise retry
+                        # and fail identically forever — warn at most once per 5 minutes, not every tick
+    lithost = re.sub(r'^\*\.', '', TARGET).split('/')[0].strip()
+    last_warn = 0.0
+    cookie_note_shown = False         # one-time quiet note for cookie-only sessions (nothing to rotate)
+    last_cookie_pull = time.time()   # don't re-pull immediately — the session _auto_cdp/auth_spa just
+                                     # established is fresh; first cadence pull is COOKIE_REFRESH later
+    while True:
+        time.sleep(CHECK_EVERY)
+        try:
+            c = _creds()
+            cdp = str(c.get("cdp_port") or "").strip()
+            if not cdp or not _cdp_alive(int(cdp)):
+                continue
+            header_name, jwt_val = _auth_header_jwt(c.get("auth_header"))
+            if not jwt_val:
+                jwt_val = (c.get("session_token") or "").strip()
+            left = _jwt_exp_seconds_left(jwt_val)
+            cookie_only = (left is None) and bool((c.get("cookie") or "").strip())
+            if left is None and not cookie_only:
+                continue   # no JWT exp to watch and no cookie to refresh — nothing to do
+            if cookie_only:
+                # time-based cadence instead of exp-margin
+                if time.time() - last_cookie_pull < COOKIE_REFRESH:
+                    continue
+                last_cookie_pull = time.time()
+            elif left > REFRESH_MARGIN:
+                continue   # JWT-shaped but not close enough to expiry to bother yet
+            hosts = ",".join(sorted(set(h.get("host", "") for h in STATE.get("hosts", []) if h.get("host"))))[:300] or lithost
+            args = [sys.executable, str(HERE / "cdp-session-refresh.py"), "--cdp-port", cdp,
+                    "--hosts", hosts, "--url", f"https://{lithost}/", "--secs", "8"]
+            if header_name:
+                args += ["--header-name", header_name]
+            r = subprocess.run(args, capture_output=True, text=True, timeout=90)
+            lines = (r.stdout or "").strip().splitlines()
+            res = json.loads(lines[-1]) if lines else {}
+            if not res.get("ok"):
+                # WAS a silent `continue` — caught live 2026-11-06: the Telegram mini-app iframe this
+                # relies on unloaded overnight (only the wrapper Telegram Web page remained on the CDP
+                # port), every refresh attempt since then failed, and NOTHING logged it — the token sat
+                # expired for 14+ hours with zero visible signal anywhere. Surface it (throttled, so a
+                # stuck failure doesn't spam the log every 30s) so an operator can tell "the browser
+                # needs the app reopened" from "everything's fine" instead of inferring it from a cold
+                # creds.json.
+                err = str(res.get("error") or "no matching tab/no header seen")
+                # A cookie-only session with no rotating bearer/header is the NORMAL state for
+                # cookie-auth apps (Smartsheet, most SaaS): the seeded cookie stays valid on its
+                # own and there is literally nothing to refresh, so a "no header/no tab" result
+                # here is not a problem. Don't cry wolf — note it ONCE, quietly, instead of a
+                # repeating ⚠. The loud warning still fires for header/JWT sessions, where a failed
+                # refresh near expiry really is trouble (the 2026-11-06 Telegram token-expiry incident
+                # this watchdog was built for).
+                benign_cookie = (cookie_only and not header_name
+                                 and ("header" in err.lower() or "tab" in err.lower()))
+                if benign_cookie:
+                    if not cookie_note_shown:
+                        cookie_note_shown = True
+                        log("out", "→ session-refresh watchdog: cookie-auth session has no rotating "
+                            "token to refresh — the seeded cookie stays in use. Expected; will only "
+                            "matter if the cookie itself expires mid-hunt.")
+                    continue
+                if time.time() - last_warn > WARN_EVERY:
+                    last_warn = time.time()
+                    log("warn", "⚠ session-refresh watchdog: couldn't pull a fresh " +
+                        (header_name or "session") + " (" + err +
+                        ")" + (" — the token has " + str(int(left)) + "s left" if left is not None else " (cookie session)") +
+                        "; if this keeps failing, the app/tab in the CDP browser may need to be reopened")
+                continue
+            with _SESSION_REFRESH_LOCK:
+                cf = HUNT_DIR / "creds.json"
+                cur = json.loads(cf.read_text()) if cf.exists() else {}
+                changed = False
+                if res.get("header_value") and header_name:
+                    ah_lines = [ln for ln in str(cur.get("auth_header") or "").replace("\\n", "\n").splitlines()
+                                if ln.strip() and not ln.strip().lower().startswith(header_name.lower() + ":")]
+                    ah_lines.append(f"{header_name}: {res['header_value']}")
+                    cur["auth_header"] = "\n".join(ah_lines)
+                    changed = True
+                if res.get("cookie"):
+                    cur["cookie"] = res["cookie"]
+                    changed = True
+                if not changed:
+                    continue
+                fd = os.open(cf, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                try:
+                    os.write(fd, json.dumps(cur).encode())
+                finally:
+                    os.close(fd)
+                # mirror into identities.json's "session" entry too, using the canonical keys every
+                # OTHER reader expects (cookieHeader, not cookie — see the 2026-11-05 key-mismatch fix
+                # in huntr-server.py's own creds hot-swap handler, same bug, same fix here).
+                try:
+                    idp = HUNT_DIR / "identities.json"
+                    ids = json.loads(idp.read_text()) if idp.exists() else {}
+                    rec = ids.setdefault("session", {})
+                    if cur.get("cookie"):
+                        rec["cookieHeader"] = cur["cookie"]
+                    if header_name and res.get("header_value"):
+                        rec.setdefault("headers", {})[header_name] = res["header_value"]
+                    idp.write_text(json.dumps(ids, indent=2))
+                except Exception:
+                    pass
+            log("ok", "↻ session-refresh watchdog: pulled a fresh " + (header_name or "cookie") +
+                " off the live CDP browser" +
+                ((" (" + str(int(left)) + "s left on the old one)") if left is not None else " (cookie cadence refresh)"))
+        except Exception:
+            continue
+
+
+def _start_session_refresh_watchdog():
+    if MODE == "black" or "--no-session-refresh" in sys.argv:
+        return
+    threading.Thread(target=_session_refresh_watchdog, daemon=True, name="session-refresh").start()
+
+
 def main():
     if not TARGET:
         STATE["status"] = "error"; STATE["stage"] = "No target"; flush()
@@ -8905,6 +10153,24 @@ def main():
     # with zero operator action. Only runs in grey/white mode (black-box never needs auth).
     if MODE != "black":
         _auto_cdp()
+        # Dead CDP in a grey/white-box hunt is NOT cosmetic: without a live browser there is no SPA
+        # runtime API capture, no live session refresh, and no auto re-extraction of an expired
+        # session. Previously this degraded silently (the deriv hunt sat at 84% looking fine while
+        # the browser had never come up). Make it a loud, operator-visible alert instead.
+        try:
+            _cc = _creds()
+            _ccp = str(_cc.get("cdp_port") or "").strip()
+            if not (_ccp and _cdp_alive(int(_ccp))):
+                log("warn", "⚠ BROWSER NOT ATTACHED — this grey/white-box hunt will see only the "
+                    "shallow unauthenticated surface: no SPA runtime-API capture, no live session "
+                    "refresh, no auto re-extraction of an expired session. See .hunt/chrome-launch.err; "
+                    "confirm Chrome is installed and the engine runs with DISPLAY set.")
+                STATE["session_alert"] = ("Browser (CDP) not attached — SPA capture & session "
+                                          "auto-refresh are disabled for this hunt")
+                flush()
+        except Exception:
+            pass
+        _start_session_refresh_watchdog()   # keep a fast-expiring session's token alive for the whole hunt
     # WAF survival: when a debug Chrome is attached (grey/white + creds.cdp_port), export the port so the
     # CDP-aware scanners (param-fuzz/idor-chain/auth-bypass via huntrfetch) route through the live session
     # and survive Cloudflare/Akamai. Other scanners ignore the var and keep using urllib (nothing breaks).
@@ -9026,11 +10292,63 @@ def main():
             elif resumed:
                 log("out", "→ resume: skipping plan agent (reusing the plan already in run.json)")
             # (on a fresh run, _phase_plan_agent above already wrote STATE["plan"] — no separate call needed here)
+            # Size every phase's budget to THIS target once (cheap one-shot LLM call; self-guards so
+            # it's never re-paid on resume — the scale persists in run.json). A small/simple target no
+            # longer burns the same multi-hour budget as a huge wildcard. See _size_budgets/_phase_budget.
+            _size_budgets()
+            # RESUME SETUP-PHASE HEALING (2026-11-14, caught live on deriv): the fresh-run pipeline
+            # (intel → recon_surface → auth_spa) lives entirely inside `if not resumed:` above, so a
+            # hunt that was rate-limited / auth-paused DURING a setup phase never re-ran it on resume —
+            # it jumped straight to the attack loop with NO authenticated session and NO SPA surface
+            # captured. The deriv hunt paused the instant the auth+SPA agent started (account 5-hour
+            # limit); when it auto-resumed, auth+SPA was skipped and simply never happened — exactly the
+            # "failed in Auth+SPA / never opened the browser" the operator saw. Re-run any flag-enabled
+            # setup phase whose recorded outcome isn't 'ok' (missing / rate_limited / empty / auth_dead),
+            # in order, so the session + SPA surface are established before attacking. A no-op for any
+            # phase that already completed ok (its status gate skips it) — so a normal resume is unchanged.
+            if resumed:
+                for _pk, _pfn in (("intel", _phase_intel_agent),
+                                  ("recon_surface", _phase_recon_surface_agent),
+                                  ("auth_spa", _phase_auth_spa_agent)):
+                    if _pk not in HUNT_AGENTIC_PHASES:
+                        continue
+                    _po = STATE.get("phase_outcomes", {}).get(_pk, {})
+                    if _po.get("status") == "ok":
+                        continue
+                    check_pause()
+                    log("out", "→ resume: re-running incomplete setup phase '" + _pk +
+                        "' (prior outcome: " + str(_po.get("status") or "never ran") + ")")
+                    _pfn(deadline)
+            # CATCH-UP VERIFY (resume healing, 2026-11-01): on resume, verify the findings we ALREADY
+            # hold BEFORE re-entering active_hunt. A prior rate-limit pause can strand every finding as
+            # UNVERIFIED — verify never ran because active_hunt re-hit the account limit first and the
+            # RateLimitPause skipped the entire downstream tail (dedup→verify→chain_econ). Spending the
+            # freshly-reset budget on verifying the inventory we already paid to find — before hunting
+            # for more — means a second immediate pause no longer leaves findings permanently stuck at
+            # UNVERIFIED. If active_hunt later succeeds and adds new findings, the normal tail verify
+            # (below) still re-runs and covers them; re-examining the old ones again is idempotent.
+            if (resumed and not NO_LLM and "verify" in HUNT_AGENTIC_PHASES
+                    and STATE.get("findings") and _verify_unsatisfied()):
+                log("out", "→ resume: catch-up verify on " + str(len(STATE["findings"])) +
+                    " already-found finding(s) before resuming the hunt (prior pass left them unverified)")
+                check_pause(); _phase_verify_agent(deadline)
+                if "chain_econ" in HUNT_AGENTIC_PHASES:
+                    check_pause(); _phase_chain_economics_agent(deadline)
+            # CATCH-UP EXPLOIT on resume (2026-11-05) — see _interleaved_supervisor_pass's docstring
+            # for the full incident. 20-min cap: guaranteed but bounded, before active_hunt looks for more.
+            if resumed:
+                _interleaved_supervisor_pass(deadline, 1200.0, "resume: catch-up exploit dispatch")
             if "active_hunt" in HUNT_AGENTIC_PHASES:
                 check_pause(); _phase_active_hunt_agent(deadline)   # full-agentic — see HUNTR full-agentic plan Phase 5:
                 # replaces phase_adaptive/phase_llm_lead/phase_ai_direct/phase_api_test/phase_exploit_agent/
                 # phase_oob entirely — one agent reasons continuously over the whole surface and decides
                 # what's worth testing, instead of running them as separate layers.
+                # OPERATOR DIRECTIVE (2026-11-05), verbatim: "fix the 10 phases workflow to make it
+                # confirm each finding in every loop not just put it in there." Confirm/exploit what
+                # active_hunt JUST added before moving on to deep_questions/zeroday piling on more —
+                # same interleaved pattern as the resume catch-up above, every single pass now, not
+                # just on resume. 15-min cap (shorter than the resume slice — this one repeats 3x/pass).
+                _interleaved_supervisor_pass(deadline, 900.0, "active-hunt → confirm pass")
             else:
                 # REBUILT 2026-10-22 (operator: "these scripts won't find shit — rebuild HUNTR to reason
                 # like Claude"): phase_llm_lead previously ran strictly AFTER phase_adaptive's full
@@ -9070,11 +10388,13 @@ def main():
             # it surfaces is validated + valued by the downstream tail like any other finding.
             if "deep_questions" in HUNT_AGENTIC_PHASES and not NO_LLM:
                 check_pause(); _phase_deep_questions_agent(deadline)
+                _interleaved_supervisor_pass(deadline, 900.0, "deep-questions → confirm pass")
             # Phase 10 — zero-day agent: treats every 4xx/5xx the normal classes gave up on as the
             # start of the work — novel bypass techniques to flip blocks into access, plus hunting
             # implementation-specific novel vulns a templated scanner would never find.
             if "zero_day" in HUNT_AGENTIC_PHASES and not NO_LLM:
                 check_pause(); _phase_zeroday_agent(deadline)
+                _interleaved_supervisor_pass(deadline, 900.0, "zero-day → confirm pass")
         phase_dedup()
         phase_fingerprint()
         if not NO_LLM:
@@ -9128,6 +10448,7 @@ def main():
             # so re-running it here is cheap and simply fixes up whatever dedup just reshuffled.
             phase_economics()
             phase_hard_triage()                          # run again LAST — polish cannot smuggle anything past the gate
+            phase_hard_triager()                         # independent, hostile final pass — see its own docstring
             # POST-HUNT deep graph rebuild: findings are now fully settled (post-supervisor PoC/
             # report/impact, post-dedup, post-economics) — this is the one build that actually has
             # confirmed findings to encode as REQUIRES/ENABLES exploit-chain edges (see

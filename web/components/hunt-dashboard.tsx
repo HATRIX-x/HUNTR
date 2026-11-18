@@ -11,6 +11,7 @@ import {
 import { VncViewer } from "@/components/vnc-viewer";
 import { LiveOperation } from "@/components/live-operation";
 import { sanitizeModels, sevKey, isInfo, isRealFinding, isShownFinding } from "@/lib/display";
+import { STAGES, STAGE_MAP, PIPELINE, readCrm, setStage, stageOf, type Stage } from "@/lib/finding-status";
 import { CapabilityGraph3D } from "@/components/capability-graph-3d";
 
 type ConsoleView = "ops" | "findings" | "map" | "coverage" | "surface";
@@ -668,22 +669,109 @@ function EmptyArt({ state, label }: { state: string; label: string }) {
 
 const SEV_ORDER = ["critical", "high", "medium", "low", "info"];
 
-function FindingsView() {
+/* ── per-finding submission status (CRM) — a styled popover, not a native select ── */
+function StatusSelect({ value, onChange }: { value: Stage; onChange: (s: Stage) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+  const cur = STAGE_MAP[value];
+  return (
+    <div ref={ref} className="relative" onClick={(e) => e.stopPropagation()}>
+      <button type="button" onClick={() => setOpen((v) => !v)} aria-haspopup="listbox" aria-expanded={open}
+        title={cur.hint}
+        className={`chip ${cur.chip} inline-flex items-center gap-1.5 !normal-case`}>
+        <span className="h-1.5 w-1.5 rounded-full" style={{ background: cur.dot }} />{cur.label}
+        <svg viewBox="0 0 16 16" className="h-3 w-3 opacity-70" fill="none" aria-hidden><path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+      </button>
+      {open && (
+        <ul role="listbox" className="hunt-pop enter absolute right-0 z-40 mt-1.5 w-56 overflow-hidden rounded-[10px] border border-line-2 bg-surface2/98 p-1.5 shadow-2 backdrop-blur">
+          {STAGES.map((s) => (
+            <li key={s.key} role="option" aria-selected={s.key === value}
+              onClick={() => { onChange(s.key); setOpen(false); }}
+              className={`flex cursor-pointer items-center gap-2.5 rounded-[7px] px-2.5 py-1.5 ${s.key === value ? "bg-brand/12" : "hover:bg-white/5"}`}>
+              <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: s.dot }} />
+              <span className="min-w-0 flex-1">
+                <span className="block text-[12.5px] text-fg">{s.label}</span>
+                <span className="block truncate text-[10.5px] text-faint">{s.hint}</span>
+              </span>
+              {s.key === value && <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0 text-brand" fill="none" aria-hidden><path d="M3.5 8.5 6.5 11.5 12.5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/* ── compact hunt filter for the Findings tab (incl. "All hunts") ── */
+function HuntFilter({ hunts, sel, setSel }: { hunts: Hunt[]; sel: string | null; setSel: (id: string | null) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+  if (hunts.length === 0) return null;
+  const cur = sel ? hunts.find((h) => h.hunt_id === sel) : null;
+  const rows: { id: string | null; label: string; dot: string }[] = [
+    { id: null, label: "All hunts", dot: "var(--brand)" },
+    ...hunts.map((h) => ({ id: h.hunt_id, label: sanitizeModels(h.target), dot: STATUS[h.status]?.rail ?? "var(--faint)" })),
+  ];
+  return (
+    <div ref={ref} className="relative">
+      <button type="button" onClick={() => setOpen((v) => !v)} aria-haspopup="listbox" aria-expanded={open}
+        className="group flex min-w-[13rem] items-center gap-2.5 rounded-[9px] border border-line-2 bg-surface2/80 px-3 py-2 text-left transition-colors hover:border-brand/50">
+        <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: cur ? (STATUS[cur.status]?.rail ?? "var(--faint)") : "var(--brand)" }} />
+        <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-fg">{cur ? sanitizeModels(cur.target) : "All hunts"}</span>
+        <svg viewBox="0 0 16 16" className={`h-3.5 w-3.5 shrink-0 text-faint transition-transform ${open ? "rotate-180 text-brand" : "group-hover:text-muted"}`} fill="none" aria-hidden><path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+      </button>
+      {open && (
+        <ul role="listbox" className="hunt-pop enter absolute right-0 z-40 mt-2 max-h-72 w-[min(22rem,80vw)] overflow-auto rounded-[11px] border border-line-2 bg-surface2/98 p-1.5 shadow-2 backdrop-blur">
+          {rows.map((r) => {
+            const on = (r.id ?? null) === (sel ?? null);
+            return (
+              <li key={r.id ?? "all"} role="option" aria-selected={on}
+                onClick={() => { setSel(r.id); setOpen(false); }}
+                className={`flex cursor-pointer items-center gap-2.5 rounded-[7px] px-2.5 py-2 ${on ? "bg-brand/12" : "hover:bg-white/5"}`}>
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: r.dot }} />
+                <span className="min-w-0 flex-1 truncate font-mono text-[12.5px] text-fg">{r.label}</span>
+                {on && <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0 text-brand" fill="none" aria-hidden><path d="M3.5 8.5 6.5 11.5 12.5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function FindingsView({ hunts }: { hunts: Hunt[] }) {
   const [items, setItems] = useState<AllFinding[] | null>(null);
   const [err, setErr] = useState(false);
   const [sev, setSev] = useState<string | null>(null);
   const [verifiedOnly, setVerifiedOnly] = useState(false);
   const [groupByProgram, setGroupByProgram] = useState(false);
+  const [huntSel, setHuntSel] = useState<string | null>(null);
+  const [crm, setCrm] = useState<ReturnType<typeof readCrm>>({});
   const [open, setOpen] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
     listAllFindings()
       .then((r) => { if (alive) setItems(r.findings ?? []); })
       .catch(() => { if (alive) setErr(true); });
+    setCrm(readCrm());
     return () => { alive = false; };
   }, []);
-  // Drop info-severity noise AND engine-judged false-positives entirely.
-  const real = (items ?? []).filter(isShownFinding);
+  // Drop info-severity noise AND engine-judged false-positives entirely, then
+  // scope to the selected hunt (null = all hunts).
+  const real = (items ?? []).filter(isShownFinding).filter((f) => !huntSel || f.hunt_id === huntSel);
   const counts = tallyFindings(real);
   const shown = real.filter((f) =>
     (!sev || sevKey(f.severity) === sev) && (!verifiedOnly || f.poc_verified));
@@ -697,21 +785,24 @@ function FindingsView() {
     const isOpen = open === k;
     return (
       <li key={k} className="panel overflow-hidden">
-        <button type="button" onClick={() => setOpen(isOpen ? null : k)} aria-expanded={isOpen}
-          className="group flex w-full items-start gap-3 p-4 text-left transition-colors hover:bg-white/[0.015]">
-          <span className={`chip mt-0.5 ${SEV[s] ?? "info"}`}>{s}</span>
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium leading-snug text-fg transition-colors group-hover:text-brand-200">{f.title}</p>
-            <p className="mt-1 truncate font-mono text-[11px] text-muted">
-              {!groupByProgram && <><span className="text-faint">{sanitizeModels(f.target)}</span> · </>}{f.cls} <span className="text-faint">→</span> {f.endpoint}
-            </p>
-          </div>
-          <div className="flex shrink-0 flex-col items-end gap-1.5 sm:flex-row sm:items-center sm:gap-2.5">
+        <div className="flex w-full flex-wrap items-start gap-3 p-4 sm:flex-nowrap">
+          <button type="button" onClick={() => setOpen(isOpen ? null : k)} aria-expanded={isOpen}
+            className="group flex min-w-0 flex-1 items-start gap-3 text-left">
+            <span className={`chip mt-0.5 ${SEV[s] ?? "info"}`}>{s}</span>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium leading-snug text-fg transition-colors group-hover:text-brand-200">{f.title}</p>
+              <p className="mt-1 truncate font-mono text-[11px] text-muted">
+                {!groupByProgram && <><span className="text-faint">{sanitizeModels(f.target)}</span> · </>}{f.cls} <span className="text-faint">→</span> {f.endpoint}
+              </p>
+            </div>
+          </button>
+          <div className="flex shrink-0 basis-full flex-wrap items-center justify-end gap-2.5 pl-[3.2rem] sm:basis-auto sm:pl-0">
             {f.bounty_est ? <span className="font-mono text-xs font-semibold text-green tabular">~${f.bounty_est.toLocaleString()}</span> : null}
             {typeof f.cvss === "number" && <span className="font-mono text-[11px] text-muted tabular">CVSS {f.cvss.toFixed(1)}</span>}
-            {f.poc_verified ? <span className="verified"><CheckIcon /> verified</span> : f.verdict ? <span className="chip info">{f.verdict}</span> : null}
+            {f.poc_verified ? <span className="verified"><CheckIcon /> verified</span> : null}
+            <StatusSelect value={stageOf(crm, k)} onChange={(st) => setCrm((c) => setStage(c, k, st))} />
           </div>
-        </button>
+        </div>
         {isOpen && <div className="border-t border-line px-4 pb-4"><FindingDetail f={f} /></div>}
       </li>
     );
@@ -727,21 +818,42 @@ function FindingsView() {
     return [...m.entries()].sort((a, b) =>
       b[1].reduce((n, f) => n + (f.bounty_est || 0), 0) - a[1].reduce((n, f) => n + (f.bounty_est || 0), 0));
   })();
+  // CRM pipeline tally over the in-view findings.
+  const crmCount = (st: Stage) => real.filter((f) => stageOf(crm, fkey(f)) === st).length;
+  const inPipeline = PIPELINE.reduce((n, st) => n + crmCount(st), 0);
+
   return (
     <div className="space-y-6">
-      <ViewHeader title="Findings" sub="Every validated finding across your hunts. Verified ones carry a live proof." />
+      <ViewHeader title="Findings" sub="Every real finding across your hunts — track each one from submitted through accepted."
+        right={<HuntFilter hunts={hunts} sel={huntSel} setSel={setHuntSel} />} />
       {items === null && !err && (
         <div className="space-y-2">{[0, 1, 2].map((i) => <div key={i} className="skeleton h-16" />)}</div>
       )}
       {err && <EmptyArt state="error" label="Findings" />}
       {items !== null && real.length === 0 && (
         <div className="tile-locked flex flex-col items-center px-6 py-14 text-center">
-          <p className="display text-xl text-fg">No findings yet</p>
-          <p className="mt-2 max-w-sm text-sm text-muted">Launch a hunt from Ops. Validated findings land here as they&apos;re confirmed.</p>
+          <p className="display text-xl text-fg">No findings {huntSel ? "for this hunt" : "yet"}</p>
+          <p className="mt-2 max-w-sm text-sm text-muted">{huntSel ? "Pick another hunt, or view all hunts." : "Launch a hunt from Ops. Validated findings land here as they’re confirmed."}</p>
         </div>
       )}
       {items !== null && real.length > 0 && (
         <>
+          {/* submission pipeline (CRM) — where the in-view findings stand */}
+          <div className="panel flex flex-wrap items-center gap-x-5 gap-y-2 px-4 py-3">
+            <span className="label text-[10px] text-faint">Submission pipeline</span>
+            <span className="font-mono text-[11px] text-muted">{inPipeline}/{real.length} submitted</span>
+            <span className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-1.5">
+              {STAGES.filter((s) => s.key !== "new").map((s) => {
+                const n = crmCount(s.key);
+                return (
+                  <span key={s.key} className={`flex items-center gap-1.5 font-mono text-[11px] ${n ? "text-fg" : "text-faint"}`}>
+                    <span className="h-2 w-2 rounded-full" style={{ background: n ? s.dot : "var(--line-2)" }} />
+                    {s.label} <span className="tabular-nums">{n}</span>
+                  </span>
+                );
+              })}
+            </span>
+          </div>
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" onClick={() => setSev(null)} className={`chip ${!sev ? "val" : "info"}`}>All {real.length}</button>
             {SEV_ORDER.filter((s) => counts[s]).map((s) => (
@@ -1467,7 +1579,7 @@ export function HuntDashboard() {
             </div>
           )}
 
-          {view === "findings" && <FindingsView />}
+          {view === "findings" && <FindingsView hunts={hunts} />}
           {view === "surface" && <SurfaceView hunts={hunts} sel={selHunt ?? hunts[0]?.hunt_id ?? null} setSel={setSelHunt} />}
           {view === "coverage" && <CoverageView hunts={hunts} sel={selHunt ?? hunts[0]?.hunt_id ?? null} setSel={setSelHunt} />}
           {view === "map" && <MapView hunts={hunts} sel={selHunt ?? hunts[0]?.hunt_id ?? null} setSel={setSelHunt} />}
