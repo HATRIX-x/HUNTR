@@ -49,3 +49,10 @@ export function isRealFinding(f: { severity?: string | null; poc_verified?: bool
   if (f.poc_verified) return true;
   return (f.verdict ?? "").toLowerCase() === "confirmed";
 }
+
+/** Whether a finding is surfaced in the console at all. We never show info-
+ *  severity noise, nor findings the engine already judged false-positive. */
+export function isShownFinding(f: { severity?: string | null; verdict?: string }): boolean {
+  if (isInfo(f.severity)) return false;
+  return (f.verdict ?? "").toLowerCase() !== "false_positive";
+}

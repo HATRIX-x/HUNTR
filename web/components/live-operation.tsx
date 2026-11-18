@@ -14,7 +14,7 @@
    ────────────────────────────────────────────────────────────────────────── */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { sanitizeModels, sevKey, isInfo, isRealFinding } from "@/lib/display";
+import { sanitizeModels, sevKey, isInfo, isRealFinding, isShownFinding } from "@/lib/display";
 import {
   getHunt, getHuntArtifacts, listHuntFindings, creditsBalance,
   type Hunt, type HuntArtifacts, type HuntFinding,
@@ -212,8 +212,8 @@ function FindingsFeed({ huntId, live, count }: { huntId: string; live: boolean; 
     return () => { alive = false; clearInterval(t); };
   }, [huntId, live]);
 
-  // info-severity findings carry no triage value — never surface them.
-  const visible = items.filter((f) => !isInfo(f.severity));
+  // Never surface info-severity noise or engine-judged false-positives.
+  const visible = items.filter(isShownFinding);
   const headCount = live ? count : visible.filter(isRealFinding).length;
   const pending = live ? Math.max(0, count - visible.length) : 0;
   return (

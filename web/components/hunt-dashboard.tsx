@@ -10,7 +10,7 @@ import {
 } from "@/lib/api";
 import { VncViewer } from "@/components/vnc-viewer";
 import { LiveOperation } from "@/components/live-operation";
-import { sanitizeModels, sevKey, isInfo, isRealFinding } from "@/lib/display";
+import { sanitizeModels, sevKey, isInfo, isRealFinding, isShownFinding } from "@/lib/display";
 import { CapabilityGraph3D } from "@/components/capability-graph-3d";
 
 type ConsoleView = "ops" | "findings" | "map" | "coverage" | "surface";
@@ -212,7 +212,7 @@ function FindingsList({ huntId }: { huntId: string }) {
         {[0, 1].map((i) => <div key={i} className="skeleton h-10" />)}
       </div>
     );
-  const shown = items.filter((f) => !isInfo(f.severity));
+  const shown = items.filter(isShownFinding);
   if (shown.length === 0)
     return <p className="px-5 py-6 text-sm text-muted">No findings yet. Validated findings appear here as the hunt confirms them.</p>;
   const verified = shown.filter((f) => f.poc_verified).length;
@@ -673,7 +673,8 @@ function FindingsView() {
   const [err, setErr] = useState(false);
   const [sev, setSev] = useState<string | null>(null);
   const [verifiedOnly, setVerifiedOnly] = useState(false);
-  const [open, setOpen] = useState<number | null>(null);
+  const [groupByProgram, setGroupByProgram] = useState(false);
+  const [open, setOpen] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
     listAllFindings()
@@ -681,11 +682,51 @@ function FindingsView() {
       .catch(() => { if (alive) setErr(true); });
     return () => { alive = false; };
   }, []);
-  // Drop info-severity findings entirely — they carry no triage value.
-  const real = (items ?? []).filter((f) => !isInfo(f.severity));
+  // Drop info-severity noise AND engine-judged false-positives entirely.
+  const real = (items ?? []).filter(isShownFinding);
   const counts = tallyFindings(real);
   const shown = real.filter((f) =>
     (!sev || sevKey(f.severity) === sev) && (!verifiedOnly || f.poc_verified));
+
+  const fkey = (f: AllFinding) => `${f.hunt_id}|${f.cls}|${f.endpoint}|${f.title}`;
+  const progOf = (f: AllFinding) => f.program?.trim() || f.target?.trim() || "Unassigned";
+
+  const card = (f: AllFinding) => {
+    const s = sevKey(f.severity);
+    const k = fkey(f);
+    const isOpen = open === k;
+    return (
+      <li key={k} className="panel overflow-hidden">
+        <button type="button" onClick={() => setOpen(isOpen ? null : k)} aria-expanded={isOpen}
+          className="group flex w-full items-start gap-3 p-4 text-left transition-colors hover:bg-white/[0.015]">
+          <span className={`chip mt-0.5 ${SEV[s] ?? "info"}`}>{s}</span>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium leading-snug text-fg transition-colors group-hover:text-brand-200">{f.title}</p>
+            <p className="mt-1 truncate font-mono text-[11px] text-muted">
+              {!groupByProgram && <><span className="text-faint">{f.target}</span> · </>}{f.cls} <span className="text-faint">→</span> {f.endpoint}
+            </p>
+          </div>
+          <div className="flex shrink-0 flex-col items-end gap-1.5 sm:flex-row sm:items-center sm:gap-2.5">
+            {f.bounty_est ? <span className="font-mono text-xs font-semibold text-green tabular">~${f.bounty_est.toLocaleString()}</span> : null}
+            {typeof f.cvss === "number" && <span className="font-mono text-[11px] text-muted tabular">CVSS {f.cvss.toFixed(1)}</span>}
+            {f.poc_verified ? <span className="verified"><CheckIcon /> verified</span> : f.verdict ? <span className="chip info">{f.verdict}</span> : null}
+          </div>
+        </button>
+        {isOpen && <div className="border-t border-line px-4 pb-4"><FindingDetail f={f} /></div>}
+      </li>
+    );
+  };
+
+  // group → ordered [program, findings] with highest-value program first
+  const groups: [string, AllFinding[]][] = (() => {
+    const m = new Map<string, AllFinding[]>();
+    for (const f of shown) {
+      const p = progOf(f);
+      (m.get(p) ?? (m.set(p, []), m.get(p)!)).push(f);
+    }
+    return [...m.entries()].sort((a, b) =>
+      b[1].reduce((n, f) => n + (f.bounty_est || 0), 0) - a[1].reduce((n, f) => n + (f.bounty_est || 0), 0));
+  })();
   return (
     <div className="space-y-6">
       <ViewHeader title="Findings" sub="Every validated finding across your hunts. Verified ones carry a live proof." />
@@ -708,34 +749,38 @@ function FindingsView() {
                 className={`chip ${sev === s ? SEV[s] ?? "info" : "mute"}`}>{s} {counts[s]}</button>
             ))}
             <button type="button" onClick={() => setVerifiedOnly((v) => !v)}
-              className={`chip ml-auto ${verifiedOnly ? "val" : "info"}`}>✓ verified {counts.verified}</button>
+              className={`chip ${verifiedOnly ? "val" : "mute"}`}>✓ verified {counts.verified}</button>
+            <button type="button" onClick={() => setGroupByProgram((v) => !v)}
+              aria-pressed={groupByProgram}
+              className={`ml-auto inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.12em] transition-colors ${groupByProgram ? "border-brand/50 bg-brand/10 text-brand-200" : "border-line-2 text-muted hover:text-fg"}`}>
+              <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" aria-hidden><rect x="2.5" y="2.5" width="11" height="4" rx="1" stroke="currentColor" strokeWidth="1.3" /><rect x="2.5" y="9.5" width="11" height="4" rx="1" stroke="currentColor" strokeWidth="1.3" /></svg>
+              Group by program
+            </button>
           </div>
-          <ul className="space-y-2">
-            {shown.map((f, i) => {
-              const s = sevKey(f.severity);
-              const isOpen = open === i;
-              return (
-                <li key={i} className="panel overflow-hidden">
-                  <button type="button" onClick={() => setOpen(isOpen ? null : i)} aria-expanded={isOpen}
-                    className="group flex w-full items-start gap-3 p-4 text-left transition-colors hover:bg-white/[0.015]">
-                    <span className={`chip mt-0.5 ${SEV[s] ?? "info"}`}>{s}</span>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium leading-snug text-fg transition-colors group-hover:text-brand-200">{f.title}</p>
-                      <p className="mt-1 truncate font-mono text-[11px] text-muted">
-                        <span className="text-faint">{f.target}</span> · {f.cls} <span className="text-faint">→</span> {f.endpoint}
-                      </p>
+          {groupByProgram ? (
+            <div className="space-y-6">
+              {groups.map(([prog, list]) => {
+                const ver = list.filter((f) => f.poc_verified).length;
+                const val = list.reduce((n, f) => n + (f.bounty_est || 0), 0);
+                return (
+                  <section key={prog}>
+                    <div className="mb-2 flex items-center gap-3 px-1">
+                      <h3 className="font-mono text-[13px] font-semibold text-fg">{prog}</h3>
+                      <span className="h-px flex-1 bg-line" />
+                      <span className="font-mono text-[11px] text-muted">
+                        {list.length} finding{list.length === 1 ? "" : "s"}
+                        {ver > 0 && <> · <span className="text-green">{ver} verified</span></>}
+                        {val > 0 && <> · <span className="text-green">~${val.toLocaleString()}</span></>}
+                      </span>
                     </div>
-                    <div className="flex shrink-0 flex-col items-end gap-1.5 sm:flex-row sm:items-center sm:gap-2.5">
-                      {f.bounty_est ? <span className="font-mono text-xs font-semibold text-green tabular">~${f.bounty_est.toLocaleString()}</span> : null}
-                      {typeof f.cvss === "number" && <span className="font-mono text-[11px] text-muted tabular">CVSS {f.cvss.toFixed(1)}</span>}
-                      {f.poc_verified ? <span className="verified"><CheckIcon /> verified</span> : f.verdict ? <span className="chip info">{f.verdict}</span> : null}
-                    </div>
-                  </button>
-                  {isOpen && <div className="border-t border-line px-4 pb-4"><FindingDetail f={f} /></div>}
-                </li>
-              );
-            })}
-          </ul>
+                    <ul className="space-y-2">{list.map(card)}</ul>
+                  </section>
+                );
+              })}
+            </div>
+          ) : (
+            <ul className="space-y-2">{shown.map(card)}</ul>
+          )}
         </>
       )}
     </div>
