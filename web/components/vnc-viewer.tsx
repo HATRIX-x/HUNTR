@@ -68,7 +68,14 @@ export function VncViewer({
       try {
         const mod = await import(/* webpackIgnore: true */ NOVNC_URL);
         if (cancelled || !ref.current) return;
-        const RFB = (mod as { default: new (t: Element, u: string, o?: object) => Rfb }).default;
+        // jsDelivr's /+esm bundle nests the class as `default.default` (its own
+        // `default` export is a namespace object, NOT the RFB constructor). Resolve
+        // it defensively across shapes so a CDN re-bundle can't silently break the
+        // live view — an unresolved constructor used to throw and show "signal lost".
+        const m = mod as Record<string, unknown> & { default?: Record<string, unknown> };
+        const RFB = [m.default?.default, m.default, (m as Record<string, unknown>).RFB]
+          .find((x) => typeof x === "function") as (new (t: Element, u: string, o?: object) => Rfb) | undefined;
+        if (!RFB) { if (!cancelled) setPhase("lost"); return; }
         const token = getToken() ?? "";
         const wsBase = API_URL.replace(/^http/, "ws");
         const url = `${wsBase}/v1/hunts/${encodeURIComponent(huntId)}/vnc?token=${encodeURIComponent(token)}`;
