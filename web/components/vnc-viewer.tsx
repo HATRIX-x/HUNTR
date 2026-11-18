@@ -19,28 +19,46 @@ type Rfb = {
   focus: () => void;
 };
 
-type Phase = "loading" | "connecting" | "live" | "lost";
+export type StreamPhase = "loading" | "connecting" | "live" | "lost";
+type Phase = StreamPhase;
 
 /** The live CDP browser stream. Renders inline when `embedded`, else as a modal.
  *  View-only by default — HUNTR is driving this browser; "Take control" flips the
  *  RFB to accept the viewer's clicks/keys (they reach the same Chrome the agent
- *  uses, so it's co-driving). `onControlChange` lets a parent react (e.g. warn). */
+ *  uses, so it's co-driving). `onControlChange` lets a parent react (e.g. warn).
+ *
+ *  `bare` renders only the stream surface (no chrome) for a parent that draws its
+ *  own frame — the live-operation cockpit. In that mode pass `control` to drive
+ *  input from outside, `onStatus` to follow the connection, and bump
+ *  `reconnectSignal` to reconnect. */
 export function VncViewer({
   huntId,
   onClose,
   embedded = false,
   onControlChange,
+  bare = false,
+  control: controlProp,
+  onStatus,
+  reconnectSignal = 0,
 }: {
   huntId: string;
   onClose?: () => void;
   embedded?: boolean;
   onControlChange?: (inControl: boolean) => void;
+  bare?: boolean;
+  control?: boolean;
+  onStatus?: (phase: StreamPhase) => void;
+  reconnectSignal?: number;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const rfbRef = useRef<Rfb | null>(null);
   const [phase, setPhase] = useState<Phase>("loading");
-  const [control, setControl] = useState(false);
+  const [ownControl, setControl] = useState(false);
+  const controlled = controlProp !== undefined;
+  const control = controlled ? !!controlProp : ownControl;
   const [attempt, setAttempt] = useState(0); // bump to reconnect
+
+  useEffect(() => { onStatus?.(phase); }, [phase, onStatus]);
 
   useEffect(() => {
     let cancelled = false;
@@ -71,7 +89,7 @@ export function VncViewer({
       rfbRef.current = null;
       try { rfb?.disconnect(); } catch { /* no-op */ }
     };
-  }, [huntId, attempt]);
+  }, [huntId, attempt, reconnectSignal]);
 
   // apply control state to the live RFB whenever it changes
   useEffect(() => {
@@ -80,22 +98,26 @@ export function VncViewer({
       r.viewOnly = !control;
       if (control) try { r.focus(); } catch { /* no-op */ }
     }
-    onControlChange?.(control);
-  }, [control, phase, onControlChange]);
+    if (!controlled) onControlChange?.(control);
+  }, [control, phase, onControlChange, controlled]);
 
   // Esc closes a modal; if in control, Esc first releases control.
   useEffect(() => {
     if (!onClose && !control) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (control) setControl(false);
-      else onClose?.();
+      if (control) {
+        if (controlled) onControlChange?.(false);
+        else setControl(false);
+      } else onClose?.();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose, control]);
+  }, [onClose, control, controlled, onControlChange]);
 
   const reconnect = () => { setPhase("connecting"); setAttempt((a) => a + 1); };
+
+  if (bare) return <div ref={ref} className="h-full w-full" />;
 
   const bracket = phase === "lost" ? "var(--faint)" : control ? "var(--high)" : "var(--green)";
 

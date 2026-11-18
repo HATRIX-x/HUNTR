@@ -65,7 +65,7 @@ export function CapabilityGraph3D({ nodes, edges }: { nodes: GraphNode[]; edges:
     }));
     const pulses: { e: number; t: number; spd: number }[] = [];
 
-    let rx = -0.2, ry = 0, vel = 0.0016, dragging = false, lx = 0, ly = 0;
+    let rx = -0.2, ry = 0, vel = 0.0016, dragging = false, lx = 0, ly = 0, zoom = 1;
     let W = 0, H = 0, RAD = 0, raf = 0, hover = -1, pointer = { x: -1, y: -1 };
     const t0 = performance.now();
 
@@ -84,7 +84,8 @@ export function CapabilityGraph3D({ nodes, edges }: { nodes: GraphNode[]; edges:
       let x = n.x * cy - n.z * sy, z = n.x * sy + n.z * cy;
       const y = n.y * cx - z * sx; z = n.y * sx + z * cx;
       const focal = 3.0, scale = focal / Math.max(0.6, focal + z);
-      return { X: W / 2 + x * scale * RAD, Y: H / 2 + y * scale * RAD, scale, z };
+      const R = RAD * zoom;
+      return { X: W / 2 + x * scale * R, Y: H / 2 + y * scale * R, scale, z };
     };
     const rgba = (c: number[], a: number) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
 
@@ -132,7 +133,8 @@ export function CapabilityGraph3D({ nodes, edges }: { nodes: GraphNode[]; edges:
         const depth = 0.4 + p.scale * 0.6;
         const dim = hover >= 0 && !nbr.has(i);
         const alpha = (dim ? 0.22 : 1) * depth;
-        const r = Math.max(0.4, n.r * p.scale);
+        const zr = Math.max(0.7, Math.min(2.2, Math.sqrt(zoom)));
+        const r = Math.max(0.4, n.r * p.scale * zr);
         if (hover === i || col !== MUTED) { ctx.shadowColor = rgba(col, 0.8 * alpha); ctx.shadowBlur = (hover === i ? 16 : 9) * p.scale; }
         ctx.beginPath(); ctx.fillStyle = rgba(col, alpha); ctx.arc(p.X, p.Y, r, 0, 7); ctx.fill(); ctx.shadowBlur = 0;
         const showLabel = n.label && (nbr.has(i) || (hover < 0 && p.scale > 1.02 && n.r > 5));
@@ -162,20 +164,32 @@ export function CapabilityGraph3D({ nodes, edges }: { nodes: GraphNode[]; edges:
     };
     const up = () => { dragging = false; };
     const out = () => { pointer = { x: -1, y: -1 }; };
+    // scroll / pinch to zoom — fly toward or away from the graph
+    const wheel = (e: WheelEvent) => {
+      e.preventDefault();
+      zoom *= Math.exp(-e.deltaY * 0.0012);
+      zoom = Math.max(0.45, Math.min(5, zoom));
+    };
     cv.addEventListener("pointerdown", down); window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up); cv.addEventListener("pointerleave", out);
+    cv.addEventListener("wheel", wheel, { passive: false });
 
     return () => {
       cancelAnimationFrame(raf); ro.disconnect();
       cv.removeEventListener("pointerdown", down); window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up); cv.removeEventListener("pointerleave", out);
+      cv.removeEventListener("wheel", wheel);
     };
   }, [nodes, edges]);
 
   return (
-    <div ref={wrap} className="relative h-[62vh] w-full select-none">
-      <canvas ref={canvas} data-hot className="h-full w-full touch-none" style={{ cursor: "grab" }} />
-      <div className="hud pointer-events-none absolute bottom-3 right-4 text-[10px] uppercase tracking-[0.12em] text-faint">drag to orbit · hover a node</div>
+    <div ref={wrap} className="relative h-[62vh] w-full select-none overflow-hidden">
+      {/* deep-space nebula — purple · cyan · green drifting behind the graph */}
+      <div className="graph-nebula" aria-hidden>
+        <span className="nb nb1" /><span className="nb nb2" /><span className="nb nb3" />
+      </div>
+      <canvas ref={canvas} data-hot className="relative z-10 h-full w-full touch-none" style={{ cursor: "grab" }} />
+      <div className="hud pointer-events-none absolute bottom-3 right-4 z-20 text-[10px] uppercase tracking-[0.12em] text-faint">scroll to zoom · drag to orbit</div>
     </div>
   );
 }

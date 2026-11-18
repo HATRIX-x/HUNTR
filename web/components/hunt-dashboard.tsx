@@ -9,6 +9,7 @@ import {
   type GraphNode, type GraphEdge,
 } from "@/lib/api";
 import { VncViewer } from "@/components/vnc-viewer";
+import { LiveOperation } from "@/components/live-operation";
 import { CapabilityGraph3D } from "@/components/capability-graph-3d";
 
 type ConsoleView = "ops" | "findings" | "map" | "coverage" | "surface";
@@ -43,6 +44,18 @@ function scopeAtAGlance(text: string): { inN: number; outN: number } | null {
   const inN = count(inPart);
   if (inN === 0) return null;
   return { inN, outN: count(outPart) };
+}
+
+// First in-scope host in a pasted scope page — used as the provisional `target`
+// for the API while the worker's triage model (Haiku 5.5) does the authoritative
+// in/out-of-scope split and derives the program name server-side.
+function firstScopeHost(text: string): string {
+  const raw = (text || "").trim();
+  const HOST = /(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}/i;
+  const cut = raw.search(/out[\s-]?of[\s-]?scope|exclusion|excluded|not in scope/i);
+  const inPart = cut >= 0 ? raw.slice(0, cut) : raw;
+  const m = inPart.match(HOST);
+  return m ? m[0].toLowerCase() : "";
 }
 
 function CheckIcon() {
@@ -391,168 +404,6 @@ function HuntRow({ h, onWatch, onCancel, onControl }: {
   );
 }
 
-/* ── live hunt · phase deck + live browser ────────────────────────── */
-
-type DeckPhase = { key: string; name: string; blurb: string; match: string[]; Icon: () => JSX.Element };
-
-const IcShield = () => (<svg viewBox="0 0 24 24" fill="none" aria-hidden><path d="M12 3l7 3v5c0 4.4-3 7.4-7 9-4-1.6-7-4.6-7-9V6l7-3z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" /><path d="M9 12l2 2 4-4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>);
-const IcRadar = () => (<svg viewBox="0 0 24 24" fill="none" aria-hidden><circle cx="12" cy="12" r="8.5" stroke="currentColor" strokeWidth="1.5" /><circle cx="12" cy="12" r="4" stroke="currentColor" strokeWidth="1.5" /><path d="M12 12l6-3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /><circle cx="12" cy="12" r="1.4" fill="currentColor" /></svg>);
-const IcMap = () => (<svg viewBox="0 0 24 24" fill="none" aria-hidden><path d="M9 4L4 6v14l5-2 6 2 5-2V4l-5 2-6-2z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /><path d="M9 4v14M15 6v14" stroke="currentColor" strokeWidth="1.4" /></svg>);
-const IcBrain = () => (<svg viewBox="0 0 24 24" fill="none" aria-hidden><path d="M8.5 5A3 3 0 006 10a3 3 0 00.5 6 3 3 0 005.5-1.7V6.2A3 3 0 008.5 5z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /><path d="M15.5 5A3 3 0 0118 10a3 3 0 01-.5 6 3 3 0 01-5.5-1.7" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /></svg>);
-const IcTarget = () => (<svg viewBox="0 0 24 24" fill="none" aria-hidden><circle cx="12" cy="12" r="8.5" stroke="currentColor" strokeWidth="1.5" /><circle cx="12" cy="12" r="4" stroke="currentColor" strokeWidth="1.5" /><path d="M12 1.5v4M12 18.5v4M1.5 12h4M18.5 12h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>);
-const IcCheck = () => (<svg viewBox="0 0 24 24" fill="none" aria-hidden><path d="M20 7L10 17l-5-5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>);
-const IcDoc = () => (<svg viewBox="0 0 24 24" fill="none" aria-hidden><path d="M7 3h7l4 4v14H7a2 2 0 01-2-2V5a2 2 0 012-2z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /><path d="M14 3v4h4M9 13h6M9 17h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>);
-
-const DECK_PHASES: DeckPhase[] = [
-  { key: "scope",   name: "Scope lock",     blurb: "Locking the authorized target surface",  match: ["scope"], Icon: IcShield },
-  { key: "recon",   name: "Recon",          blurb: "Enumerating hosts, assets and tech",      match: ["recon", "source", "fingerprint", "boot", "mobile"], Icon: IcRadar },
-  { key: "surface", name: "Map surface",    blurb: "Crawling the app, mapping endpoints",     match: ["surface", "spa", "discover", "capture", "api-test", "auth+spa"], Icon: IcMap },
-  { key: "plan",    name: "Model & plan",   blurb: "Modeling the app, planning attacks",      match: ["plan", "biz", "model"], Icon: IcBrain },
-  { key: "exploit", name: "Exploit",        blurb: "Probing endpoints for real bugs",         match: ["exploit", "authed", "hunt", "ai-direct", "llm-led", "oob", "param"], Icon: IcTarget },
-  { key: "verify",  name: "Verify & chain", blurb: "Proving findings, chaining impact",       match: ["verify", "validate", "judge", "adversarial", "chain", "scenario", "econom"], Icon: IcCheck },
-  { key: "report",  name: "Report",         blurb: "Triaging and writing up what's real",     match: ["supervisor", "triager", "polish", "report", "done"], Icon: IcDoc },
-];
-
-function deckPhaseIndex(stage?: string, status?: string): number {
-  if (status === "done") return DECK_PHASES.length - 1;
-  if (status === "queued" || !stage) return 0;
-  const s = stage.toLowerCase();
-  for (let i = DECK_PHASES.length - 1; i >= 0; i--) {
-    if (DECK_PHASES[i].match.some((k) => s.includes(k))) return i;
-  }
-  return 0;
-}
-
-function ProgressRing({ pct, tone }: { pct: number; tone: string }) {
-  const R = 33, C = 2 * Math.PI * R;
-  const p = Math.max(0, Math.min(100, pct));
-  return (
-    <svg viewBox="0 0 80 80" className="h-[72px] w-[72px] -rotate-90" aria-hidden>
-      <circle cx="40" cy="40" r={R} fill="none" stroke="var(--line)" strokeWidth="5" />
-      <circle cx="40" cy="40" r={R} fill="none" stroke={tone} strokeWidth="5" strokeLinecap="round"
-        strokeDasharray={C} strokeDashoffset={C * (1 - p / 100)} style={{ transition: "stroke-dashoffset .8s ease" }} />
-    </svg>
-  );
-}
-
-function phaseStat(key: string, h: Hunt, hosts: number, endpoints: number): string {
-  const n = h.findings || 0;
-  const noun = h.status === "done" ? "finding" : "candidate";
-  const plural = (c: number, w: string) => `${c} ${w}${c === 1 ? "" : "s"}`;
-  switch (key) {
-    case "scope":   return hosts ? plural(hosts, "host") + " in scope" : "verifying authorization";
-    case "recon":   return endpoints ? `${plural(hosts || 1, "host")} · ${plural(endpoints, "endpoint")}` : "enumerating assets";
-    case "surface": return endpoints ? plural(endpoints, "endpoint") + " mapped" : "crawling the app";
-    case "plan":    return "modeling entities & attack flows";
-    case "exploit": return n ? plural(n, noun) + " so far" : "probing the attack surface";
-    case "verify":  return n ? plural(n, noun) + " under review" : "proving impact";
-    case "report":  return h.status === "done" ? plural(n, "finding") : "finalizing the report";
-    default:        return "";
-  }
-}
-
-function PhaseDeck({ hunt }: { hunt: Hunt }) {
-  const idx = deckPhaseIndex(hunt.stage, hunt.status);
-  const maxRef = useRef(0);
-  if (hunt.status === "running" && idx > maxRef.current) maxRef.current = idx;
-  const cur = hunt.status === "running" ? Math.max(idx, maxRef.current) : idx;
-  const phase = DECK_PHASES[cur];
-  const pct = Math.max(0, Math.min(100, hunt.pct ?? 0));
-  const done = hunt.status === "done";
-  const { art } = useArtifacts(hunt.hunt_id, hunt.status === "running");
-  const endpoints = art?.surface?.endpoints?.length ?? 0;
-  const hosts = art?.surface?.hosts?.length ?? 0;
-  const lastLog = (hunt.logs ?? []).map((l) => (l ?? "").trim()).filter(Boolean).slice(-1)[0] ?? "";
-  const tone = done ? "var(--green)" : "var(--cyan)";
-
-  return (
-    <div className="space-y-3">
-      {/* big active-phase card — remounts (slides in) when the phase changes */}
-      <div key={phase.key} className="deck-card panel brackets relative overflow-hidden p-6 sm:p-7"
-        style={{ ["--bracket" as string]: tone }}>
-        <div className="pointer-events-none absolute inset-0" aria-hidden
-          style={{ background: `radial-gradient(90% 130% at 100% 0%, color-mix(in srgb, ${tone} 10%, transparent), transparent 55%)` }} />
-        <div className="relative flex items-center gap-5">
-          <div className="relative grid shrink-0 place-items-center">
-            <ProgressRing pct={pct} tone={tone} />
-            <span className="absolute grid h-9 w-9 place-items-center" style={{ color: tone }}>
-              <span className="h-5 w-5"><phase.Icon /></span>
-            </span>
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <span className="hud text-[10.5px] uppercase tracking-[0.18em] text-faint">Phase {cur + 1} / {DECK_PHASES.length}</span>
-              {hunt.status === "running" && <span className="statuspill is-live text-green"><span className="live-dot !h-1.5 !w-1.5" /> live</span>}
-              {hunt.status === "queued" && <span className="label text-faint">provisioning</span>}
-              {done && <span className="label text-green">complete</span>}
-            </div>
-            <h3 className="display mt-1 text-2xl text-fg">{phase.name}</h3>
-            <p className="mt-0.5 text-sm text-muted">{phase.blurb}</p>
-            <p className="mt-2 font-mono text-sm text-green tabular">{phaseStat(phase.key, hunt, hosts, endpoints)}</p>
-          </div>
-          <div className="hidden shrink-0 text-right sm:block">
-            <p className="numeral text-3xl text-fg tabular">{pct}%</p>
-            <p className="label text-[9.5px] text-faint">{done ? "complete" : "overall"}</p>
-          </div>
-        </div>
-        {lastLog && (
-          <div className="relative mt-5 flex items-center gap-2 overflow-hidden rounded-lg border border-line bg-bg/60 px-3 py-2">
-            <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-faint">log</span>
-            <span key={lastLog} className="deck-ticker min-w-0 flex-1 truncate font-mono text-xs text-fg/80">{lastLog}</span>
-          </div>
-        )}
-      </div>
-
-      {/* filmstrip — the 7 phases; advances as each completes */}
-      <div className="panel flex items-stretch gap-0 overflow-x-auto p-2">
-        {DECK_PHASES.map((p, i) => {
-          const state = i < cur || (done && i <= cur) ? "done" : i === cur && !done ? "active" : "todo";
-          const col = state === "done" ? "var(--green)" : state === "active" ? "var(--cyan)" : "var(--faint)";
-          return (
-            <div key={p.key} className="flex min-w-0 flex-1 items-center">
-              <div className={`flex min-w-[64px] flex-1 flex-col items-center gap-1 rounded-lg px-1.5 py-2 transition-colors ${state === "active" ? "bg-cyan/10" : ""}`}
-                title={p.name}>
-                <span className={`grid h-7 w-7 place-items-center rounded-full border ${state === "active" ? "deck-pulse" : ""}`}
-                  style={{ color: col, borderColor: `color-mix(in srgb, ${col} 45%, transparent)`, background: state === "todo" ? "transparent" : `color-mix(in srgb, ${col} 12%, transparent)` }}>
-                  <span className="h-4 w-4">{state === "done" ? <IcCheck /> : <p.Icon />}</span>
-                </span>
-                <span className="w-full truncate text-center text-[10px] leading-tight" style={{ color: state === "todo" ? "var(--faint)" : "var(--fg)" }}>{p.name}</span>
-              </div>
-              {i < DECK_PHASES.length - 1 && (
-                <span className="h-px w-3 shrink-0" style={{ background: i < cur ? "var(--green)" : "var(--line)" }} />
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function LiveHunt({ hunt }: { hunt: Hunt }) {
-  return (
-    <section className="enter space-y-3">
-      <div className="flex items-center gap-2">
-        <span className="hud flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-muted">
-          <span className="live-dot" /> live operation
-        </span>
-        <span className="font-mono text-xs text-faint">· {hunt.target}</span>
-      </div>
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
-        <PhaseDeck hunt={hunt} />
-        {hunt.status === "running" ? (
-          <VncViewer huntId={hunt.hunt_id} embedded />
-        ) : (
-          <div className="brackets grid place-items-center rounded-xl border border-line bg-surface p-8 text-center"
-            style={{ ["--bracket" as string]: "var(--faint)" }}>
-            <p className="text-sm text-muted">The live browser opens once the hunt starts running.</p>
-          </div>
-        )}
-      </div>
-    </section>
-  );
-}
-
 /* ── telemetry summary ────────────────────────────────────────────── */
 
 function Telemetry({ hunts }: { hunts: Hunt[] }) {
@@ -657,22 +508,102 @@ function useArtifacts(huntId: string | null, live: boolean) {
 }
 
 function HuntPicker({ hunts, sel, setSel }: { hunts: Hunt[]; sel: string | null; setSel: (id: string) => void }) {
-  if (hunts.length === 0) return null;
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const ref = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+
+  const cur = hunts.find((h) => h.hunt_id === sel) ?? hunts[0] ?? null;
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", onDoc);
+    setActive(Math.max(0, hunts.findIndex((h) => h.hunt_id === sel)));
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open, hunts, sel]);
+
+  useEffect(() => {
+    if (open && listRef.current) {
+      const el = listRef.current.children[active] as HTMLElement | undefined;
+      el?.scrollIntoView({ block: "nearest" });
+    }
+  }, [open, active]);
+
+  if (hunts.length === 0 || !cur) return null;
+
+  const label = (h: Hunt) =>
+    `${h.target} · ${STATUS[h.status]?.label ?? h.status}${h.findings ? ` · ${h.findings} finding${h.findings === 1 ? "" : "s"}` : ""}`;
+
+  const choose = (i: number) => { const h = hunts[i]; if (h) { setSel(h.hunt_id); setOpen(false); } };
+
+  const onKey = (e: React.KeyboardEvent) => {
+    if (e.key === "ArrowDown") { e.preventDefault(); if (!open) setOpen(true); else setActive((a) => Math.min(hunts.length - 1, a + 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); if (open) setActive((a) => Math.max(0, a - 1)); }
+    else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); if (open) choose(active); else setOpen(true); }
+    else if (e.key === "Escape") { setOpen(false); }
+    else if (e.key === "Home") { if (open) { e.preventDefault(); setActive(0); } }
+    else if (e.key === "End") { if (open) { e.preventDefault(); setActive(hunts.length - 1); } }
+  };
+
   return (
-    <label className="flex items-center gap-3">
+    <div ref={ref} className="flex items-center gap-3">
       <span className="label text-faint">Hunt</span>
-      <select
-        value={sel ?? ""}
-        onChange={(e) => setSel(e.target.value)}
-        className="field max-w-sm py-2 font-mono text-[13px]"
-      >
-        {hunts.map((h) => (
-          <option key={h.hunt_id} value={h.hunt_id}>
-            {h.target} · {STATUS[h.status]?.label ?? h.status}{h.findings ? ` · ${h.findings} findings` : ""}
-          </option>
-        ))}
-      </select>
-    </label>
+      <div className="relative">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          onKeyDown={onKey}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          className="hunt-picker group flex min-w-[15rem] max-w-sm items-center gap-2.5 rounded-[9px] border border-line-2 bg-surface2/80 px-3 py-2 text-left transition-colors hover:border-brand/50"
+        >
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: STATUS[cur.status]?.rail ?? "var(--faint)" }} />
+          <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-fg">{label(cur)}</span>
+          <svg viewBox="0 0 16 16" className={`h-3.5 w-3.5 shrink-0 text-faint transition-transform duration-200 ${open ? "rotate-180 text-brand" : "group-hover:text-muted"}`} fill="none" aria-hidden>
+            <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+        {open && (
+          <ul
+            ref={listRef}
+            role="listbox"
+            tabIndex={-1}
+            aria-label="Select hunt"
+            onKeyDown={onKey}
+            className="hunt-pop enter absolute right-0 z-40 mt-2 max-h-72 w-[min(22rem,80vw)] overflow-auto rounded-[11px] border border-line-2 bg-surface2/98 p-1.5 shadow-2 backdrop-blur"
+          >
+            {hunts.map((h, i) => {
+              const on = h.hunt_id === cur.hunt_id;
+              const st = STATUS[h.status];
+              return (
+                <li
+                  key={h.hunt_id}
+                  role="option"
+                  aria-selected={on}
+                  onMouseEnter={() => setActive(i)}
+                  onClick={() => choose(i)}
+                  className={`flex cursor-pointer items-center gap-2.5 rounded-[7px] px-2.5 py-2 ${i === active ? "bg-brand/12" : ""}`}
+                >
+                  <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: st?.rail ?? "var(--faint)" }} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-mono text-[12.5px] text-fg">{h.target}</span>
+                    <span className={`block truncate text-[11px] ${st?.cls ?? "text-faint"}`}>
+                      {st?.label ?? h.status}{h.findings ? ` · ${h.findings} finding${h.findings === 1 ? "" : "s"}` : ""}
+                    </span>
+                  </span>
+                  {on && (
+                    <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0 text-brand" fill="none" aria-hidden>
+                      <path d="M3.5 8.5 6.5 11.5 12.5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -1037,14 +968,11 @@ export function HuntDashboard() {
   const [state, setState] = useState<"loading" | "ready" | "signedout">("loading");
   const [user, setUser] = useState<Me | null>(null);
   const [hunts, setHunts] = useState<Hunt[]>([]);
-  const [target, setTarget] = useState("");
-  const [program, setProgram] = useState("");
   const [mode, setMode] = useState("grey");
   const [scopeText, setScopeText] = useState("");
   const [session, setSession] = useState("");
   const [authHeader, setAuthHeader] = useState("");
   const [ua, setUa] = useState("");
-  const [showScope, setShowScope] = useState(false);
   const [showCreds, setShowCreds] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -1091,9 +1019,16 @@ export function HuntDashboard() {
   const onLaunch = async (e: React.FormEvent) => {
     e.preventDefault();
     setErr(null);
-    const t = target.trim();
+    const sp = scopeText.trim();
+    if (!sp) {
+      setErr("Paste the program's scope page — HUNTR needs it to lock scope.");
+      return;
+    }
+    // Provisional target from the paste; the worker's triage model does the real
+    // in/out-of-scope split and names the program server-side.
+    const t = firstScopeHost(sp);
     if (!t) {
-      setErr("Enter a target you're authorized to test.");
+      setErr("No valid host found in that scope page. Paste the program's in-scope hosts or the whole scope block.");
       return;
     }
     setBusy(true);
@@ -1105,12 +1040,9 @@ export function HuntDashboard() {
       await startHunt({
         target: t,
         mode,
-        program: program.trim() || undefined,
-        scope_text: scopeText.trim() || undefined,
+        scope_text: sp,
         creds,
       });
-      setTarget("");
-      setProgram("");
       setScopeText("");
       setSession("");
       setAuthHeader("");
@@ -1208,7 +1140,7 @@ export function HuntDashboard() {
               <Telemetry hunts={hunts} />
               {(() => {
                 const live = hunts.find((h) => h.status === "running") ?? hunts.find((h) => h.status === "queued");
-                return live ? <LiveHunt hunt={live} /> : null;
+                return live ? <LiveOperation hunt={live} /> : null;
               })()}
 
       {/* launch form — arming an operation */}
@@ -1233,30 +1165,47 @@ export function HuntDashboard() {
             </span>
           </div>
 
-          <div className="mt-7 grid gap-5 lg:grid-cols-[1.4fr_1fr]">
+          {/* ── scope page — the single source of truth for a hunt ──────────
+             Paste the program's scope block; the worker's triage model (Haiku
+             5.5) names the program and splits in-scope from out-of-scope. */}
+          <div className="mt-7">
             <label className="block">
-              <span className="field-label">Target</span>
-              <span className="relative block">
-                <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 font-mono text-brand">›</span>
-                <input
-                  value={target}
-                  onChange={(e) => setTarget(e.target.value)}
-                  placeholder="acme.com  or  *.acme.com"
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="field pl-9 font-mono text-[15px]"
-                />
+              <span className="field-label flex items-center justify-between gap-3">
+                <span>Scope page</span>
+                {scopeStats ? (
+                  <span className="flex items-center gap-2 font-mono text-[11px] normal-case tracking-normal">
+                    <span className="text-green">{scopeStats.inN} in scope</span>
+                    {scopeStats.outN > 0 && <span className="text-critical">· {scopeStats.outN} out</span>}
+                  </span>
+                ) : (
+                  <span className="normal-case tracking-normal text-brand/80">required</span>
+                )}
               </span>
-            </label>
-            <label className="block">
-              <span className="field-label">Program <span className="normal-case tracking-normal text-faint/80">(optional)</span></span>
-              <input
-                value={program}
-                onChange={(e) => setProgram(e.target.value)}
-                placeholder="e.g. Acme VDP"
-                className="field"
+              <textarea
+                required
+                value={scopeText}
+                onChange={(e) => setScopeText(e.target.value)}
+                rows={6}
+                spellCheck={false}
+                autoComplete="off"
+                placeholder={"Paste the program's scope page — hosts, wildcards, or the whole HackerOne / YesWeHack / Bugcrowd scope block.\n\n*.acme.com\nhttps://api.acme.com"}
+                className="field resize-y font-mono text-[13px] leading-relaxed"
               />
             </label>
+            <p className="mt-2 flex items-start gap-2 text-xs text-muted">
+              <svg viewBox="0 0 16 16" className="mt-[1px] h-3.5 w-3.5 shrink-0 text-brand" fill="none" aria-hidden>
+                <path d="M8 2.2l1.2 2.9 3.1.2-2.4 2 .8 3-2.7-1.7-2.7 1.7.8-3-2.4-2 3.1-.2z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+              </svg>
+              {scopeStats ? (
+                <span>
+                  <span className="text-green">{scopeStats.inN} in scope</span>
+                  {scopeStats.outN > 0 && <> · <span className="text-critical">{scopeStats.outN} out of scope</span></>} detected.
+                  <span className="text-faint"> HUNTR&apos;s triage model names the program and re-classifies every asset on the worker before the hunt starts.</span>
+                </span>
+              ) : (
+                <span>HUNTR&apos;s triage model reads this, works out the <span className="text-fg">program name</span>, and sorts <span className="text-green">in-scope</span> from <span className="text-critical">out-of-scope</span> so nothing N/A gets hunted.</span>
+              )}
+            </p>
           </div>
 
           <fieldset className="mt-5">
@@ -1292,55 +1241,6 @@ export function HuntDashboard() {
               })}
             </div>
           </fieldset>
-
-          {/* ── scope page (optional) ───────────────────────────────────── */}
-          <div className="mt-5 overflow-hidden rounded-[10px] border border-line bg-bg/30">
-            <button
-              type="button"
-              onClick={() => setShowScope((v) => !v)}
-              aria-expanded={showScope}
-              className="flex w-full items-center justify-between gap-3 px-4 py-3.5 text-left transition-colors hover:bg-white/[0.015]"
-            >
-              <span className="flex min-w-0 items-center gap-3">
-                <svg viewBox="0 0 16 16" className={`h-3.5 w-3.5 shrink-0 transition-transform duration-300 ${showScope ? "rotate-90 text-brand" : "text-faint"}`} fill="none" aria-hidden>
-                  <path d="M5.5 3.5 10 8l-4.5 4.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-                <span className="min-w-0">
-                  <span className="block text-sm font-semibold text-fg">Scope page <span className="font-normal text-faint">· optional</span></span>
-                  <span className="block truncate text-xs text-muted">Paste the program page — Haiku 5.5 sorts in-scope from out-of-scope so nothing N/A gets hunted.</span>
-                </span>
-              </span>
-              {scopeStats && (
-                <span className="hidden shrink-0 items-center gap-2 font-mono text-[11px] sm:flex">
-                  <span className="text-green">{scopeStats.inN} in</span>
-                  {scopeStats.outN > 0 && <span className="text-critical">{scopeStats.outN} out</span>}
-                </span>
-              )}
-            </button>
-            {showScope && (
-              <div className="enter border-t border-line px-4 py-4">
-                <textarea
-                  value={scopeText}
-                  onChange={(e) => setScopeText(e.target.value)}
-                  rows={5}
-                  spellCheck={false}
-                  placeholder={"*.acme.com\nhttps://api.acme.com\n\nOr paste the whole HackerOne / YesWeHack / Bugcrowd scope block — HUNTR reads it and classifies every asset."}
-                  className="field resize-y font-mono text-[12.5px] leading-relaxed"
-                />
-                <p className="mt-2 text-xs text-muted">
-                  {scopeStats ? (
-                    <>
-                      <span className="text-green">{scopeStats.inN} in scope</span>
-                      {scopeStats.outN > 0 && <> · <span className="text-critical">{scopeStats.outN} out of scope</span></>} detected.
-                      <span className="text-faint"> HUNTR re-classifies for real on the worker before the hunt starts.</span>
-                    </>
-                  ) : (
-                    <span className="text-faint">Hosts, wildcards, and whole program pages all work.</span>
-                  )}
-                </p>
-              </div>
-            )}
-          </div>
 
           {/* ── credentials / session (grey + white box) ────────────────── */}
           {needsCreds && (
@@ -1439,7 +1339,7 @@ export function HuntDashboard() {
               <circle cx="24" cy="24" r="3" style={{ fill: "var(--green)" }} />
             </svg>
             <p className="display mt-5 text-xl text-fg">No hunts yet</p>
-            <p className="mt-2 max-w-sm text-sm text-muted">Enter a target above and launch. Progress, logs and findings stream in here live.</p>
+            <p className="mt-2 max-w-sm text-sm text-muted">Paste a scope page above and launch. Progress, logs and findings stream in here live.</p>
           </div>
         ) : (
           <div className="space-y-3">
