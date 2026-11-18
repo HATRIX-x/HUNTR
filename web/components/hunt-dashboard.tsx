@@ -492,7 +492,7 @@ function Sidebar({ view, setView, liveCount }: { view: ConsoleView; setView: (v:
   return (
     <nav
       aria-label="Console sections"
-      className="panel z-10 flex gap-1 overflow-x-auto p-1.5 lg:sticky lg:top-20 lg:h-max lg:flex-col lg:gap-1.5 lg:overflow-visible lg:p-2"
+      className="panel z-10 flex gap-1 overflow-x-auto p-1.5 [mask-image:linear-gradient(to_right,#000_calc(100%-26px),transparent)] lg:sticky lg:top-20 lg:h-max lg:flex-col lg:gap-1.5 lg:overflow-visible lg:p-2 lg:[mask-image:none]"
     >
       {NAV.map((n) => {
         const on = view === n.id;
