@@ -604,7 +604,7 @@ function HuntPicker({ hunts, sel, setSel }: { hunts: Hunt[]; sel: string | null;
             tabIndex={-1}
             aria-label="Select hunt"
             onKeyDown={onKey}
-            className="hunt-pop enter absolute right-0 z-40 mt-2 max-h-72 w-[min(22rem,80vw)] overflow-auto rounded-[11px] border border-line-2 bg-surface2/98 p-1.5 shadow-2 backdrop-blur"
+            className="hunt-pop enter absolute inset-x-0 z-40 mt-2 max-h-72 w-auto overflow-auto rounded-[11px] border border-line-2 bg-surface2/98 p-1.5 shadow-2 backdrop-blur"
           >
             {hunts.map((h, i) => {
               const on = h.hunt_id === cur.hunt_id;
@@ -689,7 +689,7 @@ function StatusSelect({ value, onChange }: { value: Stage; onChange: (s: Stage) 
         <svg viewBox="0 0 16 16" className="h-3 w-3 opacity-70" fill="none" aria-hidden><path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
       </button>
       {open && (
-        <ul role="listbox" className="hunt-pop enter absolute right-0 z-40 mt-1.5 w-56 overflow-hidden rounded-[10px] border border-line-2 bg-surface2/98 p-1.5 shadow-2 backdrop-blur">
+        <ul role="listbox" className="hunt-pop enter absolute right-0 z-40 mt-1.5 w-56 max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-[10px] border border-line-2 bg-surface2/98 p-1.5 shadow-2 backdrop-blur">
           {STAGES.map((s) => (
             <li key={s.key} role="option" aria-selected={s.key === value}
               onClick={() => { onChange(s.key); setOpen(false); }}
@@ -733,7 +733,7 @@ function HuntFilter({ hunts, sel, setSel }: { hunts: Hunt[]; sel: string | null;
         <svg viewBox="0 0 16 16" className={`h-3.5 w-3.5 shrink-0 text-faint transition-transform ${open ? "rotate-180 text-brand" : "group-hover:text-muted"}`} fill="none" aria-hidden><path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
       </button>
       {open && (
-        <ul role="listbox" className="hunt-pop enter absolute right-0 z-40 mt-2 max-h-72 w-[min(22rem,80vw)] overflow-auto rounded-[11px] border border-line-2 bg-surface2/98 p-1.5 shadow-2 backdrop-blur">
+        <ul role="listbox" className="hunt-pop enter absolute inset-x-0 z-40 mt-2 max-h-72 w-auto overflow-auto rounded-[11px] border border-line-2 bg-surface2/98 p-1.5 shadow-2 backdrop-blur">
           {rows.map((r) => {
             const on = (r.id ?? null) === (sel ?? null);
             return (
