@@ -269,149 +269,199 @@ _PAGE = r"""<!doctype html>
 <title>HUNTR · Admin</title>
 <style>
   :root{
-    --bg:#0A0B0D; --fg:#ECEEF2; --mut:#9AA0AD; --faint:#7A8190;
-    --line:rgba(255,255,255,0.10); --line2:rgba(255,255,255,0.18);
-    --brand:#A78BFA; --brand3:#DDD6FE; --brand-deep:#8B6DF0;
-    --cyan:#22D3EE; --cyan3:#A5F3FC; --green:#4ADE80; --green2:#86EFAC;
-    --bad:#FF5D6C; --warn:#E7B84B; --accent:var(--cyan); --pearl:var(--brand3);
-    --glass:rgba(22,25,33,0.50); --blur:blur(22px) saturate(150%);
-    --rbtn:9px; --rpanel:16px;
+    --bg:#0A0B0D; --fg:#ECEEF2; --mut:#9AA0AD; --faint:#6F7684;
+    --line:rgba(255,255,255,.08); --line2:rgba(255,255,255,.15);
+    --brand:#A78BFA; --brand3:#DDD6FE; --cyan:#22D3EE; --green:#4ADE80; --green2:#86EFAC;
+    --bad:#FF5D6C; --warn:#E7B84B;
+    --glass:rgba(20,23,31,.55); --glass-top:rgba(255,255,255,.055);
+    --blur:blur(20px) saturate(140%);
     --grad:linear-gradient(100deg,#A78BFA,#22D3EE 52%,#4ADE80);
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,"JetBrains Mono","Fira Code",Menlo,Consolas,monospace;
     --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,ui-sans-serif,system-ui,sans-serif;
+    --s1:8px; --s2:12px; --s3:16px; --s4:22px; --s5:32px;
+    --r:14px; --rs:10px;
   }
   *{box-sizing:border-box} html,body{margin:0}
-  body{background:#0A0B0D;color:var(--fg);font:14px/1.55 var(--sans);
-    -webkit-font-smoothing:antialiased;padding:28px 20px 80px;max-width:1200px;margin:0 auto;
-    position:relative;min-height:100vh}
-  body::before{content:"";position:fixed;inset:-25%;z-index:-1;pointer-events:none;
+  body{background:#0A0B0D;color:var(--fg);font:14px/1.5 var(--sans);
+    -webkit-font-smoothing:antialiased;position:relative;min-height:100vh}
+  body::before{content:"";position:fixed;inset:-30%;z-index:-1;pointer-events:none;
     background:
-      radial-gradient(460px 460px at 14% 16%, rgba(167,139,250,.38), transparent 60%),
-      radial-gradient(520px 520px at 84% 10%, rgba(34,211,238,.30), transparent 60%),
-      radial-gradient(560px 560px at 62% 94%, rgba(74,222,128,.24), transparent 62%),
-      radial-gradient(500px 500px at 32% 72%, rgba(139,109,240,.18), transparent 60%);
-    filter:blur(10px);animation:drift 26s ease-in-out infinite alternate}
-  @keyframes drift{from{transform:translate3d(-2%,-1%,0) scale(1)}to{transform:translate3d(2%,2%,0) scale(1.07)}}
+      radial-gradient(420px 420px at 12% 12%, rgba(167,139,250,.34), transparent 60%),
+      radial-gradient(480px 480px at 88% 6%, rgba(34,211,238,.26), transparent 60%),
+      radial-gradient(520px 520px at 70% 96%, rgba(74,222,128,.20), transparent 62%);
+    filter:blur(14px);animation:drift 28s ease-in-out infinite alternate}
+  @keyframes drift{from{transform:translate3d(-1.5%,-1%,0) scale(1)}to{transform:translate3d(1.5%,1.5%,0) scale(1.06)}}
   @media (prefers-reduced-motion:reduce){body::before{animation:none}}
-  h1{font-size:21px;margin:0;letter-spacing:-.01em;font-weight:650}
-  h1 .hl{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
-  h2{font-size:11px;text-transform:uppercase;letter-spacing:.18em;color:var(--mut);
-    margin:38px 2px 14px;font-weight:600}
-  .top{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 16px;border-radius:var(--rpanel);
-    background:var(--glass);backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);
-    border:1px solid var(--line);box-shadow:0 1px 0 rgba(255,255,255,.06) inset}
-  .sub{color:var(--mut);font-size:12.5px}
-  .grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(172px,1fr))}
-  .card{position:relative;background:var(--glass);backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);
-    border:1px solid var(--line);border-radius:var(--rpanel);padding:17px 18px;overflow:hidden;
-    box-shadow:0 1px 0 rgba(255,255,255,.07) inset, 0 24px 60px -34px rgba(0,0,0,.95);
-    transition:border-color .2s,transform .2s,box-shadow .2s}
-  .card::after{content:"";position:absolute;inset:0 0 auto 0;height:42%;pointer-events:none;
-    background:linear-gradient(180deg,rgba(255,255,255,.06),transparent)}
-  .card:hover{border-color:var(--line2);transform:translateY(-2px);
-    box-shadow:0 1px 0 rgba(255,255,255,.1) inset, 0 30px 70px -32px rgba(0,0,0,.95), 0 0 0 1px rgba(34,211,238,.14)}
-  .kpi .n{font-size:31px;font-weight:600;letter-spacing:-.02em;line-height:1.08;font-variant-numeric:tabular-nums;position:relative}
-  .kpi .l{color:var(--mut);font-size:12.5px;margin-top:5px;position:relative}
-  .kpi .d{font-size:11.5px;margin-top:9px;color:var(--faint);position:relative}
-  .d .up{color:var(--green);font-weight:600} .wide{grid-column:1/-1}
-  table{width:100%;border-collapse:collapse;font-size:13px;position:relative}
-  td,th{padding:7px 8px;text-align:left;border-bottom:1px solid var(--line)}
-  tr:last-child td{border-bottom:0}
-  th{color:var(--faint);font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.1em}
-  td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
-  .bar{height:7px;border-radius:99px;background:rgba(255,255,255,.08);overflow:hidden}
-  .bar>i{display:block;height:100%;border-radius:99px;background:var(--grad)}
-  .funnel div{display:flex;align-items:center;gap:12px;margin:10px 0;position:relative}
-  .funnel .lab{width:122px;color:var(--mut);font-size:12.5px}
-  .funnel .track{flex:1}
-  .funnel .val{width:98px;text-align:right;font-variant-numeric:tabular-nums;font-size:13px}
-  svg{display:block;width:100%;height:66px;position:relative}
+  .wrap{max-width:1180px;margin:0 auto;padding:var(--s4) var(--s3) 72px}
+
+  /* header */
+  .top{display:flex;align-items:center;gap:var(--s2);flex-wrap:wrap;
+    padding:12px 16px;border-radius:var(--r);background:var(--glass);
+    backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);
+    border:1px solid var(--line);box-shadow:inset 0 1px 0 var(--glass-top),0 20px 50px -34px #000}
+  .brand{font-weight:680;font-size:16px;letter-spacing:-.01em;display:flex;align-items:center;gap:9px}
+  .brand .dot{width:9px;height:9px;border-radius:99px;background:var(--grad);
+    box-shadow:0 0 0 3px rgba(34,211,238,.15)}
+  .brand .hl{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .asof{color:var(--faint);font:11.5px/1 var(--mono);letter-spacing:.02em}
+  .sp{flex:1}
+  .btn{background:rgba(255,255,255,.04);color:var(--fg);border:1px solid var(--line2);
+    border-radius:var(--rs);padding:8px 13px;font:12.5px/1 var(--sans);cursor:pointer;
+    backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);transition:.18s border-color,.18s background}
+  .btn:hover{border-color:var(--cyan);background:rgba(34,211,238,.09)}
+  .btn:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+
+  /* section label */
+  .sec{display:flex;align-items:center;gap:10px;margin:var(--s5) 2px var(--s2)}
+  .sec h2{margin:0;font:600 11px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--mut)}
+  .sec .rule{flex:1;height:1px;background:linear-gradient(90deg,var(--line2),transparent)}
+
+  /* grids */
+  .kpis{display:grid;gap:var(--s2);grid-template-columns:repeat(4,1fr)}
+  .cols{display:grid;gap:var(--s2);grid-template-columns:repeat(4,1fr)}
+  @media(max-width:900px){.kpis,.cols{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:560px){.kpis,.cols{grid-template-columns:1fr}}
+
+  /* glass panel base */
+  .glass{position:relative;background:var(--glass);border:1px solid var(--line);
+    border-radius:var(--r);backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);
+    box-shadow:inset 0 1px 0 var(--glass-top),0 22px 55px -36px #000;overflow:hidden}
+  .glass::before{content:"";position:absolute;left:0;right:0;top:0;height:2px;
+    background:var(--accent,var(--grad));opacity:.9}
+
+  /* KPI tile */
+  .tile{padding:14px 15px 15px}
+  .tile .lab{font:600 10.5px/1 var(--mono);letter-spacing:.09em;text-transform:uppercase;color:var(--mut);
+    display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .tile .num{font:600 29px/1.05 var(--mono);letter-spacing:-.01em;margin-top:11px;
+    font-variant-numeric:tabular-nums}
+  .tile .sub{font:11.5px/1.3 var(--sans);color:var(--faint);margin-top:8px}
+  .chip{font:600 10.5px/1 var(--mono);padding:4px 7px;border-radius:99px;white-space:nowrap}
+  .chip.up{color:var(--green);background:rgba(74,222,128,.12)}
+  .chip.flat{color:var(--mut);background:rgba(255,255,255,.05)}
+  .tile.accent-g::before{background:linear-gradient(90deg,var(--green),var(--green2))}
+  .tile.accent-c::before{background:linear-gradient(90deg,var(--cyan),#67E8F9)}
+
+  /* chart panel */
+  .chart{padding:13px 15px 8px}
+  .chart .ch{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:2px}
+  .chart .ct{font:600 11px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--mut)}
+  .chart .cv{font:600 13px/1 var(--mono);color:var(--fg);font-variant-numeric:tabular-nums}
+  .chart .cv small{color:var(--faint);font-weight:500}
+  .chart svg{width:100%;height:auto;display:block}
+
+  /* funnel */
+  .funnel{padding:16px 18px}
+  .funnel .row{display:grid;grid-template-columns:132px 1fr 112px;align-items:center;gap:14px;padding:7px 0}
+  .funnel .row+.row{border-top:1px solid var(--line)}
+  .funnel .lab{font:12.5px/1 var(--sans);color:var(--fg)}
+  .funnel .track{height:9px;border-radius:99px;background:rgba(255,255,255,.06);overflow:hidden}
+  .funnel .track>i{display:block;height:100%;border-radius:99px;background:var(--grad);
+    box-shadow:0 0 14px -2px rgba(34,211,238,.4)}
+  .funnel .meta{text-align:right;font:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .funnel .meta b{font-weight:600;font-size:13px}
+  .funnel .meta span{color:var(--faint);font-size:11.5px;margin-left:6px}
+
+  /* breakdown tables */
+  .bd{padding:14px 15px}
+  .bd .bt{font:600 10.5px/1 var(--mono);letter-spacing:.09em;text-transform:uppercase;color:var(--mut);margin-bottom:10px}
+  .bd table{width:100%;border-collapse:collapse}
+  .bd td{padding:6px 0;font-size:12.5px;vertical-align:middle}
+  .bd td.k{color:var(--fg);white-space:nowrap;padding-right:10px;text-transform:capitalize}
+  .bd td.b{width:52%}
+  .bd td.v{text-align:right;font:var(--mono);font-variant-numeric:tabular-nums;color:var(--fg);width:40px}
+  .bd .mini{height:6px;border-radius:99px;background:rgba(255,255,255,.06);overflow:hidden}
+  .bd .mini>i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--brand),var(--cyan))}
+  .bd .empty{color:var(--faint);font-size:12.5px;padding:8px 0}
+
+  .note{color:var(--faint);font-size:11px;margin-top:14px;text-align:center}
   .muted{color:var(--mut)} .err{color:var(--bad);min-height:18px;font-size:13px}
-  button{cursor:pointer;font:inherit}
-  .btn{background:rgba(255,255,255,.05);color:var(--fg);border:1px solid var(--line2);border-radius:var(--rbtn);
-    padding:8px 14px;font-size:12.5px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
-    transition:border-color .2s,background .2s}
-  .btn:hover{border-color:var(--cyan);background:rgba(34,211,238,.10)}
-  .note{color:var(--faint);font-size:11px;margin-top:6px;position:relative}
-  .login{max-width:360px;margin:13vh auto 0}
-  .login .card{padding:26px}
-  .login input{width:100%;margin:7px 0;padding:12px;border-radius:var(--rbtn);border:1px solid var(--line2);
-    background:rgba(10,11,13,.5);color:var(--fg);font-size:14px;font:inherit;
+
+  /* login */
+  .login{max-width:360px;margin:14vh auto 0;padding:0 16px}
+  .login .glass{padding:26px}
+  .login .glass::before{opacity:1}
+  .login .brand{font-size:18px;margin-bottom:3px}
+  .login .hint{color:var(--mut);font-size:12.5px;margin-bottom:12px}
+  .login input{width:100%;margin:7px 0;padding:12px;border-radius:var(--rs);border:1px solid var(--line2);
+    background:rgba(10,11,13,.5);color:var(--fg);font:14px var(--sans);
     backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
   .login input::placeholder{color:var(--faint)}
   .login input:focus{outline:none;border-color:var(--cyan);box-shadow:0 0 0 3px rgba(34,211,238,.18)}
-  .login button{width:100%;margin-top:11px;padding:12px;border-radius:var(--rbtn);border:0;
-    background:var(--grad);color:#07131A;font-weight:680;font-size:14px}
+  .login button{width:100%;margin-top:11px;padding:12px;border-radius:var(--rs);border:0;cursor:pointer;
+    background:var(--grad);color:#07131A;font:680 14px var(--sans)}
   .login button:hover{filter:brightness(1.08)}
-  .login h1{margin-bottom:4px}
 </style></head>
 <body>
-  <div id="login" class="login" style="display:none">
-    <div class="card">
-      <h1>HUNTR <span class="muted">Admin</span></h1>
-      <div class="sub" style="margin-bottom:8px">Founder access only.</div>
-      <input id="li_email" type="email" placeholder="email" autocomplete="username">
-      <input id="li_pw" type="password" placeholder="password" autocomplete="current-password">
-      <input id="li_code" type="text" inputmode="numeric" placeholder="2FA code (if enabled)" autocomplete="one-time-code">
-      <button onclick="doLogin()">Sign in</button>
-      <div class="err" id="li_err" style="margin-top:8px"></div>
-    </div>
-  </div>
 
-  <div id="shell" style="display:none">
+<div id="login" class="login" style="display:none">
+  <div class="glass">
+    <div class="brand"><span class="dot"></span><span class="hl">HUNTR</span>&nbsp;<span class="muted">Admin</span></div>
+    <div class="hint">Founder access only.</div>
+    <input id="li_email" type="email" placeholder="email" autocomplete="username">
+    <input id="li_pw" type="password" placeholder="password" autocomplete="current-password">
+    <input id="li_code" type="text" inputmode="numeric" placeholder="2FA code (if enabled)" autocomplete="one-time-code">
+    <button onclick="doLogin()">Sign in</button>
+    <div class="err" id="li_err" style="margin-top:10px"></div>
+  </div>
+</div>
+
+<div id="shell" class="wrap" style="display:none">
   <div class="top">
-    <h1><span class="hl">HUNTR</span> <span class="muted">· Admin</span></h1>
-    <span class="sub" id="asof">loading…</span>
-    <span style="flex:1"></span>
+    <div class="brand"><span class="dot"></span><span class="hl">HUNTR</span>&nbsp;<span class="muted">Admin</span></div>
+    <span class="asof" id="asof">loading…</span>
+    <span class="sp"></span>
     <button class="btn" onclick="load()">↻ Refresh</button>
     <button class="btn" onclick="logout()">Sign out</button>
   </div>
-  <div id="err" class="err" style="margin-top:10px"></div>
+  <div id="err" class="err" style="margin-top:12px"></div>
+
   <div id="app" style="display:none">
-    <h2>Signups &amp; growth</h2>
-    <div class="grid">
-      <div class="card kpi"><div class="n" id="u_total">—</div><div class="l">Total users</div>
-        <div class="d"><span class="up" id="u_24">+0</span> last 24h</div></div>
-      <div class="card kpi"><div class="n" id="u_7">—</div><div class="l">New · 7 days</div>
-        <div class="d" id="u_30">0 in 30d</div></div>
-      <div class="card kpi"><div class="n" id="r_pay">—</div><div class="l">Paying users</div>
-        <div class="d" id="r_rev">~$0 est</div></div>
-      <div class="card kpi"><div class="n" id="r_mrr">—</div><div class="l">Est. MRR</div>
-        <div class="d" id="r_subs">0 active subs</div></div>
-      <div class="card wide"><div class="l muted" style="margin-bottom:6px">Signups / day · 30d</div>
-        <svg id="spark_u" viewBox="0 0 600 60" preserveAspectRatio="none"></svg></div>
+    <div class="sec"><h2>Signups &amp; growth</h2><div class="rule"></div></div>
+    <div class="kpis">
+      <div class="glass tile"><div class="lab">Total users<span class="chip up" id="u_24">+0</span></div><div class="num" id="u_total">—</div><div class="sub" id="u_30">0 in 30d</div></div>
+      <div class="glass tile accent-c"><div class="lab">New · 7 days</div><div class="num" id="u_7">—</div><div class="sub">signups this week</div></div>
+      <div class="glass tile accent-g"><div class="lab">Paying users</div><div class="num" id="r_pay">—</div><div class="sub" id="r_rev">~$0 est</div></div>
+      <div class="glass tile accent-g"><div class="lab">Est. MRR</div><div class="num" id="r_mrr">—</div><div class="sub" id="r_subs">0 active subs</div></div>
     </div>
-    <h2>Activation funnel</h2>
-    <div class="card funnel" id="funnel"></div>
-    <h2>Usage · hunts</h2>
-    <div class="grid">
-      <div class="card kpi"><div class="n" id="h_total">—</div><div class="l">Total hunts</div>
-        <div class="d" id="h_run">0 running now</div></div>
-      <div class="card kpi"><div class="n" id="h_7">—</div><div class="l">Hunts · 7 days</div>
-        <div class="d" id="h_24">0 in 24h</div></div>
-      <div class="card kpi"><div class="n" id="h_avg">—</div><div class="l">Avg findings / hunt</div></div>
-      <div class="card kpi"><div class="n" id="e_wau">—</div><div class="l">WAU / MAU</div>
-        <div class="d" id="e_agents">0 active agents</div></div>
-      <div class="card wide"><div class="l muted" style="margin-bottom:6px">Hunts / day · 30d</div>
-        <svg id="spark_h" viewBox="0 0 600 60" preserveAspectRatio="none"></svg></div>
+    <div class="glass chart" style="margin-top:var(--s2)">
+      <div class="ch"><span class="ct">Signups / day · 30d</span><span class="cv" id="spark_u_v">—</span></div>
+      <svg id="spark_u" viewBox="0 0 600 100" preserveAspectRatio="none"></svg>
     </div>
-    <h2>Breakdowns</h2>
-    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">
-      <div class="card"><div class="l muted" style="margin-bottom:8px">Hunts by status</div><table id="t_hstatus"></table></div>
-      <div class="card"><div class="l muted" style="margin-bottom:8px">Findings by severity</div><table id="t_sev"></table></div>
-      <div class="card"><div class="l muted" style="margin-bottom:8px">Plans</div><table id="t_plan"></table></div>
-      <div class="card"><div class="l muted" style="margin-bottom:8px">Referral source</div><table id="t_ref"></table></div>
+
+    <div class="sec"><h2>Activation funnel</h2><div class="rule"></div></div>
+    <div class="glass funnel" id="funnel"></div>
+
+    <div class="sec"><h2>Usage · hunts</h2><div class="rule"></div></div>
+    <div class="kpis">
+      <div class="glass tile"><div class="lab">Total hunts</div><div class="num" id="h_total">—</div><div class="sub" id="h_run">0 running now</div></div>
+      <div class="glass tile accent-c"><div class="lab">Hunts · 7 days</div><div class="num" id="h_7">—</div><div class="sub" id="h_24">0 in 24h</div></div>
+      <div class="glass tile"><div class="lab">Avg findings / hunt</div><div class="num" id="h_avg">—</div><div class="sub">across all hunts</div></div>
+      <div class="glass tile accent-g"><div class="lab">WAU / MAU</div><div class="num" id="e_wau">—</div><div class="sub" id="e_agents">0 active agents</div></div>
     </div>
-    <h2>Money · credits</h2>
-    <div class="grid">
-      <div class="card kpi"><div class="n" id="c_out">—</div><div class="l">Outstanding credits</div>
-        <div class="note">unspent balance = liability</div></div>
-      <div class="card kpi"><div class="n" id="c_buy">—</div><div class="l">Credits purchased</div></div>
-      <div class="card kpi"><div class="n" id="c_used">—</div><div class="l">Credits consumed</div></div>
-      <div class="card kpi"><div class="n" id="f_bounty">—</div><div class="l">Bounties logged</div></div>
+    <div class="glass chart" style="margin-top:var(--s2)">
+      <div class="ch"><span class="ct">Hunts / day · 30d</span><span class="cv" id="spark_h_v">—</span></div>
+      <svg id="spark_h" viewBox="0 0 600 100" preserveAspectRatio="none"></svg>
+    </div>
+
+    <div class="sec"><h2>Breakdowns</h2><div class="rule"></div></div>
+    <div class="cols">
+      <div class="glass bd"><div class="bt">Hunts by status</div><table id="t_hstatus"></table></div>
+      <div class="glass bd"><div class="bt">Findings by severity</div><table id="t_sev"></table></div>
+      <div class="glass bd"><div class="bt">Plans</div><table id="t_plan"></table></div>
+      <div class="glass bd"><div class="bt">Referral source</div><table id="t_ref"></table></div>
+    </div>
+
+    <div class="sec"><h2>Money · credits</h2><div class="rule"></div></div>
+    <div class="kpis">
+      <div class="glass tile"><div class="lab">Outstanding credits</div><div class="num" id="c_out">—</div><div class="sub">unspent balance = liability</div></div>
+      <div class="glass tile accent-g"><div class="lab">Credits purchased</div><div class="num" id="c_buy">—</div><div class="sub">lifetime</div></div>
+      <div class="glass tile"><div class="lab">Credits consumed</div><div class="num" id="c_used">—</div><div class="sub">spent on hunts</div></div>
+      <div class="glass tile accent-g"><div class="lab">Bounties logged</div><div class="num" id="f_bounty">—</div><div class="sub">by users, via HUNTR</div></div>
     </div>
     <div class="note">Dollar figures are estimates (1 credit ≈ $1). Creem is the source of truth for revenue.</div>
   </div>
-  </div>
+</div>
 
 <script>
 const $ = s => document.querySelector(s);
@@ -437,21 +487,39 @@ async function doLogin(){
 function logout(){ localStorage.removeItem(TK); showLogin(''); }
 
 function spark(el, series){
-  if(!series||!series.length){return}
-  const w=600,h=60,p=4, max=Math.max(1,...series.map(d=>d.count));
-  const step = series.length>1 ? (w-2*p)/(series.length-1) : 0;
-  const pts = series.map((d,i)=>[p+i*step, h-p-(d.count/max)*(h-2*p)]);
-  const line = pts.map((pt,i)=>(i?'L':'M')+pt[0].toFixed(1)+' '+pt[1].toFixed(1)).join(' ');
-  el.innerHTML = `<path d="${line} L ${w-p} ${h-p} L ${p} ${h-p} Z" fill="rgba(185,163,255,.14)"/>`
-    + `<path d="${line}" fill="none" stroke="var(--accent)" stroke-width="2"/>`;
+  if(!series||!series.length){ el.innerHTML=''; return 0; }
+  const w=600,h=100,pl=3,pr=3,pt=12,pb=12;
+  const vals=series.map(d=>d.count), max=Math.max(1,...vals), n=series.length;
+  const sx=(w-pl-pr)/((n-1)||1);
+  const X=i=>pl+i*sx, Y=v=>h-pb-(v/max)*(h-pt-pb);
+  const pts=series.map((d,i)=>[X(i),Y(d.count)]);
+  const line=pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ');
+  const area=line+` L ${X(n-1).toFixed(1)} ${h-pb} L ${X(0).toFixed(1)} ${h-pb} Z`;
+  const lp=pts[n-1];
+  el.innerHTML=
+    '<defs>'+
+      '<linearGradient id="spkA" x1="0" y1="0" x2="0" y2="1">'+
+        '<stop offset="0" stop-color="rgba(167,139,250,.32)"/>'+
+        '<stop offset="1" stop-color="rgba(167,139,250,0)"/></linearGradient>'+
+      '<linearGradient id="spkL" x1="0" y1="0" x2="1" y2="0">'+
+        '<stop offset="0" stop-color="#A78BFA"/>'+
+        '<stop offset="0.55" stop-color="#22D3EE"/>'+
+        '<stop offset="1" stop-color="#4ADE80"/></linearGradient>'+
+    '</defs>'+
+    `<line x1="${pl}" y1="${(h-pb).toFixed(1)}" x2="${w-pr}" y2="${(h-pb).toFixed(1)}" stroke="rgba(255,255,255,.07)" vector-effect="non-scaling-stroke"/>`+
+    `<path d="${area}" fill="url(#spkA)"/>`+
+    `<path d="${line}" fill="none" stroke="url(#spkL)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`+
+    `<circle cx="${lp[0].toFixed(1)}" cy="${lp[1].toFixed(1)}" r="7" fill="rgba(74,222,128,.22)"/>`+
+    `<circle cx="${lp[0].toFixed(1)}" cy="${lp[1].toFixed(1)}" r="3.2" fill="#4ADE80"/>`;
+  return vals[n-1];
 }
 function tbl(el, obj, order){
   const keys = order ? order.filter(k=>k in (obj||{})) : Object.keys(obj||{}).sort((a,b)=>(obj[b]-obj[a]));
   const max = Math.max(1,...keys.map(k=>obj[k]||0));
-  el.innerHTML = keys.length? keys.map(k=>`<tr><td>${k}</td>`
-     +`<td style="width:45%"><div class="bar"><i style="width:${Math.round((obj[k]||0)/max*100)}%"></i></div></td>`
-     +`<td class="r">${fmt(obj[k]||0)}</td></tr>`).join('')
-     : `<tr><td class="muted">no data</td></tr>`;
+  el.innerHTML = keys.length? keys.map(k=>`<tr><td class="k">${k}</td>`
+     +`<td class="b"><div class="mini"><i style="width:${Math.round((obj[k]||0)/max*100)}%"></i></div></td>`
+     +`<td class="v">${fmt(obj[k]||0)}</td></tr>`).join('')
+     : `<tr><td class="empty">no data</td></tr>`;
 }
 function funnel(a){
   const steps=[['Signed up',a.signups],['Onboarded',a.onboarded],['Installed CLI',a.installed_cli],
@@ -459,9 +527,9 @@ function funnel(a){
   const top=Math.max(1,a.signups);
   $('#funnel').innerHTML = steps.map(([lab,v])=>{
     const pct=Math.round((v||0)/top*100);
-    return `<div><span class="lab">${lab}</span><span class="track"><div class="bar">`
-      +`<i style="width:${pct}%"></i></div></span>`
-      +`<span class="val">${fmt(v||0)} <span class="muted">${pct}%</span></span></div>`;
+    return `<div class="row"><span class="lab">${lab}</span>`
+      +`<span class="track"><i style="width:${pct}%"></i></span>`
+      +`<span class="meta"><b>${fmt(v||0)}</b><span>${pct}%</span></span></div>`;
   }).join('');
 }
 
@@ -478,12 +546,14 @@ async function load(){
     $('#asof').textContent = 'as of '+new Date(m.generated_at).toLocaleString();
     $('#u_total').textContent=fmt(m.signups.total);
     $('#u_24').textContent='+'+fmt(m.signups.new_24h);
+    $('#u_24').className = 'chip '+((m.signups.new_24h||0)>0?'up':'flat');
     $('#u_7').textContent=fmt(m.signups.new_7d);
-    $('#u_30').textContent=fmt(m.signups.new_30d)+' in 30d';
-    spark($('#spark_u'), m.signups.series_30d);
+    $('#u_30').textContent=fmt(m.signups.new_30d)+' in the last 30d';
+    const lu=spark($('#spark_u'), m.signups.series_30d);
+    $('#spark_u_v').innerHTML=fmt(lu)+' <small>today</small>';
     tbl($('#t_plan'), m.signups.by_plan);
     $('#r_pay').textContent=fmt(m.revenue.paying_users);
-    $('#r_rev').textContent='~'+usd(m.revenue.est_revenue_usd)+' est';
+    $('#r_rev').textContent='~'+usd(m.revenue.est_revenue_usd)+' lifetime';
     $('#r_mrr').textContent=usd(m.revenue.est_mrr_usd);
     $('#r_subs').textContent=fmt(Object.values(m.revenue.subs_by_tier).reduce((a,b)=>a+b,0))+' active subs';
     $('#c_out').textContent=fmt(m.revenue.credits_outstanding);
@@ -495,7 +565,8 @@ async function load(){
     $('#h_7').textContent=fmt(m.hunts.last_7d);
     $('#h_24').textContent=fmt(m.hunts.last_24h)+' in 24h';
     $('#h_avg').textContent=fmt(m.hunts.avg_findings);
-    spark($('#spark_h'), m.hunts.series_30d);
+    const lh=spark($('#spark_h'), m.hunts.series_30d);
+    $('#spark_h_v').innerHTML=fmt(lh)+' <small>today</small>';
     tbl($('#t_hstatus'), m.hunts.by_status);
     $('#e_wau').textContent=fmt(m.engagement.wau)+' / '+fmt(m.engagement.mau);
     $('#e_agents').textContent=fmt(m.engagement.active_agents_7d)+' active agents';
