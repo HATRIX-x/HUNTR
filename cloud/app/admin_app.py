@@ -24,7 +24,18 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from .db import get_db, User, Agent, Finding, Hunt, CreditTxn, Subscription
+from .db import get_db, User, Agent, Finding, Subscription
+# Hunt / CreditTxn are part of the cloud app's hunts+credits feature, which may not be committed on
+# every branch this service can build. Import them defensively so the dashboard deploys regardless;
+# any section whose model (or DB table) is absent degrades to zeros instead of crashing the service.
+try:
+    from .db import Hunt
+except Exception:   # noqa: BLE001
+    Hunt = None
+try:
+    from .db import CreditTxn
+except Exception:   # noqa: BLE001
+    CreditTxn = None
 from .auth import (
     verify_password, create_session_token, decode_session_token,
     verify_totp, is_locked, record_failure, record_success, consume_backup_code,
@@ -151,63 +162,76 @@ def _daily_series(rows, days: int = 30) -> list[dict]:
 def metrics(db: Session = Depends(get_db), _: User = Depends(admin_user)):
     now = datetime.utcnow()
 
-    total_users = db.query(func.count(User.id)).scalar() or 0
-    new_24h = db.query(func.count(User.id)).filter(User.created_at >= _since(1)).scalar() or 0
-    new_7d = db.query(func.count(User.id)).filter(User.created_at >= _since(7)).scalar() or 0
-    new_30d = db.query(func.count(User.id)).filter(User.created_at >= _since(30)).scalar() or 0
-    signup_dates = [r[0] for r in db.query(User.created_at).filter(User.created_at >= _since(30)).all()]
-    plan_rows = db.query(User.plan, func.count(User.id)).group_by(User.plan).all()
-    plans = {(p or "free"): int(c) for p, c in plan_rows}
+    def q(fn, default):
+        """Run one query; on any failure (model imported as None, or a table/column missing on this
+        DB) roll the session back so it stays usable and return `default`. Keeps one absent feature
+        from 500-ing the whole dashboard."""
+        try:
+            return fn()
+        except Exception:   # noqa: BLE001
+            try:
+                db.rollback()
+            except Exception:   # noqa: BLE001
+                pass
+            return default
 
-    onboarded = db.query(func.count(User.id)).filter(User.onboarded == True).scalar() or 0  # noqa: E712
-    installed_cli = db.query(func.count(func.distinct(Agent.user_id))).scalar() or 0
-    ran_hunt = db.query(func.count(func.distinct(Hunt.user_id))).scalar() or 0
-    got_finding = db.query(func.count(func.distinct(Finding.user_id))).scalar() or 0
-    paying_users = (db.query(func.count(func.distinct(CreditTxn.user_id)))
-                    .filter((CreditTxn.reason.like("purchase%")) | (CreditTxn.reason.like("plan%")))
-                    .scalar() or 0)
+    total_users = q(lambda: db.query(func.count(User.id)).scalar() or 0, 0)
+    new_24h = q(lambda: db.query(func.count(User.id)).filter(User.created_at >= _since(1)).scalar() or 0, 0)
+    new_7d = q(lambda: db.query(func.count(User.id)).filter(User.created_at >= _since(7)).scalar() or 0, 0)
+    new_30d = q(lambda: db.query(func.count(User.id)).filter(User.created_at >= _since(30)).scalar() or 0, 0)
+    signup_dates = q(lambda: [r[0] for r in db.query(User.created_at).filter(User.created_at >= _since(30)).all()], [])
+    plans = q(lambda: {(p or "free"): int(c) for p, c in
+                       db.query(User.plan, func.count(User.id)).group_by(User.plan).all()}, {})
+
+    onboarded = q(lambda: db.query(func.count(User.id)).filter(User.onboarded == True).scalar() or 0, 0)  # noqa: E712
+    installed_cli = q(lambda: db.query(func.count(func.distinct(Agent.user_id))).scalar() or 0, 0)
+    ran_hunt = q(lambda: db.query(func.count(func.distinct(Hunt.user_id))).scalar() or 0, 0)
+    got_finding = q(lambda: db.query(func.count(func.distinct(Finding.user_id))).scalar() or 0, 0)
+    paying_users = q(lambda: db.query(func.count(func.distinct(CreditTxn.user_id)))
+                     .filter((CreditTxn.reason.like("purchase%")) | (CreditTxn.reason.like("plan%"))).scalar() or 0, 0)
 
     def _sum_delta(*like):
-        cond = None
-        for lk in like:
-            cond = CreditTxn.reason.like(lk) if cond is None else (cond | CreditTxn.reason.like(lk))
-        q = db.query(func.coalesce(func.sum(CreditTxn.delta), 0))
-        return int(q.filter(cond).scalar() or 0) if cond is not None else 0
+        def _run():
+            cond = None
+            for lk in like:
+                cond = CreditTxn.reason.like(lk) if cond is None else (cond | CreditTxn.reason.like(lk))
+            return int(db.query(func.coalesce(func.sum(CreditTxn.delta), 0)).filter(cond).scalar() or 0)
+        return q(_run, 0)
 
     credits_purchased = _sum_delta("purchase%", "plan%")
     credits_bonus = _sum_delta("bonus%", "grant%")
-    credits_consumed = abs(int(db.query(func.coalesce(func.sum(CreditTxn.delta), 0))
-                               .filter(CreditTxn.delta < 0).scalar() or 0))
-    credits_outstanding = int(db.query(func.coalesce(func.sum(User.credits), 0)).scalar() or 0)
+    credits_consumed = q(lambda: abs(int(db.query(func.coalesce(func.sum(CreditTxn.delta), 0))
+                                         .filter(CreditTxn.delta < 0).scalar() or 0)), 0)
+    credits_outstanding = q(lambda: int(db.query(func.coalesce(func.sum(User.credits), 0)).scalar() or 0), 0)
 
-    sub_rows = (db.query(Subscription.tier, func.count(Subscription.user_id))
-                .filter(Subscription.status == "active").group_by(Subscription.tier).all())
-    subs_by_tier = {(t or "?"): int(c) for t, c in sub_rows}
+    subs_by_tier = q(lambda: {(t or "?"): int(c) for t, c in
+                              db.query(Subscription.tier, func.count(Subscription.user_id))
+                              .filter(Subscription.status == "active").group_by(Subscription.tier).all()}, {})
     est_mrr = round(sum(_SUB_MRR.get((t or "").lower(), 0.0) * c for t, c in subs_by_tier.items()), 2)
 
-    total_hunts = db.query(func.count(Hunt.id)).scalar() or 0
-    hunt_status_rows = db.query(Hunt.status, func.count(Hunt.id)).group_by(Hunt.status).all()
-    hunts_by_status = {(s or "?"): int(c) for s, c in hunt_status_rows}
+    total_hunts = q(lambda: db.query(func.count(Hunt.id)).scalar() or 0, 0)
+    hunts_by_status = q(lambda: {(s or "?"): int(c) for s, c in
+                                 db.query(Hunt.status, func.count(Hunt.id)).group_by(Hunt.status).all()}, {})
     hunts_running = int(hunts_by_status.get("running", 0) + hunts_by_status.get("queued", 0))
-    hunts_24h = db.query(func.count(Hunt.id)).filter(Hunt.created_at >= _since(1)).scalar() or 0
-    hunts_7d = db.query(func.count(Hunt.id)).filter(Hunt.created_at >= _since(7)).scalar() or 0
-    hunts_30d = db.query(func.count(Hunt.id)).filter(Hunt.created_at >= _since(30)).scalar() or 0
-    avg_findings = round(float(db.query(func.coalesce(func.avg(Hunt.findings), 0)).scalar() or 0), 2)
-    hunt_dates = [r[0] for r in db.query(Hunt.created_at).filter(Hunt.created_at >= _since(30)).all()]
+    hunts_24h = q(lambda: db.query(func.count(Hunt.id)).filter(Hunt.created_at >= _since(1)).scalar() or 0, 0)
+    hunts_7d = q(lambda: db.query(func.count(Hunt.id)).filter(Hunt.created_at >= _since(7)).scalar() or 0, 0)
+    hunts_30d = q(lambda: db.query(func.count(Hunt.id)).filter(Hunt.created_at >= _since(30)).scalar() or 0, 0)
+    avg_findings = q(lambda: round(float(db.query(func.coalesce(func.avg(Hunt.findings), 0)).scalar() or 0), 2), 0)
+    hunt_dates = q(lambda: [r[0] for r in db.query(Hunt.created_at).filter(Hunt.created_at >= _since(30)).all()], [])
 
-    total_findings = db.query(func.count(Finding.id)).scalar() or 0
-    sev_rows = db.query(Finding.severity, func.count(Finding.id)).group_by(Finding.severity).all()
-    findings_by_severity = {(s or "?"): int(c) for s, c in sev_rows}
-    fstatus_rows = db.query(Finding.status, func.count(Finding.id)).group_by(Finding.status).all()
-    findings_by_status = {(s or "?"): int(c) for s, c in fstatus_rows}
-    bounty_total = round(float(db.query(func.coalesce(func.sum(Finding.amount), 0)).scalar() or 0), 2)
+    total_findings = q(lambda: db.query(func.count(Finding.id)).scalar() or 0, 0)
+    findings_by_severity = q(lambda: {(s or "?"): int(c) for s, c in
+                                      db.query(Finding.severity, func.count(Finding.id)).group_by(Finding.severity).all()}, {})
+    findings_by_status = q(lambda: {(s or "?"): int(c) for s, c in
+                                    db.query(Finding.status, func.count(Finding.id)).group_by(Finding.status).all()}, {})
+    bounty_total = q(lambda: round(float(db.query(func.coalesce(func.sum(Finding.amount), 0)).scalar() or 0), 2), 0)
 
-    active_agents_7d = db.query(func.count(Agent.id)).filter(Agent.last_seen >= _since(7)).scalar() or 0
-    wau = db.query(func.count(func.distinct(Hunt.user_id))).filter(Hunt.created_at >= _since(7)).scalar() or 0
-    mau = db.query(func.count(func.distinct(Hunt.user_id))).filter(Hunt.created_at >= _since(30)).scalar() or 0
+    active_agents_7d = q(lambda: db.query(func.count(Agent.id)).filter(Agent.last_seen >= _since(7)).scalar() or 0, 0)
+    wau = q(lambda: db.query(func.count(func.distinct(Hunt.user_id))).filter(Hunt.created_at >= _since(7)).scalar() or 0, 0)
+    mau = q(lambda: db.query(func.count(func.distinct(Hunt.user_id))).filter(Hunt.created_at >= _since(30)).scalar() or 0, 0)
 
     referrals = Counter()
-    for (prof,) in db.query(User.profile).filter(User.profile.isnot(None)).all():
+    for (prof,) in q(lambda: db.query(User.profile).filter(User.profile.isnot(None)).all(), []):
         try:
             src = (json.loads(prof) or {}).get("referral")
         except Exception:
