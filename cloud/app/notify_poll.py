@@ -29,6 +29,7 @@ except Exception:   # noqa: BLE001
 
 _LOCK_KEY = 718293
 _POLL = max(15, int(os.environ.get("NOTIFY_POLL_SECONDS", "60") or 60))
+_BUILD = "alerts-build: per-cycle-lock-v2 (2026-11-21)"
 _started = False
 _guard = threading.Lock()
 
@@ -63,6 +64,7 @@ def start():
         if _started:
             return
         _started = True
+    print(f"[notify] {_BUILD}")
     threading.Thread(target=_run, name="notify-poll", daemon=True).start()
     print("[notify] poller thread started")
 
