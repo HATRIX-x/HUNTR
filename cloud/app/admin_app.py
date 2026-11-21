@@ -42,6 +42,16 @@ from .auth import (
 )
 
 app = FastAPI(title="HUNTR Admin", docs_url=None, redoc_url=None, openapi_url=None)
+
+
+@app.on_event("startup")
+def _boot_notifier():
+    """Start the founder-alert poller (one worker wins the advisory lock)."""
+    try:
+        from .notify_poll import start
+        start()
+    except Exception as e:   # noqa: BLE001
+        print(f"[notify] start failed: {e}")
 # NO CORS middleware on purpose: the page and its data endpoint are same-origin (admin.huntr.run),
 # so nothing else is allowed to script this app in a logged-in admin's browser.
 
