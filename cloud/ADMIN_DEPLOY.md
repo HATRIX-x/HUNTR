@@ -9,30 +9,41 @@ so no bug in the public API can reach it. Code: `cloud/app/admin_app.py`.
 - **Process isolation** — the admin endpoints never exist in the public API process.
 - **Own login** — `localStorage` is per-origin, so the admin subdomain can't reuse the main site's
   session. The app authenticates you directly against the shared `users` table using your existing
-  password + TOTP (+ single-use backup codes) and the same DB-backed lockout.
+  password + TOTP (+ single-use backup codes) and the same DB-backed lockout (reused from app.auth).
 - **Fail-closed** — access is gated by `ADMIN_EMAILS`. Unset ⇒ nobody is an admin.
 
-## One-time setup (Railway dashboard)
+## Railway service setup
 
-1. **New service** in the same Railway project, from the same GitHub repo.
-2. **Root Directory** = `cloud`.
-3. **Config-as-code path** = `cloud/railway.admin.toml` (sets the start command + `/health` check).
-   - Or skip the file and set a Custom Start Command:
-     `gunicorn app.admin_app:app -k uvicorn.workers.UvicornWorker -w 2 -b 0.0.0.0:$PORT`
-4. **Variables** (Service → Variables):
-   - `DATABASE_URL` → reference the **same Postgres** as the API (`${{Postgres.DATABASE_URL}}`).
-   - `ADMIN_EMAILS` → your email(s), comma-separated (e.g. `moustafa.rashid1001@gmail.com`).
-   - `SECRET_KEY` → a **new, distinct** random value (NOT the API's). Distinct = admin tokens and API
-     tokens can't be used against each other. Generate: `python3 -c "import secrets;print(secrets.token_urlsafe(48))"`.
+Create a second service in the same project, from the same GitHub repo.
+
+1. **Settings → Source**
+   - **Source Repo**: `HATRIX-x/HUNTR`
+   - **Root Directory**: `cloud`
+   - **Branch connected to production**: **`integrate`** — this is the branch that contains
+     `admin_app.py` AND the auth functions it imports (verify_totp / is_locked / lockout / backup
+     codes). `main` is currently ~184 commits behind and is MISSING those functions, so a build from
+     `main` would crash on import. (Promote integrate→main first if you want to deploy from `main`.)
+2. **Settings → Deploy → Custom Start Command** (required):
+   ```
+   gunicorn app.admin_app:app -k uvicorn.workers.UvicornWorker -w 2 -b 0.0.0.0:$PORT
+   ```
+   The repo's `cloud/Dockerfile` is the API's — its `CMD` runs `app.main:app`. This start command
+   overrides it so the service runs the ADMIN app, not a second copy of the public API.
+   (Config-as-code / a `railway.*.toml` is deprecated on Railway — use this field instead.)
+3. **Variables**:
+   - `DATABASE_URL` → the **same Postgres** as the API (`${{Postgres.DATABASE_URL}}`).
+   - `ADMIN_EMAILS` → your email(s), comma-separated.
+   - `SECRET_KEY` → a **new, distinct** random value (NOT the API's), so admin and API tokens can't be
+     used against each other. Generate: `python3 -c "import secrets;print(secrets.token_urlsafe(48))"`.
    - (optional) `AUTH_MAX_FAILURES`, `AUTH_LOCK_MINUTES` — lockout tuning (defaults 5 / 15).
-5. **Custom domain** → add `admin.huntr.run` (or an unguessable subdomain) and point the DNS CNAME at
-   the Railway target it shows.
+4. **Custom domain** → add `admin.huntr.run` (or an unguessable subdomain) and set the CNAME +
+   `_railway-verify` TXT records Railway shows, at your DNS provider.
 
 ## Verify
 
 - `https://admin.huntr.run/health` → `{"ok":true}`
 - Open `https://admin.huntr.run/`, sign in with your account + 2FA → dashboard loads.
-- A non-admin account (or no login) can't read `/metrics.json` (401/opaque 404).
+- A non-admin account (or no login) can't read `/metrics.json` (401 / opaque 404).
 
 ## Hardening options (later, if wanted)
 
