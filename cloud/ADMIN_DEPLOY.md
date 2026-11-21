@@ -25,11 +25,14 @@ Create a second service in the same project, from the same GitHub repo.
      `main` would crash on import. (Promote integrate→main first if you want to deploy from `main`.)
 2. **Settings → Deploy → Custom Start Command** (required):
    ```
-   gunicorn app.admin_app:app -k uvicorn.workers.UvicornWorker -w 2 -b 0.0.0.0:$PORT
+   sh start-admin.sh
    ```
-   The repo's `cloud/Dockerfile` is the API's — its `CMD` runs `app.main:app`. This start command
-   overrides it so the service runs the ADMIN app, not a second copy of the public API.
-   (Config-as-code / a `railway.*.toml` is deprecated on Railway — use this field instead.)
+   The repo's `cloud/Dockerfile` is the API's — its `CMD` runs `app.main:app` on a hardcoded port.
+   This start command overrides it so the service runs the ADMIN app instead. It calls
+   `cloud/start-admin.sh`, which execs gunicorn and binds `$PORT` from inside a real shell — passing
+   `-b 0.0.0.0:$PORT` directly fails ("'$PORT' is not a valid port number") because Railway exec's the
+   start command as raw argv, so `$PORT` never expands. (Config-as-code / `railway.*.toml` is
+   deprecated on Railway — use this field, not a toml.)
 3. **Variables**:
    - `DATABASE_URL` → the **same Postgres** as the API (`${{Postgres.DATABASE_URL}}`).
    - `ADMIN_EMAILS` → your email(s), comma-separated.
