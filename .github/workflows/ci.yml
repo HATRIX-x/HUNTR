@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches-ignore: [integrate]
+    branches-ignore: [integrate, admin-deploy]  # admin-deploy ships only /cloud; engine CI is irrelevant there
   pull_request:
 
 jobs:
