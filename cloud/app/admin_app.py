@@ -289,7 +289,7 @@ _PAGE = r"""<!doctype html>
     padding:28px 20px 76px; max-width:1200px; margin:0 auto;
   }
   h1{font-size:20px;margin:0;letter-spacing:-.01em;font-weight:640}
-  h1 .hl{background:linear-gradient(100deg,#A78BFA,#22D3EE 55%,#4ADE80);
+  h1 .hl{background:linear-gradient(100deg,#A78BFA,#DDD6FE 50%,#4ADE80);
          -webkit-background-clip:text;background-clip:text;color:transparent}
   h2{font-size:11px;text-transform:uppercase;letter-spacing:.17em;color:var(--mut);
      margin:36px 2px 13px;font-weight:600}
