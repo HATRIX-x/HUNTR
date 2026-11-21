@@ -268,44 +268,76 @@ _PAGE = r"""<!doctype html>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>HUNTR · Admin</title>
 <style>
-  :root{ --bg:#0a0710; --panel:#14101f; --panel2:#1b1530; --line:#2a2340;
-         --ink:#ece9f5; --mut:#9b93b5; --accent:#b9a3ff; --pearl:#efe9ff;
-         --good:#6ee7a8; --warn:#ffcf7a; --bad:#ff8a9c; }
+  :root{
+    --bg:#0A0B0D; --surface:#121419; --surface2:#191C23;
+    --fg:#ECEEF2; --mut:#8F95A1; --faint:#7A8190;
+    --line:rgba(255,255,255,0.09); --line2:rgba(255,255,255,0.17);
+    --brand:#A78BFA; --brand2:#C4B5FD; --brand3:#DDD6FE; --brand-deep:#8B6DF0;
+    --green:#4ADE80; --green2:#86EFAC; --bad:#FF5D6C; --warn:#E7B84B;
+    --accent:var(--brand); --pearl:var(--brand3);
+    --rbtn:8px; --rpanel:14px;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,ui-sans-serif,system-ui,sans-serif;
+  }
   *{box-sizing:border-box} html,body{margin:0}
-  body{background:radial-gradient(1200px 600px at 70% -10%, #241a3d 0%, var(--bg) 55%) fixed;
-       color:var(--ink); font:14px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
-       padding:24px 16px 64px; max-width:1180px; margin:0 auto}
-  h1{font-size:19px;margin:0;letter-spacing:.2px} h2{font-size:12px;text-transform:uppercase;
-     letter-spacing:.14em;color:var(--mut);margin:26px 2px 10px;font-weight:600}
-  .top{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
-  .sub{color:var(--mut);font-size:12px}
-  .grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}
-  .card{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);
-        border-radius:14px;padding:14px 15px}
-  .kpi .n{font-size:26px;font-weight:650;letter-spacing:.2px}
-  .kpi .l{color:var(--mut);font-size:12px;margin-top:2px}
-  .kpi .d{font-size:11px;margin-top:6px;color:var(--mut)}
-  .d .up{color:var(--good)} .wide{grid-column:1/-1}
+  body{
+    background:
+      radial-gradient(1000px 520px at 80% -10%, rgba(167,139,250,.12), transparent 60%),
+      radial-gradient(760px 440px at 8% -4%, rgba(74,222,128,.055), transparent 55%),
+      var(--bg);
+    background-attachment:fixed; color:var(--fg);
+    font:14px/1.55 var(--sans); -webkit-font-smoothing:antialiased;
+    padding:28px 20px 76px; max-width:1200px; margin:0 auto;
+  }
+  h1{font-size:20px;margin:0;letter-spacing:-.01em;font-weight:640}
+  h1 .hl{background:linear-gradient(100deg,#A78BFA,#22D3EE 55%,#4ADE80);
+         -webkit-background-clip:text;background-clip:text;color:transparent}
+  h2{font-size:11px;text-transform:uppercase;letter-spacing:.17em;color:var(--mut);
+     margin:36px 2px 13px;font-weight:600}
+  .top{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+       padding-bottom:18px;border-bottom:1px solid var(--line)}
+  .sub{color:var(--mut);font-size:12.5px}
+  .grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
+  .card{position:relative;background:linear-gradient(180deg,var(--surface2),var(--surface));
+        border:1px solid var(--line);border-radius:var(--rpanel);padding:16px 17px;
+        box-shadow:inset 0 1px 0 rgba(255,255,255,.04),0 10px 30px -22px rgba(0,0,0,.9);
+        transition:border-color .2s,transform .2s}
+  .card:hover{border-color:var(--line2);transform:translateY(-1px)}
+  .kpi .n{font-size:30px;font-weight:600;letter-spacing:-.02em;line-height:1.08;
+          font-variant-numeric:tabular-nums}
+  .kpi .l{color:var(--mut);font-size:12.5px;margin-top:5px}
+  .kpi .d{font-size:11.5px;margin-top:9px;color:var(--faint)}
+  .d .up{color:var(--green);font-weight:600}
+  .wide{grid-column:1/-1}
   table{width:100%;border-collapse:collapse;font-size:13px}
-  td,th{padding:6px 8px;text-align:left;border-bottom:1px solid var(--line)}
-  th{color:var(--mut);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.08em}
+  td,th{padding:7px 8px;text-align:left;border-bottom:1px solid var(--line)}
+  tr:last-child td{border-bottom:0}
+  th{color:var(--faint);font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.1em}
   td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
-  .bar{height:8px;border-radius:6px;background:var(--panel);overflow:hidden}
-  .bar>i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--pearl))}
-  .funnel div{display:flex;align-items:center;gap:10px;margin:7px 0}
-  .funnel .lab{width:120px;color:var(--mut);font-size:12px} .funnel .track{flex:1}
-  .funnel .val{width:92px;text-align:right;font-variant-numeric:tabular-nums}
-  svg{display:block;width:100%;height:60px}
+  .bar{height:7px;border-radius:99px;background:rgba(255,255,255,.06);overflow:hidden}
+  .bar>i{display:block;height:100%;border-radius:99px;
+         background:linear-gradient(90deg,var(--brand),var(--brand3))}
+  .funnel div{display:flex;align-items:center;gap:12px;margin:10px 0}
+  .funnel .lab{width:122px;color:var(--mut);font-size:12.5px}
+  .funnel .track{flex:1}
+  .funnel .bar>i{background:linear-gradient(90deg,var(--green),var(--green2))}
+  .funnel .val{width:96px;text-align:right;font-variant-numeric:tabular-nums;font-size:13px}
+  svg{display:block;width:100%;height:64px}
   .muted{color:var(--mut)} .err{color:var(--bad);min-height:18px;font-size:13px}
-  button{cursor:pointer}
-  .btn{background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:9px;
-       padding:6px 12px;font-size:12px}
-  .note{color:var(--mut);font-size:11px;margin-top:4px}
-  .login{max-width:320px;margin:12vh auto 0} .login .card{padding:22px}
-  .login input{width:100%;margin:7px 0;padding:10px 11px;border-radius:9px;border:1px solid var(--line);
-    background:var(--bg);color:var(--ink);font-size:14px}
-  .login button{width:100%;margin-top:8px;padding:10px;border-radius:9px;border:1px solid var(--line);
-    background:linear-gradient(90deg,var(--accent),var(--pearl));color:#1a1030;font-weight:650}
+  button{cursor:pointer;font:inherit}
+  .btn{background:var(--surface2);color:var(--fg);border:1px solid var(--line2);
+       border-radius:var(--rbtn);padding:7px 13px;font-size:12.5px;
+       transition:border-color .2s,background .2s}
+  .btn:hover{border-color:var(--brand);background:rgba(167,139,250,.09)}
+  .note{color:var(--faint);font-size:11px;margin-top:6px}
+  .login{max-width:344px;margin:14vh auto 0}
+  .login .card{padding:24px}
+  .login input{width:100%;margin:7px 0;padding:11px 12px;border-radius:var(--rbtn);
+    border:1px solid var(--line2);background:var(--bg);color:var(--fg);font-size:14px;font:inherit}
+  .login input::placeholder{color:var(--faint)}
+  .login input:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px rgba(167,139,250,.18)}
+  .login button{width:100%;margin-top:10px;padding:11px;border-radius:var(--rbtn);border:0;
+    background:linear-gradient(100deg,var(--brand),var(--brand-deep));color:#0A0B0D;font-weight:660;font-size:14px}
+  .login button:hover{filter:brightness(1.07)}
   .login h1{margin-bottom:4px}
 </style></head>
 <body>
@@ -323,7 +355,7 @@ _PAGE = r"""<!doctype html>
 
   <div id="shell" style="display:none">
   <div class="top">
-    <h1>HUNTR <span class="muted">· Admin</span></h1>
+    <h1><span class="hl">HUNTR</span> <span class="muted">· Admin</span></h1>
     <span class="sub" id="asof">loading…</span>
     <span style="flex:1"></span>
     <button class="btn" onclick="load()">↻ Refresh</button>
