@@ -269,75 +269,79 @@ _PAGE = r"""<!doctype html>
 <title>HUNTR · Admin</title>
 <style>
   :root{
-    --bg:#0A0B0D; --surface:#121419; --surface2:#191C23;
-    --fg:#ECEEF2; --mut:#8F95A1; --faint:#7A8190;
-    --line:rgba(255,255,255,0.09); --line2:rgba(255,255,255,0.17);
-    --brand:#A78BFA; --brand2:#C4B5FD; --brand3:#DDD6FE; --brand-deep:#8B6DF0;
-    --green:#4ADE80; --green2:#86EFAC; --bad:#FF5D6C; --warn:#E7B84B;
-    --accent:var(--brand); --pearl:var(--brand3);
-    --rbtn:8px; --rpanel:14px;
+    --bg:#0A0B0D; --fg:#ECEEF2; --mut:#9AA0AD; --faint:#7A8190;
+    --line:rgba(255,255,255,0.10); --line2:rgba(255,255,255,0.18);
+    --brand:#A78BFA; --brand3:#DDD6FE; --brand-deep:#8B6DF0;
+    --cyan:#22D3EE; --cyan3:#A5F3FC; --green:#4ADE80; --green2:#86EFAC;
+    --bad:#FF5D6C; --warn:#E7B84B; --accent:var(--cyan); --pearl:var(--brand3);
+    --glass:rgba(22,25,33,0.50); --blur:blur(22px) saturate(150%);
+    --rbtn:9px; --rpanel:16px;
+    --grad:linear-gradient(100deg,#A78BFA,#22D3EE 52%,#4ADE80);
     --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,ui-sans-serif,system-ui,sans-serif;
   }
   *{box-sizing:border-box} html,body{margin:0}
-  body{
+  body{background:#0A0B0D;color:var(--fg);font:14px/1.55 var(--sans);
+    -webkit-font-smoothing:antialiased;padding:28px 20px 80px;max-width:1200px;margin:0 auto;
+    position:relative;min-height:100vh}
+  body::before{content:"";position:fixed;inset:-25%;z-index:-1;pointer-events:none;
     background:
-      radial-gradient(1000px 520px at 80% -10%, rgba(167,139,250,.12), transparent 60%),
-      radial-gradient(760px 440px at 8% -4%, rgba(74,222,128,.055), transparent 55%),
-      var(--bg);
-    background-attachment:fixed; color:var(--fg);
-    font:14px/1.55 var(--sans); -webkit-font-smoothing:antialiased;
-    padding:28px 20px 76px; max-width:1200px; margin:0 auto;
-  }
-  h1{font-size:20px;margin:0;letter-spacing:-.01em;font-weight:640}
-  h1 .hl{background:linear-gradient(100deg,#A78BFA,#DDD6FE 50%,#4ADE80);
-         -webkit-background-clip:text;background-clip:text;color:transparent}
-  h2{font-size:11px;text-transform:uppercase;letter-spacing:.17em;color:var(--mut);
-     margin:36px 2px 13px;font-weight:600}
-  .top{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
-       padding-bottom:18px;border-bottom:1px solid var(--line)}
+      radial-gradient(460px 460px at 14% 16%, rgba(167,139,250,.38), transparent 60%),
+      radial-gradient(520px 520px at 84% 10%, rgba(34,211,238,.30), transparent 60%),
+      radial-gradient(560px 560px at 62% 94%, rgba(74,222,128,.24), transparent 62%),
+      radial-gradient(500px 500px at 32% 72%, rgba(139,109,240,.18), transparent 60%);
+    filter:blur(10px);animation:drift 26s ease-in-out infinite alternate}
+  @keyframes drift{from{transform:translate3d(-2%,-1%,0) scale(1)}to{transform:translate3d(2%,2%,0) scale(1.07)}}
+  @media (prefers-reduced-motion:reduce){body::before{animation:none}}
+  h1{font-size:21px;margin:0;letter-spacing:-.01em;font-weight:650}
+  h1 .hl{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+  h2{font-size:11px;text-transform:uppercase;letter-spacing:.18em;color:var(--mut);
+    margin:38px 2px 14px;font-weight:600}
+  .top{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 16px;border-radius:var(--rpanel);
+    background:var(--glass);backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);
+    border:1px solid var(--line);box-shadow:0 1px 0 rgba(255,255,255,.06) inset}
   .sub{color:var(--mut);font-size:12.5px}
-  .grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
-  .card{position:relative;background:linear-gradient(180deg,var(--surface2),var(--surface));
-        border:1px solid var(--line);border-radius:var(--rpanel);padding:16px 17px;
-        box-shadow:inset 0 1px 0 rgba(255,255,255,.04),0 10px 30px -22px rgba(0,0,0,.9);
-        transition:border-color .2s,transform .2s}
-  .card:hover{border-color:var(--line2);transform:translateY(-1px)}
-  .kpi .n{font-size:30px;font-weight:600;letter-spacing:-.02em;line-height:1.08;
-          font-variant-numeric:tabular-nums}
-  .kpi .l{color:var(--mut);font-size:12.5px;margin-top:5px}
-  .kpi .d{font-size:11.5px;margin-top:9px;color:var(--faint)}
-  .d .up{color:var(--green);font-weight:600}
-  .wide{grid-column:1/-1}
-  table{width:100%;border-collapse:collapse;font-size:13px}
+  .grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(172px,1fr))}
+  .card{position:relative;background:var(--glass);backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);
+    border:1px solid var(--line);border-radius:var(--rpanel);padding:17px 18px;overflow:hidden;
+    box-shadow:0 1px 0 rgba(255,255,255,.07) inset, 0 24px 60px -34px rgba(0,0,0,.95);
+    transition:border-color .2s,transform .2s,box-shadow .2s}
+  .card::after{content:"";position:absolute;inset:0 0 auto 0;height:42%;pointer-events:none;
+    background:linear-gradient(180deg,rgba(255,255,255,.06),transparent)}
+  .card:hover{border-color:var(--line2);transform:translateY(-2px);
+    box-shadow:0 1px 0 rgba(255,255,255,.1) inset, 0 30px 70px -32px rgba(0,0,0,.95), 0 0 0 1px rgba(34,211,238,.14)}
+  .kpi .n{font-size:31px;font-weight:600;letter-spacing:-.02em;line-height:1.08;font-variant-numeric:tabular-nums;position:relative}
+  .kpi .l{color:var(--mut);font-size:12.5px;margin-top:5px;position:relative}
+  .kpi .d{font-size:11.5px;margin-top:9px;color:var(--faint);position:relative}
+  .d .up{color:var(--green);font-weight:600} .wide{grid-column:1/-1}
+  table{width:100%;border-collapse:collapse;font-size:13px;position:relative}
   td,th{padding:7px 8px;text-align:left;border-bottom:1px solid var(--line)}
   tr:last-child td{border-bottom:0}
   th{color:var(--faint);font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.1em}
   td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
-  .bar{height:7px;border-radius:99px;background:rgba(255,255,255,.06);overflow:hidden}
-  .bar>i{display:block;height:100%;border-radius:99px;
-         background:linear-gradient(90deg,var(--brand),var(--brand3))}
-  .funnel div{display:flex;align-items:center;gap:12px;margin:10px 0}
+  .bar{height:7px;border-radius:99px;background:rgba(255,255,255,.08);overflow:hidden}
+  .bar>i{display:block;height:100%;border-radius:99px;background:var(--grad)}
+  .funnel div{display:flex;align-items:center;gap:12px;margin:10px 0;position:relative}
   .funnel .lab{width:122px;color:var(--mut);font-size:12.5px}
   .funnel .track{flex:1}
-  .funnel .bar>i{background:linear-gradient(90deg,var(--green),var(--green2))}
-  .funnel .val{width:96px;text-align:right;font-variant-numeric:tabular-nums;font-size:13px}
-  svg{display:block;width:100%;height:64px}
+  .funnel .val{width:98px;text-align:right;font-variant-numeric:tabular-nums;font-size:13px}
+  svg{display:block;width:100%;height:66px;position:relative}
   .muted{color:var(--mut)} .err{color:var(--bad);min-height:18px;font-size:13px}
   button{cursor:pointer;font:inherit}
-  .btn{background:var(--surface2);color:var(--fg);border:1px solid var(--line2);
-       border-radius:var(--rbtn);padding:7px 13px;font-size:12.5px;
-       transition:border-color .2s,background .2s}
-  .btn:hover{border-color:var(--brand);background:rgba(167,139,250,.09)}
-  .note{color:var(--faint);font-size:11px;margin-top:6px}
-  .login{max-width:344px;margin:14vh auto 0}
-  .login .card{padding:24px}
-  .login input{width:100%;margin:7px 0;padding:11px 12px;border-radius:var(--rbtn);
-    border:1px solid var(--line2);background:var(--bg);color:var(--fg);font-size:14px;font:inherit}
+  .btn{background:rgba(255,255,255,.05);color:var(--fg);border:1px solid var(--line2);border-radius:var(--rbtn);
+    padding:8px 14px;font-size:12.5px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+    transition:border-color .2s,background .2s}
+  .btn:hover{border-color:var(--cyan);background:rgba(34,211,238,.10)}
+  .note{color:var(--faint);font-size:11px;margin-top:6px;position:relative}
+  .login{max-width:360px;margin:13vh auto 0}
+  .login .card{padding:26px}
+  .login input{width:100%;margin:7px 0;padding:12px;border-radius:var(--rbtn);border:1px solid var(--line2);
+    background:rgba(10,11,13,.5);color:var(--fg);font-size:14px;font:inherit;
+    backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
   .login input::placeholder{color:var(--faint)}
-  .login input:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px rgba(167,139,250,.18)}
-  .login button{width:100%;margin-top:10px;padding:11px;border-radius:var(--rbtn);border:0;
-    background:linear-gradient(100deg,var(--brand),var(--brand-deep));color:#0A0B0D;font-weight:660;font-size:14px}
-  .login button:hover{filter:brightness(1.07)}
+  .login input:focus{outline:none;border-color:var(--cyan);box-shadow:0 0 0 3px rgba(34,211,238,.18)}
+  .login button{width:100%;margin-top:11px;padding:12px;border-radius:var(--rbtn);border:0;
+    background:var(--grad);color:#07131A;font-weight:680;font-size:14px}
+  .login button:hover{filter:brightness(1.08)}
   .login h1{margin-bottom:4px}
 </style></head>
 <body>
