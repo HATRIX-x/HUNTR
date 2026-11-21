@@ -17,46 +17,34 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+# Use the unified LLM client
+import llm_client
+
+
 def arg(n, d=None):
     return sys.argv[sys.argv.index(n) + 1] if n in sys.argv else d
 
-TEXT = arg("--text") or (sys.stdin.read() if not sys.stdin.isatty() else "")
-MODELS = ["claude-haiku-4-5"] if os.environ.get("HUNT_LLM") == "haiku" else \
-         ["claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5"]
 
 def out(d):
     print(json.dumps(d)); sys.exit(0)
+
+
+TEXT = arg("--text") or (sys.stdin.read() if not sys.stdin.isatty() else "")
 
 if not TEXT.strip():
     out({"in_scope": [], "out_of_scope": [], "error": "no text"})
 
 
-def llm(system, user, max_tokens=1800, timeout=90):
-    try:
-        import urllib.request, urllib.error, time as _t
-        from llm_auth import llm_headers
-        hdrs, _ = llm_headers()
-        if not hdrs:
-            return None
-        hdrs["content-type"] = "application/json"
-        for m in MODELS:
-            body = json.dumps({"model": m, "max_tokens": max_tokens, "system": system,
-                               "messages": [{"role": "user", "content": user}]}).encode()
-            for attempt in range(3):
-                try:
-                    req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=body, headers=hdrs, method="POST")
-                    with urllib.request.urlopen(req, timeout=timeout) as r:
-                        data = json.loads(r.read())
-                    return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
-                except urllib.error.HTTPError as e:
-                    if e.code == 429 and attempt < 2:
-                        _t.sleep(2 * (attempt + 1)); continue
-                    break
-                except Exception:
-                    break
-        return None
-    except Exception:
-        return None
+# Program-page parsing is a cheap, public-data summarization task → Haiku 5.5 (operator choice).
+INTAKE_MODEL = os.environ.get("HUNT_MODEL_INTAKE", "claude-haiku-5-5")
+
+_LAST_ERR = {"e": ""}
+
+def llm(system, user, max_tokens=1800, timeout=120):
+    text, err = llm_client.call_llm(system, user, model=INTAKE_MODEL, max_tokens=max_tokens, timeout=timeout)
+    if err:
+        _LAST_ERR["e"] = str(err)
+    return text
 
 
 def ljson(system, user, **kw):
@@ -94,19 +82,73 @@ def regex_fallback(text):
             "out_of_scope": out_scope[:40], "rewards": "", "ua_required": "", "notes": "(regex fallback — LLM unavailable)"}
 
 
-SYS = ("You organize a bug-bounty PROGRAM PAGE into a precise, machine-usable scope. From the pasted text "
-       "extract ONLY what the program states. Classify each in-scope asset by type: 'web' (web app / domain), "
-       "'api' (API host/base), 'mobile' (app/APK/package), 'source' (a GitHub/GitLab repo), or 'other'. "
-       "Keep wildcards exactly as written (e.g. *.example.com). Put anything the program marks out-of-scope "
-       "(hosts, paths, or classes of asset) in out_of_scope so the hunt avoids it. Reply STRICT JSON only: "
-       "{\"in_scope\":[{\"asset\":\"..\",\"type\":\"web|api|mobile|source|other\"}],\"out_of_scope\":[\"..\"],"
-       "\"rewards\":\"one short line\",\"ua_required\":\"required user-agent string/suffix if any, else empty\","
-       "\"notes\":\"one-line key rule (e.g. test only your own account)\"}. No prose outside the JSON.")
+SYS = ("You are a bug-bounty intake analyst. Turn a pasted PROGRAM PAGE into a precise, machine-usable "
+       "summary. Extract ONLY what the program EXPLICITLY lists — never invent, and NEVER treat page noise "
+       "as scope: ignore navigation menus, the top-hackers/leaderboard, stats, analytics/cookie domains "
+       "(_ga, utm, anything from a cookie file), and generic mentions of the company name. An in-scope asset "
+       "is one that appears in the program's SCOPE / ASSETS / 'In Scope' list with an eligibility or reward.\n"
+       "For EACH in-scope asset give: asset (the exact identifier — a domain, wildcard kept verbatim, API "
+       "name, app name, or repo), type in {web, api, mobile, source, executable, other} (REST API→api; "
+       "CLI/Agent/Desktop binaries→executable; mobile/iOS/Android app→mobile; SDK/MCP→other; GitHub/GitLab "
+       "repo→source; site/domain/web app→web), and cap = the asset's max severity if the page states one "
+       "(Critical/High/Medium/Low) else \"\". DEDUPE assets. Put every asset the page marks out-of-scope / "
+       "excluded / ineligible in out_of_scope (with a brief reason).\n"
+       "`targets` = clean, ready-to-hunt strings an operator pastes to start (bare hosts/wildcards/repo URLs "
+       "from the WEB/API/source assets; omit client-app/SDK/executable entries that aren't a URL).\n"
+       "Return ONLY this JSON, no prose, no code fences:\n"
+       "{\"program\":\"\",\"platform\":\"\",\"in_scope\":[{\"asset\":\"\",\"type\":\"\",\"cap\":\"\"}],"
+       "\"out_of_scope\":[],\"targets\":[],\"rewards\":\"\",\"severity_rewards\":[{\"severity\":\"\",\"amount\":\"\"}],"
+       "\"focus\":[],\"rules\":[],\"poc_required\":false,\"rate_limit\":\"\",\"ua_required\":\"\","
+       "\"ai_policy\":\"\",\"summary\":\"\"}\n"
+       "`rewards` = the overall range (e.g. '$250–$50,000'); `severity_rewards` = the per-tier table if given. "
+       "`rate_limit` = any request-rate cap (e.g. '2 req/s'). `rules` = the 4-8 MOST important do/don'ts "
+       "(PoC requirement, trial-setup/registration tokens like [BUGBOUNTY], no-DoS, no customer-data/testing, "
+       "tool bans e.g. no Burp screenshots, disclosure, AI-report policy). `focus` = vuln classes the program "
+       "says it values. `summary` = 2-3 sentence operator briefing. Absent → \"\" / [] / false.")
 
-d = ljson(SYS, TEXT[:14000])
-if not isinstance(d, dict) or not d.get("in_scope"):
-    d = regex_fallback(TEXT)
-# normalize
-d.setdefault("out_of_scope", []); d.setdefault("rewards", ""); d.setdefault("ua_required", ""); d.setdefault("notes", "")
-d["in_scope"] = [x for x in d.get("in_scope", []) if isinstance(x, dict) and x.get("asset")]
-out(d)
+
+def main():
+    if not TEXT.strip():
+        out({"in_scope": [], "out_of_scope": [], "error": "no text"})
+
+    # Program pages are long — the asset table, rewards, and rules often sit in the LAST third (a 15k cut
+    # dropped them entirely on Files.com). Claude handles 48k fine. Strip an appended Netscape cookie file
+    # (the "# Netscape HTTP Cookie File" block) so cookie domains aren't mistaken for in-scope assets.
+    body = TEXT
+    cut = body.find("# Netscape HTTP Cookie File")
+    if cut > 500:
+        body = body[:cut]
+    body = body[:48000]
+    parsed = ljson(SYS, body, max_tokens=2600)
+    if not parsed:
+        parsed = ljson(SYS, body, max_tokens=3500)
+    if not parsed:
+        # If the LLM was rate-limited / auth-blocked, say so clearly instead of returning a garbage
+        # regex summary that looks like a real parse.
+        le = _LAST_ERR["e"].lower()
+        if any(k in le for k in ("limit", "resets", "/login", "rate", "quota", "credit")):
+            out({"in_scope": [], "out_of_scope": [], "targets": [],
+                 "error": "LLM unavailable (session limit / auth). " + _LAST_ERR["e"][:160] +
+                          " — wait for reset or switch the intake account."})
+        out(regex_fallback(TEXT))
+
+    # Ensure keys + types
+    for k in ("in_scope", "out_of_scope", "targets", "severity_rewards", "focus", "rules"):
+        if not isinstance(parsed.get(k), list):
+            parsed[k] = []
+    for k in ("program", "platform", "rewards", "ua_required", "ai_policy", "rate_limit", "summary", "notes"):
+        parsed.setdefault(k, "")
+    parsed.setdefault("poc_required", False)
+
+    # Derive clean targets if the model didn't: bare hosts/wildcards/repos from in_scope.
+    if not parsed["targets"] and parsed["in_scope"]:
+        for a in parsed["in_scope"]:
+            asset = (a.get("asset") if isinstance(a, dict) else str(a)).strip()
+            if asset:
+                parsed["targets"].append(re.sub(r"^https?://", "", asset).rstrip("/"))
+    parsed["model"] = INTAKE_MODEL
+    out(parsed)
+
+
+if __name__ == "__main__":
+    main()

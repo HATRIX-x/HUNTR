@@ -25,7 +25,7 @@ Usage:
 Only run against objects in accounts you own on an in-scope program.
 Exit: 0 clean · 1 findings.
 """
-import sys, re, json, time, ssl, hashlib
+import os, sys, re, json, time, ssl, hashlib
 from pathlib import Path
 from urllib.request import Request, build_opener, HTTPSHandler, HTTPHandler
 from urllib.error import HTTPError
@@ -92,6 +92,10 @@ def send(url, body, headers, method, token, timeout=8):
     h = dict(headers)
     if token:
         h["Authorization"] = token if " " in token else f"Bearer {token}"
+    # NB: this scanner must NOT route through CDP. IDOR/BOLA compares identity A vs identity B by their
+    # tokens; CDP's in-page fetch always attaches the logged-in session cookie (credentials:include), so
+    # BOTH "identities" would ride the same cookie session → no real cross-user diff. Stays on urllib,
+    # where the Authorization token (and absence of a cookie) is controlled exactly.
     opener = build_opener(HTTPSHandler(context=ctx()), HTTPHandler())
     req = Request(url, data=body, headers=h, method=method.upper())
     try:
@@ -146,16 +150,26 @@ def main():
     for idv in ids:
         tested += 1
         url, body, headers = build_request(base_url, id_field, idv, method, data_tpl)
-        sa, za, _ = send(url, body, headers, method, token_a)
+        sa, za, _ba = send(url, body, headers, method, token_a)
         if token_b is not None:
-            sb, zb, _ = send(url, body, headers, method, token_b)
+            sb, zb, bb = send(url, body, headers, method, token_b)
         else:
-            sb, zb = 0, 0
+            sb, zb, bb = 0, 0, ""
 
         owner_ok = sa == 200 and za > 0
         if owner_ok:
             numeric_ok += 1
-        cross = token_b is not None and sb == 200 and similar(za, zb)
+        # Size-similarity alone doesn't prove B actually received A's private data — many APIs return
+        # a generic 200 "not found"/"access denied" WRAPPER object even when access control correctly
+        # denied the request at the business-logic level, and that wrapper can coincidentally land
+        # within similar()'s 10% size band purely by chance (most such wrappers are similarly small/
+        # shaped). Require B's body to not look like a denial, and to not be empty/trivial — real
+        # cross-account object exposure is content, not just a size that happens to match.
+        looks_denied = bool(bb) and re.search(
+            r'\b(not[_ ]?found|forbidden|denied|unauthoriz|no access|does not exist|access[_ ]?denied)\b',
+            bb, re.I)
+        cross = (token_b is not None and sb == 200 and similar(za, zb)
+                 and not looks_denied and bb.strip() not in ("", "{}", "[]", "null"))
         verdict = "IDOR" if (owner_ok and cross) else ("owner-only" if owner_ok else "no-object")
 
         if verdict == "IDOR":

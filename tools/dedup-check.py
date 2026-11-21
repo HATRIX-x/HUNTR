@@ -26,6 +26,12 @@ def arg(name, default=""):
 
 def norm_ep(ep):
     ep = ep.lower().split("?")[0]
+    # BUG FIX (2026-10-21): a dashed UUID (8-4-4-4-12 hex) must be matched BEFORE the bare-hex-run
+    # pattern below — that pattern has no dash in its character class, so on its own it only eats a
+    # UUID's first 8-char chunk and leaves the rest ("-6158-4260-...") sitting in the "normalized"
+    # path, so two findings on two different UUIDs of the same endpoint never actually matched.
+    # Found via hunt-run.py's _find_sig() having the identical flaw — see [[hunt-run.py:_find_sig]].
+    ep = re.sub(r"/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "/{id}", ep)
     ep = re.sub(r"/\d+", "/{id}", ep)
     ep = re.sub(r"/[0-9a-f]{8,}", "/{id}", ep)
     return ep
@@ -72,17 +78,35 @@ def main():
                 cands.append((f"disclosed:known.md:{i}", 0.4 + 0.12 * len(ov), line.strip()[:90]))
 
     cands.sort(key=lambda c: -c[1])
+    as_json = "--json" in sys.argv
+    # NOTE: this was the previously-invisible integration bug — hunt-run.py's automated cross-corpus
+    # dedup pass (phase_verify) calls this tool expecting a JSON line (dup_score/dup/duplicate_pct),
+    # but this tool only ever printed human text. tool_json() silently got back `None` for EVERY
+    # finding, in EVERY hunt, forever — f["dup"] was never actually set by this path. Nothing threw,
+    # nothing logged, so it was invisible until hunt-run.py's tool_json() classification surfaced it
+    # as "no-json-output". --json closes that gap without changing the default manual/CLI behavior.
     if not cands:
-        print(f"[dedup] UNIQUE (no candidate matches) — class={cls} endpoint={nep}")
-        n_known = len((known.read_text().splitlines()) if known.exists() else [])
-        print(f"        checked: known.md ({n_known} lines), submitted.jsonl "
-              f"({'present' if sub.exists() else 'none'}). Safe to proceed to report.")
+        if as_json:
+            print(json.dumps({"dup_score": 0, "verdict": "unique", "candidates": []}))
+        else:
+            print(f"[dedup] UNIQUE (no candidate matches) — class={cls} endpoint={nep}")
+            n_known = len((known.read_text().splitlines()) if known.exists() else [])
+            print(f"        checked: known.md ({n_known} lines), submitted.jsonl "
+                  f"({'present' if sub.exists() else 'none'}). Safe to proceed to report.")
         sys.exit(0)
-    print(f"[dedup] {len(cands)} CANDIDATE(S) — review before reporting  (class={cls} endpoint={nep})")
-    for src, score, txt in cands[:8]:
-        flag = "‼ LIKELY DUP" if score >= 0.9 else "~ possible"
-        print(f"  {flag}  [{score:.2f}]  {src}\n        {txt}")
-    print("  → If genuinely different (different param/impact/root cause), say why in the report; else drop it.")
+    if as_json:
+        top = cands[0][1]
+        print(json.dumps({
+            "dup_score": min(100, round(top * 100)),
+            "verdict": "dup" if top >= 0.9 else "possible",
+            "candidates": [{"source": s, "score": round(sc, 2), "text": t[:200]} for s, sc, t in cands[:8]],
+        }))
+    else:
+        print(f"[dedup] {len(cands)} CANDIDATE(S) — review before reporting  (class={cls} endpoint={nep})")
+        for src, score, txt in cands[:8]:
+            flag = "‼ LIKELY DUP" if score >= 0.9 else "~ possible"
+            print(f"  {flag}  [{score:.2f}]  {src}\n        {txt}")
+        print("  → If genuinely different (different param/impact/root cause), say why in the report; else drop it.")
     sys.exit(1)
 
 

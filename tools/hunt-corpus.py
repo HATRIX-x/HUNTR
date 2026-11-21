@@ -77,6 +77,18 @@ def cmd_learn():
     if not rec["type"] or not rec["note"]:
         sys.exit("usage: --learn --type <t> --note <n> [--fam ..] [--stack ..] [--url ..]")
     CORPUS.mkdir(parents=True, exist_ok=True)
+    # idempotent — the engine calls this once per hunt, so a repeat run must not grow the file
+    if LEARNED.exists():
+        for ln in LEARNED.read_text().splitlines():
+            if not ln.strip():
+                continue
+            try:
+                old = json.loads(ln)
+            except Exception:
+                continue
+            if (old.get("type"), old.get("fam"), old.get("url")) == (rec["type"], rec["fam"], rec["url"]):
+                print(f"[corpus] learned: already present ({rec['fam'] or rec['type']}) — skipped")
+                return
     with LEARNED.open("a") as f:
         f.write(json.dumps(rec) + "\n")
     print(f"[corpus] learned: {rec['fam'] or rec['type']} — will be suggested on future {rec['stack']} hunts.")

@@ -69,66 +69,88 @@ def fire_race(url, method, headers, data, count, gate_event):
     for t in threads: t.join(timeout=30)
     return results
 
+# Many APIs return HTTP 200 with an error CODE in the body — such a response is NOT a successful
+# state-change and must be excluded from all race signals (else identical error bodies look like a race).
+_ERR_BODY = re.compile(r'"code"\s*:\s*"?(?:[1-9]\d{3,}|[45]\d\d)'
+                       r'|"(?:status|ret|errno)"\s*:\s*(?:[45]\d\d|[1-9]\d{3,})'
+                       r'|unauthor|forbidden|verification\s*failed|not\s*login|invalid|参数|请登录', re.I)
+
+def _is_err(body):
+    return bool(body) and bool(_ERR_BODY.search(body[:600]))
+
 def analyze(results):
     statuses = [r["status"] for r in results]
     bodies = [r["body"] for r in results]
     counts = {}
     for s in statuses:
         counts[s] = counts.get(s, 0) + 1
-    # success count
     success = sum(1 for s in statuses if 200 <= s < 300)
     created = sum(1 for s in statuses if s == 201)
     errors  = [s for s in statuses if s >= 400]
-    # check for duplicate IDs in bodies
-    ids = []
-    for body in bodies:
-        for m in re.finditer(r'"(?:id|order_id|transaction_id|coupon_id|code)"\s*:\s*"?(\w{4,})"?', body, re.I):
-            ids.append(m.group(1))
-    id_dupes = len(ids) != len(set(ids))
-    # numeric value divergence (balance, amount, credits)
+
+    # ONLY genuine successful, non-error responses can evidence a state-change race. An error body (incl.
+    # HTTP-200-wrapped errors) or a read returning the same payload is not a race. (Killed 5 FPs on cointr:
+    # identical error bodies read as "duplicate_id", rate-limit 429 read as "toctou".)
+    ok_bodies = [r["body"] for r in results if 200 <= r["status"] < 300 and not _is_err(r["body"])]
+    distinct_ok = len(set(ok_bodies))
+
+    findings = []
+    # If there is no real multi-success, or every success is byte-identical (idempotent read / cached /
+    # same error), there is nothing to race — return a LEAD at most, never a confirmed finding.
+    if len(ok_bodies) < 2 or distinct_ok < 1:
+        return findings, counts, success
+
+    # resource-id duplication — only across DISTINCT successful creates (not identical responses, no `code`)
+    # BUG FIX (2026-10-19): the old version pooled every matched id from every response into one FLAT
+    # list and checked that whole pool for a duplicate. A perfectly normal, single, non-racing
+    # response that echoes the same resource id in two places — a wrapper field plus a nested object,
+    # e.g. {"id":"X","order":{"id":"X",...}} — is a common REST pattern and produces a "duplicate"
+    # within that ONE response alone, with no second request involved at all. Dedup ids PER RESPONSE
+    # first (a set, not a list) so only an id appearing in TWO OR MORE DIFFERENT successful responses
+    # — the actual race-collision signal — counts.
+    per_body_ids = []
+    for body in ok_bodies:
+        per_body_ids.append(set(
+            m.group(1) for m in re.finditer(
+                r'"(?:id|order_id|orderId|transaction_id|txId|coupon_id)"\s*:\s*"?(\w{4,})"?', body, re.I)
+        ))
+    id_counts = {}
+    for s in per_body_ids:
+        for idv in s:
+            id_counts[idv] = id_counts.get(idv, 0) + 1
+    id_dupes = any(c >= 2 for c in id_counts.values()) and distinct_ok > 1
+
+    # numeric divergence (double-spend) among successful responses
     nums = []
-    for body in bodies:
+    for body in ok_bodies:
         for m in re.finditer(r'"(?:balance|amount|credits?|points?|remaining|count|uses_remaining)"\s*:\s*([\d.]+)', body, re.I):
             nums.append(float(m.group(1)))
     num_diverge = len(set(nums)) > 1
 
-    findings = []
     if created > 1:
-        findings.append({
-            "type": "duplicate_creation",
-            "severity": "high",
+        findings.append({"type": "duplicate_creation", "severity": "high",
             "note": f"{created}/{len(results)} requests returned 201 Created — resource created multiple times in race window",
-            "statuses": counts,
-        })
+            "statuses": counts})
     if id_dupes:
-        findings.append({
-            "type": "duplicate_id",
-            "severity": "critical",
-            "note": f"Same resource ID returned in multiple parallel responses — likely duplicate creation",
-            "statuses": counts,
-        })
+        findings.append({"type": "duplicate_id", "severity": "critical",
+            "note": "Same resource ID across multiple DISTINCT successful parallel creates — duplicate creation in the race window",
+            "statuses": counts})
     if num_diverge:
-        unique_vals = sorted(set(nums))
-        findings.append({
-            "type": "balance_diverge",
-            "severity": "high",
-            "note": f"Numeric value diverged across parallel responses: {unique_vals[:5]} — potential double-spend",
-            "statuses": counts,
-        })
-    if success > 1 and errors and any(s in (409, 429, 423) for s in errors):
-        findings.append({
-            "type": "toctou_window",
-            "severity": "medium",
-            "note": f"{success} success + {len(errors)} 409/429/423 in same window — TOCTOU race condition likely",
-            "statuses": counts,
-        })
-    elif success > 1 and not findings:
-        findings.append({
-            "type": "non_idempotent",
-            "severity": "medium",
-            "note": f"{success}/{len(results)} requests succeeded simultaneously — endpoint may not be idempotent",
-            "statuses": counts,
-        })
+        findings.append({"type": "balance_diverge", "severity": "high",
+            "note": f"Numeric value diverged across successful parallel responses: {sorted(set(nums))[:5]} — potential double-spend",
+            "statuses": counts})
+    # TOCTOU: a genuine check-then-act conflict (409 Conflict / 423 Locked) alongside real successes.
+    # 429 (rate-limit) is NOT a race signal and is excluded.
+    if success > 1 and any(s in (409, 423) for s in errors):
+        findings.append({"type": "toctou_window", "severity": "medium",
+            "note": f"{success} success + {sum(1 for s in errors if s in (409,423))} 409/423 conflict in same window — TOCTOU race",
+            "statuses": counts})
+    elif distinct_ok > 1 and not findings:
+        # DISTINCT successful responses (not identical) with no concrete divergence proof → info lead only.
+        # Identical successes = idempotent read → no finding at all (no noise).
+        findings.append({"type": "non_idempotent", "severity": "info",
+            "note": f"{len(ok_bodies)}/{len(results)} genuine successes in parallel, {distinct_ok} distinct — possibly non-idempotent (LEAD; prove a state effect)",
+            "statuses": counts})
     return findings, counts, success
 
 def main():

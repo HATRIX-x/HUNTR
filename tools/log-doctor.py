@@ -4,7 +4,7 @@ log-doctor — the HUNTR self-healing agent.
 
 Reads the engine's logs (server log, per-hunt run.log / run.json), detects problems
 (missing tools, tracebacks, timeouts, auth failures, tool errors), DIAGNOSES them with
-Claude (via llm_auth — your linked account or API key), auto-fixes the safe ones, and
+the configured LLM (via llm_client), auto-fixes the safe ones, and
 reports the rest with a concrete fix.
 
 Usage:
@@ -12,7 +12,7 @@ Usage:
     --json     machine-readable report (for /api/log-doctor)
     --dry      diagnose only; never apply a fix
     --tail N   lines to read from each log (default 400)
-    --no-llm   skip the Claude diagnosis, heuristics only
+    --no-llm   skip the LLM diagnosis, heuristics only
 """
 import sys, os, re, json, glob, shutil, subprocess
 from pathlib import Path
@@ -20,9 +20,13 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 HOME = Path.home()
 TOOLS = HOME / ".claude" / "tools"
-AGENT_TOOLS = HOME / ".huntr-agent" / "tools"
+AGENT_TOOLS = HOME / "HUNTR" / "tools"
 ROOT = Path(os.environ.get("HUNTR_HOME", str(HOME / ".huntr")))
 TARGETS = ROOT / "targets"
+
+# Use the unified LLM client
+sys.path.insert(0, str(HERE))
+import llm_client
 
 
 def arg(n, d=None):
@@ -126,25 +130,15 @@ def llm_diagnose(problems):
     if NO_LLM or not problems:
         return []
     try:
-        sys.path.insert(0, str(TOOLS))
-        from llm_auth import llm_headers
-        import urllib.request
-        hdrs, mode = llm_headers()
-        if not hdrs:
-            return []
-        hdrs["content-type"] = "application/json"
         digest = "\n".join(f"- [{p['kind']}/{p['severity']}] {p['signature']} (x{p['count']}) :: {p['detail']}" for p in problems[:20])
         sysmsg = ("You are an SRE for a local bug-bounty engine (Python HTTP server that shells out to "
                   "scanner tools in ~/.claude/tools, driven by a web dashboard). Given log problems, return "
                   "STRICT JSON: {\"diagnoses\":[{\"signature\":\"...\",\"root_cause\":\"...\",\"fix\":\"concrete step\",\"auto_fixable\":true|false}]}. "
                   "Be specific and terse. No prose outside JSON.")
-        body = json.dumps({"model": "claude-haiku-4-5", "max_tokens": 1200,
-                           "system": sysmsg, "messages": [{"role": "user", "content": "Problems:\n" + digest}]}).encode()
-        req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=body, headers=hdrs, method="POST")
-        with urllib.request.urlopen(req, timeout=60) as r:
-            data = json.loads(r.read())
-        txt = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
-        m = re.search(r"\{.*\}", txt, re.S)
+        text, err = llm_client.call_llm(sysmsg, "Problems:\n" + digest, max_tokens=1200)
+        if err:
+            return []
+        m = re.search(r"\{.*\}", text, re.S)
         return json.loads(m.group(0)).get("diagnoses", []) if m else []
     except Exception:
         return []

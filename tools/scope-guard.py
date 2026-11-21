@@ -51,18 +51,41 @@ def load_rules():
 
 
 def rate_limit(host, rps):
-    """Throttle (sleep) to respect the program's max req/s per host — never exceed it."""
+    """Throttle (sleep) to respect the program's max req/s per host — never exceed it.
+
+    scope-guard.py runs as a brand-new subprocess for EVERY request, so this read-last→sleep→
+    write-now sequence must be atomic across concurrent PROCESSES, not just threads — a
+    threading.Lock in one process does nothing for a second scope-guard.py invocation started by
+    another thread/phase at the same moment (hunt-run.py's dual-agent mode deliberately runs two
+    agent threads concurrently against the same host). Without a real lock, two callers can both
+    read the same stale 'last request' timestamp before either writes its update and burst through
+    together — silently violating the program's own rate rule, which is the one thing this function
+    exists to guarantee. fcntl.flock serializes the whole read-check-sleep-write critical section
+    across processes; each caller waits its turn instead of racing."""
     if not rps or rps <= 0:
         return
     RL.mkdir(parents=True, exist_ok=True)
     p = RL / host.replace("/", "_")
+    lockp = RL / (host.replace("/", "_") + ".lock")
     interval = 1.0 / rps
-    now = time.time()
-    last = float(p.read_text()) if p.exists() else 0
-    wait = interval - (now - last)
-    if wait > 0:
-        time.sleep(wait)
-    p.write_text(str(time.time()))
+    try:
+        import fcntl
+        lf = open(lockp, "a+")
+    except Exception:
+        lf = None   # non-POSIX (no fcntl) — fall back to the old unlocked behavior, don't crash
+    if lf is not None:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+    try:
+        now = time.time()
+        last = float(p.read_text()) if p.exists() else 0
+        wait = interval - (now - last)
+        if wait > 0:
+            time.sleep(wait)
+        p.write_text(str(time.time()))
+    finally:
+        if lf is not None:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+            lf.close()
 
 
 def die(code, msg):
@@ -87,20 +110,68 @@ def host_of(url):
     return (urllib.parse.urlparse(url).hostname or "").lower()
 
 
-def in_scope(host):
+def host_variants(url):
+    """Every spelling of a host we may see in the allowlist. urlparse().hostname drops the port but
+    hunt-intake writes scope.allow from the raw target, which keeps it (127.0.0.1:8982) — so a
+    ported target could never match its own allowlist and every request was denied. Return both the
+    bare host and host:port so either spelling matches."""
+    if "://" not in url:
+        url = "http://" + url
+    p = urllib.parse.urlparse(url)
+    h = (p.hostname or "").lower()
+    out = [h] if h else []
+    try:
+        if p.port:
+            out.append("%s:%d" % (h, p.port))
+    except ValueError:
+        pass
+    return [v for v in out if v]
+
+
+def _specificity(pattern):
+    """(tier, -length): an exact literal pattern (no wildcard) is tier 0, always more specific than
+    any wildcard (tier 1); within the same tier, a longer pattern is more specific (it matches a
+    narrower set of hosts). Smaller tuple = more specific, so min() picks it."""
+    return (0 if "*" not in pattern else 1, -len(pattern))
+
+
+def in_scope(host, variants=None):
     if not host:
         return False, "no host parsed from URL"
     allow = load_patterns(ALLOW)
     deny = load_patterns(DENY)
     if not allow:
         return False, f"no allowlist — create {ALLOW} first (run --init)"
+    names = [host] + [v for v in (variants or []) if v != host]
+    # BUG FIX (2026-10-21, caught live): plain "deny always wins" breaks a very common, deliberate
+    # program-scope shape — a broad wildcard marked Ineligible with a SPECIFIC named exception
+    # carved out of it (e.g. Databricks: "*.cloud.databricks.com" is Ineligible, EXCEPT the
+    # operator's own Free Edition workspace, which the program names explicitly as one of only 3
+    # in-scope assets). Under the old rule, that named asset — an EXPLICIT allow-list entry — was
+    # unreachable through scope-guard for the entire hunt because it also happens to match the
+    # broader deny wildcard. Now the MOST SPECIFIC matching pattern wins regardless of which list
+    # it's in (an exact host beats any wildcard; a narrower wildcard beats a broader one); ties
+    # (equal specificity in both lists) still go to deny, the safe default.
+    best = None  # (specificity, is_allow, pattern)
     for d in deny:
-        if host == d or fnmatch.fnmatch(host, d):
-            return False, f"host matches DENY pattern '{d}'"
+        for n in names:
+            if n == d or fnmatch.fnmatch(n, d):
+                cand = (_specificity(d), False, d)
+                if best is None or cand[0] < best[0]:
+                    best = cand
     for a in allow:
-        if host == a or fnmatch.fnmatch(host, a):
-            return True, f"matches allow '{a}'"
-    return False, "host not in allowlist"
+        for n in names:
+            if n == a or fnmatch.fnmatch(n, a):
+                cand = (_specificity(a), True, a)
+                if best is None or cand[0] < best[0]:
+                    best = cand
+    if best is None:
+        return False, "host not in allowlist"
+    _, is_allow, pat = best
+    if is_allow:
+        return True, f"matches allow '{pat}'" + (" (more specific than a conflicting deny)" if any(
+            fnmatch.fnmatch(n, d) or n == d for d in deny for n in names) else "")
+    return False, f"host matches DENY pattern '{pat}'"
 
 
 def audit(rec):
@@ -146,7 +217,7 @@ def main():
         if len(a) < 2:
             die(5, "usage: --check <URL>")
         host = host_of(a[1])
-        ok, why = in_scope(host)
+        ok, why = in_scope(host, host_variants(a[1]))
         print(f"{'ALLOW' if ok else 'DENY '}  {host or '?'}  ::  {why}")
         sys.exit(0 if ok else 2)
 
@@ -165,7 +236,7 @@ def main():
     extra = rest
     host = host_of(url)
 
-    ok, why = in_scope(host)
+    ok, why = in_scope(host, host_variants(url))
     if not ok:
         audit({"method": method, "url": url, "host": host, "decision": "DENY-SCOPE", "reason": why})
         die(2, f"OUT OF SCOPE: {host} — {why}. Not sent. Add it to {ALLOW} only if it is truly in scope.")

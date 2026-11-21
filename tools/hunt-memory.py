@@ -89,6 +89,19 @@ def cmd_add():
            "program": arg("--program", ""), "reward": reward, "outcome": arg("--outcome", ""),
            "text": text.strip()[:2000], "ts": time.strftime("%Y-%m-%d")}
     CORPUS.mkdir(parents=True, exist_ok=True)
+    # idempotent — the engine stores situations once per hunt, a repeat must not duplicate them
+    if MEM.exists():
+        sig = (rec["kind"], rec["cls"], rec["program"], rec["text"][:160])
+        for ln in MEM.read_text(errors="replace").splitlines():
+            if not ln.strip():
+                continue
+            try:
+                old = json.loads(ln)
+            except Exception:
+                continue
+            if (old.get("kind"), old.get("cls"), old.get("program"), (old.get("text") or "")[:160]) == sig:
+                print(f"[memory] already stored ({rec['cls'] or '?'}) — skipped")
+                return
     with MEM.open("a") as f:
         f.write(json.dumps(rec) + "\n")
     print(f"[memory] stored {rec['kind']}/{rec['cls'] or '?'} ({rec['program'] or 'program?'}"

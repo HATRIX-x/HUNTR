@@ -155,9 +155,13 @@ def score_suite(suite, run):
                 hit = (i, f); break
         if hit:
             matched_fi.add(hit[0])
-            exp_rows.append({**ex, "found": True, "verdict": hit[1].get("verdict"), "reco": hit[1].get("reco"), "ev": hit[1].get("ev")})
+            hf = hit[1]
+            proven = bool(hf.get("proven")) or (hf.get("verdict") == "confirmed") \
+                or bool((hf.get("proof") or {}).get("proven"))
+            exp_rows.append({**ex, "found": True, "verdict": hf.get("verdict"), "reco": hf.get("reco"),
+                             "ev": hf.get("ev"), "proven": proven})
         else:
-            exp_rows.append({**ex, "found": False})
+            exp_rows.append({**ex, "found": False, "proven": False})
     found = [e for e in exp_rows if e["found"]]
     recall = round(len(found) / len(expected), 3) if expected else None
     # findings that matched no expected row = "unexpected" (could be real extras or FPs — listed, not punished)
@@ -176,6 +180,22 @@ def score_suite(suite, run):
     unknown_submits = [u for u in truly_unknown if u.get("reco") == "submit"]
     noise_ratio = round(len(findings) / len(found), 2) if found else None  # findings per real bug (lower = cleaner)
     chain_names = [c.get("name", "") if isinstance(c, dict) else str(c) for c in chains]
+    # ── Money-weighted, FP-penalized score (Bet #4) ─────────────────────────────
+    # Bounty $ is power-law: one proven critical > many lows. This metric rewards
+    # PROVEN, high-$ findings and PENALIZES would-be junk submissions (false
+    # positives routed to submit) — the noise that erodes program trust. Volume
+    # can't game it: an unproven or FP finding adds nothing (or costs).
+    BOUNTY = {"c": 5000, "h": 1500, "m": 400, "l": 100, "i": 0}
+    def _b(sev): return BOUNTY.get((sev or "i")[:1].lower(), 0)
+    dollars_possible = sum(_b(e.get("sev")) for e in expected)
+    dollars_found = sum(_b(e.get("sev")) for e in found if e.get("proven"))
+    dollar_recall = round(dollars_found / dollars_possible, 3) if dollars_possible else None
+    fp_submits = len(unknown_submits)                       # submit-ready bugs that aren't in ground truth
+    submit_total = real_to_submit + fp_submits
+    fp_rate = round(fp_submits / submit_total, 3) if submit_total else 0.0
+    proof_rate = round(sum(1 for e in found if e.get("proven")) / len(found), 3) if found else None
+    # HUNTR Score: proof-weighted $-recall, FP-penalized → one volume-proof number in [0,1].
+    huntr_score = round((dollar_recall or 0) * (proof_rate or 0) * (1 - fp_rate), 3) if dollar_recall is not None else None
     return {
         "suite": suite["name"], "target": suite["target"],
         "endpoints": len((run or {}).get("endpoints", [])),
@@ -188,6 +208,10 @@ def score_suite(suite, run):
         "pipeline_ev": (run or {}).get("economics", {}).get("pipeline_ev"),
         "coverage": (run or {}).get("coverage", {}).get("breadth"),
         "status": (run or {}).get("status"),
+        # Bet #4 — money-weighted scoreboard
+        "dollars_found": dollars_found, "dollars_possible": dollars_possible,
+        "dollar_recall": dollar_recall, "fp_rate": fp_rate, "proof_rate": proof_rate,
+        "huntr_score": huntr_score,
         "detail": exp_rows, "unexpected": unexpected,
     }
 
@@ -287,13 +311,56 @@ def main():
         tot_real_submit = sum(r.get("real_routed_to_submit", 0) for r in scored)
         tot_unknown_submit = sum(r.get("unknown_submit_findings", 0) for r in scored)
         tot_findings = sum(r.get("total_findings", 0) for r in scored)
+        tot_proven = sum(1 for r in scored for e in r.get("detail", []) if e.get("found") and e.get("proven"))
+        # ── per-class rollup: find-rate (recall), proof-rate, and FP-rate per vuln class ──
+        per_class = {}
+        for r in scored:
+            for e in r.get("detail", []):
+                k = e.get("class", "?")
+                pc = per_class.setdefault(k, {"expected": 0, "found": 0, "proven": 0, "fp": 0})
+                pc["expected"] += 1
+                if e.get("found"):
+                    pc["found"] += 1
+                    if e.get("proven"):
+                        pc["proven"] += 1
+            # FPs per class = ONLY truly-unknown unexpected findings. A second detection of a bug we
+            # already matched (same class as a found vuln) is a DUPLICATE, not a false positive.
+            found_classes = {e.get("class") for e in r.get("detail", []) if e.get("found")}
+            for u in r.get("unexpected", []):
+                k = _cls_key(u.get("cls")) or (u.get("cls") or "?")
+                if k in found_classes:
+                    continue  # duplicate of a real bug — not an FP
+                pc = per_class.setdefault(k, {"expected": 0, "found": 0, "proven": 0, "fp": 0})
+                pc["fp"] += 1
+        for k, pc in per_class.items():
+            pc["find_rate"] = round(pc["found"] / pc["expected"], 3) if pc["expected"] else None
+            pc["proof_rate"] = round(pc["proven"] / pc["found"], 3) if pc["found"] else None
+            # FP-rate = fp / (found + fp): of what we surfaced for this class, how much was noise
+            denom = pc["found"] + pc["fp"]
+            pc["fp_rate"] = round(pc["fp"] / denom, 3) if denom else None
+        # ── Money-weighted scoreboard rollup (Bet #4) ──
+        tot_dollars_found = sum(r.get("dollars_found", 0) for r in scored)
+        tot_dollars_possible = sum(r.get("dollars_possible", 0) for r in scored)
+        overall_dollar_recall = round(tot_dollars_found / tot_dollars_possible, 3) if tot_dollars_possible else None
+        _submit_total = tot_real_submit + tot_unknown_submit
+        overall_fp_rate = round(tot_unknown_submit / _submit_total, 3) if _submit_total else 0.0
+        overall_proof = round(tot_proven / tot_found, 3) if tot_found else 0.0
+        # HUNTR Score: proof-weighted $-recall, FP-penalized — one volume-proof number in [0,1].
+        huntr_score = round((overall_dollar_recall or 0) * overall_proof * (1 - overall_fp_rate), 3) \
+            if overall_dollar_recall is not None else None
         agg = {
             "suites": len(scored),
             "overall_recall": round(tot_found / tot_exp, 3) if tot_exp else None,
+            "overall_proof_rate": round(tot_proven / tot_found, 3) if tot_found else None,
             "overall_ev_recall": round(tot_real_submit / tot_found, 3) if tot_found else None,
-            "total_expected": tot_exp, "total_found": tot_found, "total_findings": tot_findings,
+            "total_expected": tot_exp, "total_found": tot_found, "total_proven": tot_proven, "total_findings": tot_findings,
             "noise_ratio": round(tot_findings / tot_found, 2) if tot_found else None,
             "unknown_submit_findings": tot_unknown_submit,
+            # Bet #4 — money-weighted scoreboard
+            "dollars_found": tot_dollars_found, "dollars_possible": tot_dollars_possible,
+            "overall_dollar_recall": overall_dollar_recall, "overall_fp_rate": overall_fp_rate,
+            "huntr_score": huntr_score,
+            "per_class": per_class,
         }
     scorecard = {"benchmark": spec.get("name"), "generated": time.time(),
                  "aggregate": agg, "results": results}
@@ -301,12 +368,54 @@ def main():
     out = Path(arg("--out", str(ROOT / "bench" / "scorecard.json")))
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(scorecard, indent=2))
+
+    # ── #5 learning loop proof: append this run to history + show the trend vs last run ──
+    trend = None
+    if agg:
+        hist = ROOT / "bench" / "bench_history.jsonl"
+        prev = None
+        try:
+            if hist.exists():
+                lines = [l for l in hist.read_text().splitlines() if l.strip()]
+                if lines:
+                    prev = json.loads(lines[-1])
+        except Exception:
+            prev = None
+        rec = {"ts": int(time.time()), "recall": agg.get("overall_recall"),
+               "proof_rate": agg.get("overall_proof_rate"), "ev_recall": agg.get("overall_ev_recall"),
+               "noise_ratio": agg.get("noise_ratio"), "found": agg.get("total_found"), "expected": agg.get("total_expected")}
+        try:
+            with open(hist, "a") as fh:
+                fh.write(json.dumps(rec) + "\n")
+        except Exception:
+            pass
+        if prev:
+            def _d(k):
+                a, b = rec.get(k), prev.get(k)
+                return None if a is None or b is None else round(a - b, 3)
+            trend = {"recall": _d("recall"), "proof_rate": _d("proof_rate"), "ev_recall": _d("ev_recall")}
+        scorecard["trend_vs_last"] = trend
+        out.write_text(json.dumps(scorecard, indent=2))
     print("\n=== AGGREGATE ===", flush=True)
     if agg:
         print("  overall recall:    %s  (%d/%d planted vulns found)" % (agg["overall_recall"], agg["total_found"], agg["total_expected"]), flush=True)
+        print("  overall PROOF:     %s  (%d/%d found bugs carried reproduced proof)" % (agg["overall_proof_rate"], agg["total_proven"], agg["total_found"]), flush=True)
         print("  overall EV-recall: %s  (real bugs routed to submit)" % agg["overall_ev_recall"], flush=True)
-        print("  noise ratio:       %sx (%d findings for %d bugs — intra-hunt dedup opportunity)" % (agg["noise_ratio"], agg["total_findings"], agg["total_found"]), flush=True)
+        print("  noise ratio:       %sx (%d findings for %d bugs)" % (agg["noise_ratio"], agg["total_findings"], agg["total_found"]), flush=True)
         print("  unknown submits:   %d  (submit-ready findings outside the planted set)" % agg["unknown_submit_findings"], flush=True)
+        print("  ── money-weighted scoreboard (volume-proof, FP-penalized) ──", flush=True)
+        print("  $-recall:          %s  ($%d of $%d proven impact captured)" % (agg["overall_dollar_recall"], agg["dollars_found"], agg["dollars_possible"]), flush=True)
+        print("  FP-rate (submits): %s  (would-be junk submissions / all submits)" % agg["overall_fp_rate"], flush=True)
+        print("  ►► HUNTR SCORE:    %s  (proof-weighted $-recall, FP-penalized · [0,1])" % agg["huntr_score"], flush=True)
+        print("\n  per-class  (find-rate · proof-rate · fp-rate):", flush=True)
+        for k, pc in sorted(agg.get("per_class", {}).items()):
+            print("    %-10s find %s  proof %s  fp %s   (%d/%d found, %d proven, %d fp)" % (
+                k, pc.get("find_rate"), pc.get("proof_rate"), pc.get("fp_rate"),
+                pc["found"], pc["expected"], pc["proven"], pc["fp"]), flush=True)
+    if agg and scorecard.get("trend_vs_last"):
+        t = scorecard["trend_vs_last"]
+        def _arrow(v): return "—" if v is None else (("▲ +" + str(v)) if v > 0 else (("▼ " + str(v)) if v < 0 else "= 0"))
+        print("\n  trend vs last run:  recall %s · proof %s · ev %s" % (_arrow(t.get("recall")), _arrow(t.get("proof_rate")), _arrow(t.get("ev_recall"))), flush=True)
     print("  scorecard → %s" % out, flush=True)
 
     html = arg("--html")

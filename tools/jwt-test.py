@@ -236,6 +236,37 @@ def main():
     if not is_success(base_status):
         print(f"[jwt-test] WARNING: original token returned {base_status} — results may be unreliable", file=sys.stderr)
 
+    # BUG FIX (2026-10-19): every individual attack test below (alg:none, empty-sig, weak-secret,
+    # RS/HS confusion, kid traversal) confirms SOLELY on `is_success(status)` for its own forged
+    # token — none of them ever compared against a denial case. If this URL simply doesn't enforce
+    # JWT validity at all (a public endpoint, or one that only checks SOME other header/cookie),
+    # EVERY forged token — garbage ones included — gets the same 2xx, and all five attack types
+    # would simultaneously "confirm" as a critical signature bypass with nothing actually bypassed.
+    # A second baseline with an obviously-garbage, unparseable token is the one check that actually
+    # tells us whether this endpoint checks the JWT at all; if it doesn't, no finding below means
+    # anything and we skip testing instead of reporting five confident false positives.
+    garbage_status, _ = send_request(url, "garbage.invalid.token", method, extra_h)
+    jwt_enforced = not is_success(garbage_status)
+    print(f"[jwt-test] garbage-token baseline: HTTP {garbage_status} "
+          f"({'JWT appears enforced' if jwt_enforced else 'WARNING: a garbage token was ALSO accepted — this endpoint does not appear to check JWT validity at all; findings below would not prove anything JWT-specific'})",
+          file=sys.stderr)
+    if not jwt_enforced:
+        result = {
+            "ts": time.strftime("%Y-%m-%d %H:%M"), "url": url, "alg": header.get("alg", "?"),
+            "sub": payload.get("sub", ""), "baseline_status": base_status,
+            "garbage_token_status": garbage_status, "total": 0, "critical": 0, "high": 0,
+            "findings": [],
+            "error": "endpoint accepted a garbage/unparseable token — JWT validity is not being "
+                     "checked on this URL at all, so no JWT-specific attack can be meaningfully tested here",
+        }
+        if out_file:
+            Path(out_file).write_text(json.dumps(result, indent=2))
+        if flag("--json"):
+            print(json.dumps(result)); sys.exit(0)
+        print(f"\n══ JWT test · {url} ══════════════════════════")
+        print("  SKIPPED — a garbage token was accepted too; this endpoint doesn't check JWT validity at all.")
+        sys.exit(0)
+
     all_findings = []
     tests = [
         ("alg:none",      lambda: test_none_alg(token, url, header, payload, method, extra_h)),
@@ -261,6 +292,7 @@ def main():
         "alg": header.get("alg","?"),
         "sub": payload.get("sub",""),
         "baseline_status": base_status,
+        "garbage_token_status": garbage_status,
         "total": len(all_findings),
         "critical": sum(1 for f in all_findings if f.get("severity")=="critical"),
         "high":     sum(1 for f in all_findings if f.get("severity")=="high"),

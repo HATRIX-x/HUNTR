@@ -12,11 +12,12 @@ import re
 import argparse
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
-    import anthropic
+    import llm_client
 except ImportError:
-    print("[!] pip install anthropic")
-    sys.exit(1)
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import llm_client
 
 SKILLS_DIR = Path.home() / ".claude" / "skills"
 
@@ -72,7 +73,7 @@ def get_skill_files(target_skills: list[str] | None = None) -> list[Path]:
     return skills
 
 
-def upgrade_skill(client: anthropic.Anthropic, skill_path: Path) -> tuple[bool, str]:
+def upgrade_skill(skill_path: Path) -> tuple[bool, str]:
     """Upgrade a single skill to god level. Returns (success, message)."""
     content = skill_path.read_text(encoding="utf-8", errors="replace")
 
@@ -88,12 +89,12 @@ def upgrade_skill(client: anthropic.Anthropic, skill_path: Path) -> tuple[bool, 
 
     for attempt in range(3):
         try:
-            msg = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=8192,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            upgraded = msg.content[0].text.strip()
+            upgraded, err = llm_client.call_llm(
+                "You are a senior bug-bounty engineer. Reply with the improved skill only — no preamble.",
+                prompt, max_tokens=8192, timeout=600)
+            if err:
+                raise RuntimeError(err)
+            upgraded = (upgraded or "").strip()
 
             # Validate it returned something real
             if len(upgraded) < len(content) * 0.8:
@@ -108,12 +109,14 @@ def upgrade_skill(client: anthropic.Anthropic, skill_path: Path) -> tuple[bool, 
             size_after = len(upgraded)
             return True, f"{size_before}→{size_after} bytes (+{size_after-size_before})"
 
-        except anthropic.RateLimitError:
-            wait = 60 * (attempt + 1)
-            print(f"  [rate limit] waiting {wait}s...")
-            time.sleep(wait)
-        except anthropic.APIError as e:
-            return False, f"API error: {e}"
+        except RuntimeError as e:
+            msg = str(e)
+            if "429" in msg or "rate" in msg.lower():
+                wait = 60 * (attempt + 1)
+                print(f"  [rate limit] waiting {wait}s...")
+                time.sleep(wait)
+                continue
+            return False, f"API error: {msg}"
         except Exception as e:
             return False, f"error: {e}"
 
@@ -129,12 +132,12 @@ def main():
     args = parser.parse_args()
 
     load_env()
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        print("[!] Set ANTHROPIC_API_KEY in ~/.claude/tools/.env")
+    if not llm_client.llm_available():
+        info = llm_client.llm_info()
+        print(f"[!] No API key for provider {info['provider']!r}. "
+              f"Set NVIDIA_API_KEY (or HUNT_LLM_API_KEY) for Nemotron 3 Ultra.")
         sys.exit(1)
-
-    client = anthropic.Anthropic(api_key=api_key)
+    print(f"[godlevel] engine: {llm_client.llm_info()['provider']} / {llm_client.llm_info()['model']}")
 
     target_skills = args.skills if args.skills else None
     skill_files = get_skill_files(target_skills)
@@ -162,7 +165,7 @@ def main():
         skill_name = skill_path.parent.name if skill_path.name == "SKILL.md" else skill_path.stem
         print(f"[{i}/{len(skill_files)}] Upgrading: {skill_name}...", end=" ", flush=True)
 
-        success, msg = upgrade_skill(client, skill_path)
+        success, msg = upgrade_skill(skill_path)
         if success:
             upgraded += 1
             print(f"✓ {msg}")

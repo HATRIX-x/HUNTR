@@ -71,6 +71,16 @@ def add(invs, t, method, path, marker, note):
     invs.append([t, method, url, marker, note])
 
 
+# BUG FIX (2026-10-18): every "noaccess" (BOLA/IDOR) invariant mined below used to pass the literal
+# TEXT "<VICTIM_MARKER>" as the marker — not an empty placeholder, an actual non-empty string that
+# was never substituted with a real victim-data signature anywhere in the pipeline. invariant-check.
+# py's evaluate() treats a non-empty marker as "check whether THIS exact string appears in the
+# response" — so hit = ("<VICTIM_MARKER>" in body) was always False (that literal text obviously
+# never appears in a real response), which made EVERY noaccess check resolve to "PASS — 200 but
+# victim marker absent", even for a genuine cross-account data leak. The oracle's own documented
+# behavior for "no marker available" is to pass an ACTUAL empty string ("") instead, which makes it
+# treat any 200 as a violation candidate — the fallback this file was supposed to be using all
+# along. Passing "" below activates that existing, already-correct fallback.
 def mine_openapi(spec, invs, edges):
     base = ""
     if spec.get("servers"):
@@ -82,7 +92,7 @@ def mine_openapi(spec, invs, edges):
                 continue
             m = method.upper()
             if m == "GET" and IDPARAM.search(path):
-                add(invs, "noaccess", "GET", full, "<VICTIM_MARKER>", f"BOLA: {path} takes an id — test cross-user read")
+                add(invs, "noaccess", "GET", full, "", f"BOLA: {path} takes an id — test cross-user read")
             if ADMIN.search(path):
                 add(invs, "deny", m, full, "", f"BFLA: {path} looks admin-only — test as low-priv role")
             if m in ("POST", "PUT", "PATCH") and ONCE.search(path):
@@ -106,7 +116,7 @@ def mine_har(har, invs, edges):
         seen.add(url)
         path = re.sub(r"https?://[^/]+", "", url)
         if m == "GET" and re.search(r"/\d{2,}(/|$|\?)", path):
-            add(invs, "noaccess", "GET", url.split("?")[0], "<VICTIM_MARKER>", "BOLA: numeric id in observed request — test cross-user")
+            add(invs, "noaccess", "GET", url.split("?")[0], "", "BOLA: numeric id in observed request — test cross-user")
         if m in ("POST", "PUT", "PATCH") and ONCE.search(path):
             add(invs, "once", m, url.split("?")[0], "", "idempotency: once-only action seen in traffic")
         if ADMIN.search(path):
@@ -120,14 +130,14 @@ def mine_graphql(sdl, invs, edges):
         if MONEY.search(mut):
             add(invs, "rejects", "POST", "/graphql", "", f"value integrity: mutation {mut} — test negative/over-limit")
     if re.search(r"ownerId|userId|tenantId|accountId", sdl):
-        add(invs, "noaccess", "POST", "/graphql", "<VICTIM_MARKER>", "BOLA: type has owner/tenant id — test cross-user query")
+        add(invs, "noaccess", "POST", "/graphql", "", "BOLA: type has owner/tenant id — test cross-user query")
 
 
 def mine_js(js, invs, edges):
     eps = set(re.findall(r"['\"](/(?:api|v\d|graphql)[^'\"?\s]{0,80})['\"]", js))
     for ep in sorted(eps):
         if IDPARAM.search(ep) or re.search(r"/\$\{|/:", ep):
-            add(invs, "noaccess", "GET", (HOST + ep) if HOST else ep, "<VICTIM_MARKER>", "BOLA: id-bearing endpoint referenced in JS")
+            add(invs, "noaccess", "GET", (HOST + ep) if HOST else ep, "", "BOLA: id-bearing endpoint referenced in JS")
         if ONCE.search(ep):
             add(invs, "once", "POST", (HOST + ep) if HOST else ep, "", "idempotency: once-only endpoint in JS")
     if re.search(r"isAdmin|role\s*===|hasRole|isSuperuser|can(Edit|Delete|Admin)", js):

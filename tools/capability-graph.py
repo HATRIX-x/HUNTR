@@ -91,10 +91,57 @@ def render_path(chain, starts):
     return line
 
 
-def main():
-    edges = load()
-    starts = {"anon"} | HAVE
+def analyze(edges, starts):
+    """Pure chain analysis → structured result (no printing). Used by main(),
+    --json, and the tests. proven_chains are finished chains to impact; near are
+    one-or-more-edges-away; best_next is the single highest-leverage edge to prove."""
     impacts = {e["to"]: e["impact"] for e in edges if e["impact"] and e["impact"] != "-"}
+    proven_reach, proven_par = bfs(edges, starts, {"proven"})
+    all_reach, all_par = bfs(edges, starts, {"proven", "partial", "unproven"})
+    proven_chains, near, unreachable = [], [], []
+    best = None
+    for node, sev in sorted(impacts.items(), key=lambda kv: "chml".find(kv[1] or 'l')):
+        if node in proven_reach:
+            proven_chains.append({"node": node, "sev": sev,
+                                  "path": path_to(node, proven_par)})
+        elif node in all_reach:
+            ch = path_to(node, all_par)
+            missing = [e for e in ch if e["status"] != "proven"]
+            near.append({"node": node, "sev": sev, "path": ch, "missing": missing})
+            rank = "chml".find(sev or 'l')
+            if missing and (best is None or (len(missing), rank) < best[0]):
+                best = ((len(missing), rank), node, sev, missing[0])
+        else:
+            unreachable.append(node)
+    best_next = None
+    if best and best[3]:
+        e = best[3]
+        best_next = {"prim": e["prim"], "frm": e["frm"], "to": e["to"],
+                     "unlocks": best[1], "sev": best[2]}
+    return {
+        "nodes": len({e["frm"] for e in edges} | {e["to"] for e in edges}),
+        "edges": len(edges), "start": sorted(starts),
+        "proven_chains": proven_chains, "near": near,
+        "unreachable": unreachable, "best_next": best_next,
+    }
+
+
+def main():
+    starts = {"anon"} | HAVE
+    if "--from-findings" in sys.argv:
+        import json as _json
+        import capability_edges
+        fp = Path(sys.argv[sys.argv.index("--from-findings") + 1])
+        data = _json.loads(fp.read_text())
+        findings = data.get("findings", data) if isinstance(data, dict) else data
+        edges = capability_edges.edges_from_findings(findings)
+    else:
+        edges = load()
+    impacts = {e["to"]: e["impact"] for e in edges if e["impact"] and e["impact"] != "-"}
+    if "--json" in sys.argv:
+        import json as _json
+        print(_json.dumps(analyze(edges, starts)))
+        return
     if "--dot" in sys.argv:
         print("digraph caps {")
         for e in edges:
