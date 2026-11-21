@@ -160,8 +160,10 @@ def notify_status(_: User = Depends(admin_user)):
 def notify_test(_: User = Depends(admin_user)):
     try:
         from .notify_poll import send_test, status
+        from . import notifier
+        sent = bool(send_test())
         st = status()
-        return JSONResponse({"sent": bool(send_test()), **st})
+        return JSONResponse({"sent": sent, "error": notifier.LAST_ERROR, **st})
     except Exception as e:   # noqa: BLE001
         return JSONResponse({"sent": False, "error": str(e)}, status_code=500)
 
