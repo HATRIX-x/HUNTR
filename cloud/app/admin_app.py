@@ -159,8 +159,9 @@ def notify_status(_: User = Depends(admin_user)):
 @app.post("/notify/test", include_in_schema=False)
 def notify_test(_: User = Depends(admin_user)):
     try:
-        from .notify_poll import send_test
-        return JSONResponse({"sent": bool(send_test())})
+        from .notify_poll import send_test, status
+        st = status()
+        return JSONResponse({"sent": bool(send_test()), **st})
     except Exception as e:   # noqa: BLE001
         return JSONResponse({"sent": False, "error": str(e)}, status_code=500)
 
@@ -519,8 +520,9 @@ async function testAlert(){
   try{
     const r=await fetch('/notify/test',{method:'POST',headers:{'Authorization':'Bearer '+tok()}});
     const j=await r.json().catch(()=>({}));
-    if(j.sent){ $('#err').style.color='var(--green)'; $('#err').textContent='✓ Test email sent — check your inbox (and spam/Promotions).'; }
-    else { $('#err').style.color='var(--bad)'; $('#err').textContent='Not sent: '+(j.error||'check RESEND_API_KEY is set on the service'); }
+    if(j.sent){ $('#err').style.color='var(--green)'; $('#err').textContent='✓ Test email sent to '+(j.recipients||[]).join(', ')+' — check inbox + spam/Promotions.'; }
+    else if(j.error){ $('#err').style.color='var(--bad)'; $('#err').textContent='Error: '+j.error; }
+    else { $('#err').style.color='var(--bad)'; $('#err').textContent='Not sent. Service sees → RESEND_API_KEY: '+(j.resend_key_set?'SET':'MISSING')+', SMTP: '+(j.smtp_set?'set':'no')+', recipients: '+JSON.stringify(j.recipients||[])+'. If MISSING, the var isn\'t applied to this container — re-apply it in Variables and redeploy.'; }
   }catch(e){ $('#err').style.color='var(--bad)'; $('#err').textContent='Test failed: '+e.message; }
 }
 
