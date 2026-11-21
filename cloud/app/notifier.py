@@ -31,7 +31,8 @@ def send_email(subject: str, html: str, text: str | None = None) -> bool:
             data = json.dumps({"from": frm, "to": to, "subject": subject, "html": html}).encode()
             req = urllib.request.Request(
                 "https://api.resend.com/emails", data=data, method="POST",
-                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                         "User-Agent": "HUNTR-notifier/1.0", "Accept": "application/json"})
             try:
                 with urllib.request.urlopen(req, timeout=15) as r:
                     r.read()
