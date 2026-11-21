@@ -147,6 +147,24 @@ def health():
     return JSONResponse({"ok": True})
 
 
+@app.get("/notify/status", include_in_schema=False)
+def notify_status(_: User = Depends(admin_user)):
+    try:
+        from .notify_poll import status
+        return JSONResponse(status())
+    except Exception as e:   # noqa: BLE001
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/notify/test", include_in_schema=False)
+def notify_test(_: User = Depends(admin_user)):
+    try:
+        from .notify_poll import send_test
+        return JSONResponse({"sent": bool(send_test())})
+    except Exception as e:   # noqa: BLE001
+        return JSONResponse({"sent": False, "error": str(e)}, status_code=500)
+
+
 # ── metrics (read-only aggregates) ───────────────────────────────────────────────────────────────
 def _since(days: int) -> datetime:
     return datetime.utcnow() - timedelta(days=days)
@@ -421,6 +439,7 @@ _PAGE = r"""<!doctype html>
     <div class="brand"><span class="dot"></span><span class="hl">HUNTR</span>&nbsp;<span class="muted">Admin</span></div>
     <span class="asof" id="asof">loading…</span>
     <span class="sp"></span>
+    <button class="btn" onclick="testAlert()">✉ Test email</button>
     <button class="btn" onclick="load()">↻ Refresh</button>
     <button class="btn" onclick="logout()">Sign out</button>
   </div>
@@ -495,6 +514,15 @@ async function doLogin(){
   }catch(e){ $('#li_err').textContent='Failed: '+e.message; }
 }
 function logout(){ localStorage.removeItem(TK); showLogin(''); }
+async function testAlert(){
+  $('#err').style.color='var(--mut)'; $('#err').textContent='Sending test email…';
+  try{
+    const r=await fetch('/notify/test',{method:'POST',headers:{'Authorization':'Bearer '+tok()}});
+    const j=await r.json().catch(()=>({}));
+    if(j.sent){ $('#err').style.color='var(--green)'; $('#err').textContent='✓ Test email sent — check your inbox (and spam/Promotions).'; }
+    else { $('#err').style.color='var(--bad)'; $('#err').textContent='Not sent: '+(j.error||'check RESEND_API_KEY is set on the service'); }
+  }catch(e){ $('#err').style.color='var(--bad)'; $('#err').textContent='Test failed: '+e.message; }
+}
 
 function spark(el, series){
   if(!series||!series.length){ el.innerHTML=''; return 0; }

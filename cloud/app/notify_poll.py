@@ -11,12 +11,17 @@ to customize each event's look, or tweak _render() for the shared card layout.
 Env: RESEND_API_KEY or SMTP_* (send), NOTIFY_EMAIL/ADMIN_EMAILS (to),
 NOTIFY_POLL_SECONDS (default 60), NOTIFY_ALERTS=0 to disable.
 """
-import os, time, threading, html as _html
+import os, sys, time, threading, html as _html
 from datetime import datetime
 
 from sqlalchemy import func, text
 from .db import SessionLocal, engine, User
 from .notifier import send_email
+
+try:  # make print() visible in Railway logs (unbuffered)
+    sys.stdout.reconfigure(line_buffering=True)
+except Exception:
+    pass
 
 try:
     from .db import CreditTxn
@@ -32,6 +37,7 @@ _POLL = max(15, int(os.environ.get("NOTIFY_POLL_SECONDS", "60") or 60))
 _BUILD = "alerts-build: per-cycle-lock-v2 (2026-11-21)"
 _started = False
 _guard = threading.Lock()
+_running = False
 
 # ── per-event templates (edit me to customize each email) ─────────────────────
 _TPL = {
@@ -70,6 +76,7 @@ def start():
 
 
 def _run():
+    global _running
     # Per-cycle advisory lock: each cycle we grab the lock, run one tick, then
     # release it (and the connection). This self-heals the stale-lock case — if
     # a previous container's DB session still held the lock at boot, we simply
@@ -89,6 +96,7 @@ def _run():
                     if not announced:
                         print("[notify] acquired lock; alert checks are live")
                         announced = True
+                    _running = True
                     try:
                         _tick()
                     finally:
@@ -200,7 +208,7 @@ def _first_hunts(db):
 # ── rendering ─────────────────────────────────────────────────────────────────
 def _send(kind, hero, rows):
     t = _TPL[kind]
-    send_email(t["subject"], _render(t, hero, rows))
+    return send_email(t["subject"], _render(t, hero, rows))
 
 
 def _render(t, hero, rows):
@@ -227,3 +235,23 @@ def _render(t, hero, rows):
         f'<div style="max-width:460px;margin:12px auto 0;text-align:center;'
         f'font:11px system-ui;color:#6F7684">HUNTR · automated founder alert</div>'
         f'</div>')
+
+
+def status():
+    """Live notifier status for the admin dashboard."""
+    raw = os.environ.get("NOTIFY_EMAIL") or os.environ.get("ADMIN_EMAILS", "")
+    return {
+        "running": _running,
+        "resend_key_set": bool(os.environ.get("RESEND_API_KEY")),
+        "smtp_set": bool(os.environ.get("SMTP_HOST")),
+        "recipients": [e.strip() for e in raw.split(",") if e.strip()],
+        "poll_seconds": _POLL,
+        "build": _BUILD,
+    }
+
+
+def send_test():
+    """Send a sample signup-style alert on demand (dashboard 'Test email' button)."""
+    return _send("signup", hero="test@example.com (manual test)",
+                 rows=[("Plan", "free"), ("Note", "This is a manual test alert"),
+                       ("When", f"{datetime.utcnow()} UTC")])
