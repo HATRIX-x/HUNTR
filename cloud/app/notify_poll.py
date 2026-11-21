@@ -68,27 +68,32 @@ def start():
 
 
 def _run():
+    # Per-cycle advisory lock: each cycle we grab the lock, run one tick, then
+    # release it (and the connection). This self-heals the stale-lock case — if
+    # a previous container's DB session still held the lock at boot, we simply
+    # retry next cycle instead of giving up forever. Only the worker holding the
+    # lock in a given cycle runs _tick(), so events are still emailed once.
     try:
-        lock_conn = engine.connect()
-    except Exception as e:   # noqa: BLE001
-        print(f"[notify] cannot connect: {e}"); return
-    try:
-        got = lock_conn.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": _LOCK_KEY}).scalar()
-        if not got:
-            print("[notify] another worker owns the loop; idling out"); lock_conn.close(); return
         _ensure_state()
-        print("[notify] this worker owns the alert loop")
-        while True:
-            try:
-                _tick()
-            except Exception as e:   # noqa: BLE001
-                print(f"[notify] tick error: {e}")
-            time.sleep(_POLL)
-    finally:
+    except Exception as e:   # noqa: BLE001
+        print(f"[notify] ensure_state failed (will retry): {e}")
+    print("[notify] poller active (per-cycle lock)")
+    announced = False
+    while True:
         try:
-            lock_conn.close()
-        except Exception:   # noqa: BLE001
-            pass
+            with engine.connect() as conn:
+                got = conn.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": _LOCK_KEY}).scalar()
+                if got:
+                    if not announced:
+                        print("[notify] acquired lock; alert checks are live")
+                        announced = True
+                    try:
+                        _tick()
+                    finally:
+                        conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": _LOCK_KEY})
+        except Exception as e:   # noqa: BLE001
+            print(f"[notify] cycle error: {e}")
+        time.sleep(_POLL)
 
 
 def _ensure_state():
